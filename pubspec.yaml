@@ -1,0 +1,45 @@
+name: heardy
+description: A complete, offline-first YouTube music downloader and player app.
+publish_to: 'none'
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.12.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  sqflite: ^2.3.0
+  path_provider: ^2.1.1
+  permission_handler: ^11.0.1
+  youtube_explode_dart: ^3.1.0
+  just_audio: ^0.9.36
+  audio_service: ^0.18.12
+  provider: ^6.1.1
+  http: ^1.1.0
+  uuid: ^4.2.1
+  path: ^1.8.3
+  flutter_local_notifications: ^17.1.2
+  wakelock_plus: ^1.1.4
+  flutter_background_service: ^5.0.5
+  shared_preferences: ^2.2.2
+  cupertino_icons: ^1.0.6
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.13.1
+
+flutter_launcher_icons:
+  android: true
+  ios: false
+  image_path: "assets/icon/app_icon.png"
+  min_sdk_android: 21
+  adaptive_icon_background: "#0D1B3E"
+  adaptive_icon_foreground: "assets/icon/app_icon_padded.png"
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/icon/

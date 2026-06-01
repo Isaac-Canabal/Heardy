@@ -1,0 +1,417 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import '../providers/settings_provider.dart';
+import '../providers/music_provider.dart';
+import '../models/playlist.dart';
+import '../services/database_helper.dart';
+import '../services/audio_player_handler.dart';
+import '../theme/app_theme.dart';
+
+class HomeScreen extends StatefulWidget {
+  const HomeScreen({super.key});
+
+  @override
+  State<HomeScreen> createState() => _HomeScreenState();
+}
+
+class _HomeScreenState extends State<HomeScreen> {
+  final TextEditingController _searchController = TextEditingController();
+  final TextEditingController _playlistNameController = TextEditingController();
+  String _query = '';
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _playlistNameController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    Provider.of<SettingsProvider>(context);
+    final musicProvider = Provider.of<MusicProvider>(context);
+    final playlists = musicProvider.playlists
+        .where((p) => p.name.toLowerCase().contains(_query))
+        .toList();
+
+    return SafeArea(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        'Mis playlists',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 28,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: -0.5,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.offline_pin_rounded,
+                            size: 16,
+                            color: AppTheme.accent.withValues(alpha: 0.9),
+                          ),
+                          const SizedBox(width: 6),
+                          Text(
+                            'Solo tus playlists descargadas',
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.45),
+                              fontSize: 13,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+                _CircleIconButton(
+                  icon: Icons.add_rounded,
+                  onTap: () => _showCreatePlaylistDialog(context),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
+            child: TextField(
+              controller: _searchController,
+              onChanged: (v) => setState(() => _query = v.trim().toLowerCase()),
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                hintText: 'Buscar en mis playlists',
+                prefixIcon: Icon(
+                  Icons.search_rounded,
+                  color: Colors.white.withValues(alpha: 0.4),
+                ),
+                contentPadding: const EdgeInsets.symmetric(vertical: 14),
+              ),
+            ),
+          ),
+          Expanded(
+            child: playlists.isEmpty
+                ? _buildEmptyState()
+                : ListView.builder(
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
+                    itemCount: playlists.length,
+                    itemBuilder: (context, index) {
+                      return _PlaylistCard(playlist: playlists[index]);
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyState() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.library_music_outlined,
+              size: 72,
+              color: Colors.white.withValues(alpha: 0.15),
+            ),
+            const SizedBox(height: 16),
+            const Text(
+              'Sin playlists todavía',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 20,
+                fontWeight: FontWeight.bold,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Crea una lista o ve a Descargas para importar música.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.45),
+                fontSize: 14,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showCreatePlaylistDialog(BuildContext context) {
+    _playlistNameController.clear();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        title: const Text('Nueva playlist', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: _playlistNameController,
+          autofocus: true,
+          style: const TextStyle(color: Colors.white),
+          decoration: const InputDecoration(hintText: 'Nombre'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: Text('Cancelar', style: TextStyle(color: Colors.white.withValues(alpha: 0.5))),
+          ),
+          TextButton(
+            onPressed: () {
+              final name = _playlistNameController.text.trim();
+              if (name.isNotEmpty) {
+                Provider.of<MusicProvider>(context, listen: false)
+                    .createPlaylist(name);
+                Navigator.pop(context);
+              }
+            },
+            child: Text('Crear', style: TextStyle(color: AppTheme.primaryLight, fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CircleIconButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+
+  const _CircleIconButton({required this.icon, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: AppTheme.primary,
+      shape: const CircleBorder(),
+      child: InkWell(
+        onTap: onTap,
+        customBorder: const CircleBorder(),
+        child: Padding(
+          padding: const EdgeInsets.all(12),
+          child: Icon(icon, color: Colors.white, size: 22),
+        ),
+      ),
+    );
+  }
+}
+
+class _PlaylistCard extends StatelessWidget {
+  final Playlist playlist;
+
+  const _PlaylistCard({required this.playlist});
+
+  @override
+  Widget build(BuildContext context) {
+    final audioHandler = Provider.of<AudioPlayerHandler>(context, listen: false);
+    final musicProvider = Provider.of<MusicProvider>(context, listen: false);
+
+    return FutureBuilder<
+        ({int songCount, int totalSeconds, String? coverArtPath})>(
+      future: DatabaseHelper.instance.getPlaylistSummary(playlist.id),
+      builder: (context, snapshot) {
+        final summary = snapshot.data;
+        final count = summary?.songCount ?? 0;
+        final duration = summary?.totalSeconds ?? 0;
+        final cover = summary?.coverArtPath;
+
+        return Container(
+          margin: const EdgeInsets.only(bottom: 12),
+          decoration: AppTheme.playlistCard(),
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              borderRadius: BorderRadius.circular(18),
+              onTap: () => Navigator.pushNamed(
+                context,
+                '/playlist',
+                arguments: playlist.id,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Row(
+                  children: [
+                    _CoverThumb(path: cover),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            playlist.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w700,
+                              fontSize: 16,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            count == 0
+                                ? 'Sin canciones'
+                                : '$count canciones, ${AppTheme.formatDuration(duration)}',
+                            style: TextStyle(
+                              color: Colors.white.withValues(alpha: 0.45),
+                              fontSize: 12,
+                            ),
+                          ),
+                          if (count > 0) ...[
+                            const SizedBox(height: 6),
+                            Row(
+                              children: [
+                                Icon(
+                                  Icons.download_done_rounded,
+                                  size: 14,
+                                  color: Colors.greenAccent.shade200,
+                                ),
+                                const SizedBox(width: 4),
+                                Text(
+                                  'Descargada',
+                                  style: TextStyle(
+                                    color: Colors.greenAccent.shade200,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                    if (count > 0)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 4),
+                        child: Material(
+                          color: AppTheme.primary,
+                          shape: const CircleBorder(),
+                          child: InkWell(
+                            customBorder: const CircleBorder(),
+                            onTap: () => musicProvider.playPlaylistFromStart(
+                              playlist.id,
+                              audioHandler,
+                            ),
+                            child: const Padding(
+                              padding: EdgeInsets.all(10),
+                              child: Icon(
+                                Icons.play_arrow_rounded,
+                                color: Colors.white,
+                                size: 24,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    PopupMenuButton<String>(
+                      icon: Icon(
+                        Icons.more_vert_rounded,
+                        color: Colors.white.withValues(alpha: 0.45),
+                      ),
+                      color: AppTheme.surface,
+                      onSelected: (value) async {
+                        if (value == 'rename') {
+                          _renamePlaylist(context, playlist);
+                        } else if (value == 'delete') {
+                          await musicProvider.deletePlaylist(playlist.id);
+                        }
+                      },
+                      itemBuilder: (_) => [
+                        const PopupMenuItem(
+                          value: 'rename',
+                          child: Text('Renombrar', style: TextStyle(color: Colors.white)),
+                        ),
+                        const PopupMenuItem(
+                          value: 'delete',
+                          child: Text('Eliminar', style: TextStyle(color: Colors.redAccent)),
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  void _renamePlaylist(BuildContext context, Playlist playlist) {
+    final controller = TextEditingController(text: playlist.name);
+    showDialog(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        title: const Text('Renombrar', style: TextStyle(color: Colors.white)),
+        content: TextField(
+          controller: controller,
+          style: const TextStyle(color: Colors.white),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('Cancelar'),
+          ),
+          TextButton(
+            onPressed: () {
+              final name = controller.text.trim();
+              if (name.isNotEmpty) {
+                Provider.of<MusicProvider>(context, listen: false)
+                    .renamePlaylist(playlist.id, name);
+              }
+              Navigator.pop(ctx);
+            },
+            child: const Text('Guardar'),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CoverThumb extends StatelessWidget {
+  final String? path;
+
+  const _CoverThumb({this.path});
+
+  @override
+  Widget build(BuildContext context) {
+    if (path != null && File(path!).existsSync()) {
+      return ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Image.file(
+          File(path!),
+          width: 58,
+          height: 58,
+          fit: BoxFit.cover,
+        ),
+      );
+    }
+    return Container(
+      width: 58,
+      height: 58,
+      decoration: BoxDecoration(
+        gradient: AppTheme.primaryGradient,
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: const Icon(Icons.queue_music_rounded, color: Colors.white70),
+    );
+  }
+}

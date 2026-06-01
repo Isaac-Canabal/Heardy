@@ -1,0 +1,1 @@
+ C:\\Heardy\\.dart_tool\\flutter_build\\ab2acab37f077c04d5d3ca84203b2922\\native_assets.json: 
