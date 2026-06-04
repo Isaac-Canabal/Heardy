@@ -162,6 +162,9 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
           ? downloadProvider.statusMessage
           : 'Operación completada.';
       _showSnackBar(message, isSuccess: true);
+      
+      // Delay navigation to ensure UI is fully refreshed
+      await Future.delayed(const Duration(milliseconds: 500));
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
       _showSnackBar("Error en la descarga: $e", isError: true);
@@ -225,7 +228,7 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
               16,
               widget.embedInShell ? 16 : 8,
               16,
-              widget.embedInShell ? 120 : 24,
+              widget.embedInShell ? 90 : 24,
             ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -254,8 +257,9 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
                         controller: _urlController,
                         enabled: !_isAnalyzing && !downloadProvider.isDownloading,
                         style: const TextStyle(color: Colors.white),
-                        decoration: const InputDecoration(
+                        decoration: InputDecoration(
                           hintText: 'https://www.youtube.com/watch?v=...',
+                          prefixIcon: Icon(Icons.link_rounded, color: AppTheme.primaryLight),
                         ),
                       ),
                       const SizedBox(height: 16),

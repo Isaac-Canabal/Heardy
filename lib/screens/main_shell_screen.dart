@@ -38,7 +38,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
             const Positioned(
               left: 0,
               right: 0,
-              bottom: 72,
+              bottom: 0,
               child: MiniPlayer(),
             ),
           ],

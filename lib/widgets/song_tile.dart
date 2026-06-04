@@ -26,7 +26,7 @@ class SongTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+      margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
       decoration: AppTheme.glassCard(highlighted: isPlaying),
       child: Material(
         color: Colors.transparent,

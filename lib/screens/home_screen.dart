@@ -56,24 +56,6 @@ class _HomeScreenState extends State<HomeScreen> {
                           letterSpacing: -0.5,
                         ),
                       ),
-                      const SizedBox(height: 6),
-                      Row(
-                        children: [
-                          Icon(
-                            Icons.offline_pin_rounded,
-                            size: 16,
-                            color: AppTheme.accent.withValues(alpha: 0.9),
-                          ),
-                          const SizedBox(width: 6),
-                          Text(
-                            'Solo tus playlists descargadas',
-                            style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.45),
-                              fontSize: 13,
-                            ),
-                          ),
-                        ],
-                      ),
                     ],
                   ),
                 ),
@@ -94,7 +76,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 hintText: 'Buscar en mis playlists',
                 prefixIcon: Icon(
                   Icons.search_rounded,
-                  color: Colors.white.withValues(alpha: 0.4),
+                  color: AppTheme.primaryLight,
                 ),
                 contentPadding: const EdgeInsets.symmetric(vertical: 14),
               ),
@@ -104,7 +86,7 @@ class _HomeScreenState extends State<HomeScreen> {
             child: playlists.isEmpty
                 ? _buildEmptyState()
                 : ListView.builder(
-                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 120),
+                    padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),
                     itemCount: playlists.length,
                     itemBuilder: (context, index) {
                       return _PlaylistCard(playlist: playlists[index]);
@@ -172,12 +154,21 @@ class _HomeScreenState extends State<HomeScreen> {
             child: Text('Cancelar', style: TextStyle(color: Colors.white.withValues(alpha: 0.5))),
           ),
           TextButton(
-            onPressed: () {
+            onPressed: () async {
               final name = _playlistNameController.text.trim();
               if (name.isNotEmpty) {
-                Provider.of<MusicProvider>(context, listen: false)
-                    .createPlaylist(name);
-                Navigator.pop(context);
+                try {
+                  await Provider.of<MusicProvider>(context, listen: false)
+                      .createPlaylist(name);
+                  Navigator.pop(context);
+                } catch (e) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(e.toString()),
+                      backgroundColor: Colors.redAccent,
+                    ),
+                  );
+                }
               }
             },
             child: Text('Crear', style: TextStyle(color: AppTheme.primaryLight, fontWeight: FontWeight.bold)),

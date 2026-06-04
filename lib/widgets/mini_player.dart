@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../services/audio_player_handler.dart';
 import '../theme/app_theme.dart';
 import '../screens/now_playing_screen.dart';
+import '../providers/settings_provider.dart';
 
 class MiniPlayer extends StatelessWidget {
   const MiniPlayer({super.key});
@@ -12,6 +13,7 @@ class MiniPlayer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final audioHandler = Provider.of<AudioPlayerHandler>(context);
+    final settings = Provider.of<SettingsProvider>(context);
 
     return StreamBuilder<MediaItem?>(
       stream: audioHandler.mediaItem,

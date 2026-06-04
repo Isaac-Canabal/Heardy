@@ -1,11 +1,49 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../providers/music_provider.dart';
 import '../providers/settings_provider.dart';
+import '../services/database_helper.dart';
 import '../theme/app_theme.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
+
+  Future<String> _calculateStorageUsage() async {
+    try {
+      final songs = await DatabaseHelper.instance.getSongs();
+      int totalBytes = 0;
+      
+      for (final song in songs) {
+        try {
+          final audioFile = File(song.filePath);
+          if (await audioFile.exists()) {
+            totalBytes += await audioFile.length();
+          }
+        } catch (_) {}
+        
+        try {
+          if (song.artPath.isNotEmpty) {
+            final artFile = File(song.artPath);
+            if (await artFile.exists()) {
+              totalBytes += await artFile.length();
+            }
+          }
+        } catch (_) {}
+      }
+      
+      return _formatBytes(totalBytes);
+    } catch (e) {
+      return 'Error calculando';
+    }
+  }
+
+  String _formatBytes(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -14,7 +52,7 @@ class SettingsScreen extends StatelessWidget {
 
     return SafeArea(
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(20, 16, 20, 120),
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 90),
         children: [
           const Text(
             'Ajustes',
@@ -25,6 +63,58 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 24),
+          _SectionTitle('Almacenamiento'),
+          const SizedBox(height: 10),
+          Container(
+            decoration: AppTheme.glassCard(),
+            padding: const EdgeInsets.all(16),
+            child: FutureBuilder<String>(
+              future: _calculateStorageUsage(),
+              builder: (context, snapshot) {
+                final storage = snapshot.data ?? 'Calculando...';
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(
+                          Icons.storage_rounded,
+                          color: AppTheme.primaryLight,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Espacio usado',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.7),
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      storage,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 24,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Total de canciones descargadas',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.45),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+          const SizedBox(height: 28),
           _SectionTitle('Apariencia'),
           const SizedBox(height: 10),
           Container(

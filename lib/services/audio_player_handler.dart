@@ -65,8 +65,13 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
             // Last song in playlist → wrap to first
             _player.seek(Duration.zero, index: 0).then((_) => _player.play());
           }
-        } else if (_player.loopMode == LoopMode.off && _player.hasNext) {
-          skipToNext();
+        } else if (_player.loopMode == LoopMode.off) {
+          if (_player.hasNext) {
+            skipToNext();
+          } else {
+            // Stop at end of playlist
+            stop();
+          }
         }
       }
     });

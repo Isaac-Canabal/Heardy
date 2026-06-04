@@ -45,6 +45,12 @@ class MusicProvider with ChangeNotifier {
   /// Inserts a new playlist into SQFlite and updates the UI state.
   Future<void> createPlaylist(String name) async {
     try {
+      // Check for duplicate names (case-insensitive)
+      final existing = _playlists.where((p) => p.name.toLowerCase() == name.toLowerCase()).toList();
+      if (existing.isNotEmpty) {
+        throw Exception('Ya existe una playlist con ese nombre');
+      }
+
       final newPlaylist = Playlist(
         id: const Uuid().v4(),
         name: name,
@@ -55,6 +61,7 @@ class MusicProvider with ChangeNotifier {
       await loadPlaylists();
     } catch (e) {
       print("Error creating playlist: $e");
+      rethrow;
     }
   }
 
@@ -162,15 +169,73 @@ class MusicProvider with ChangeNotifier {
     }
   }
 
-  /// Dissociates a track from a playlist without removing the physical file itself.
+  /// Dissociates a track from a playlist and deletes the file if it's not in any other playlist.
   Future<void> removeSongFromPlaylist(String playlistId, String songId) async {
     try {
       await _dbHelper.removeSongFromPlaylist(playlistId, songId);
+      
+      // Check if song is in any other playlists
+      final playlistCount = await _dbHelper.getPlaylistCountForSong(songId);
+      if (playlistCount == 0) {
+        // Song is not in any playlist anymore, delete the file
+        await _dbHelper.deleteSong(songId);
+      }
+      
       if (_currentPlaylistId == playlistId) {
         await loadSongsForPlaylist(playlistId);
       }
     } catch (e) {
       print("Error removing song from playlist: $e");
+    }
+  }
+
+  /// Refreshes the audio handler queue when the current playlist is modified
+  Future<void> refreshAudioHandlerQueue(AudioPlayerHandler audioHandler) async {
+    if (_currentPlaylistId == null || _currentPlaylistSongs.isEmpty) return;
+    
+    try {
+      final playlist = await _dbHelper.getPlaylistById(_currentPlaylistId!);
+      if (playlist == null) return;
+      
+      final songs = await _dbHelper.getSongsForPlaylist(_currentPlaylistId!);
+      if (songs.isEmpty) return;
+      
+      // Get current media item to restore position
+      final currentMediaItem = await audioHandler.mediaItem.first;
+      final currentSongId = currentMediaItem?.id;
+      
+      // Rebuild the queue
+      final items = songs
+          .map(
+            (song) => MediaItem(
+              id: song.id,
+              album: playlist.name,
+              title: song.title,
+              artist: song.artist,
+              duration: Duration(seconds: song.duration),
+              artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
+              extras: {
+                'filePath': song.filePath,
+                'artPath': song.artPath,
+              },
+            ),
+          )
+          .toList();
+      
+      // Find the index of the current song
+      final currentIndex = currentSongId != null 
+          ? items.indexWhere((item) => item.id == currentSongId)
+          : -1;
+      
+      // Reload the queue
+      if (currentIndex >= 0) {
+        await audioHandler.playPlaylist(items, currentSongId!);
+      } else if (items.isNotEmpty) {
+        // Current song not found, start from beginning
+        await audioHandler.playPlaylist(items, items.first.id);
+      }
+    } catch (e) {
+      print("Error refreshing audio handler queue: $e");
     }
   }
 

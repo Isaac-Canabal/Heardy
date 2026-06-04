@@ -343,6 +343,15 @@ class DatabaseHelper {
     return maps.isNotEmpty;
   }
 
+  Future<int> getPlaylistCountForSong(String songId) async {
+    final db = await database;
+    final result = await db.rawQuery(
+      'SELECT COUNT(*) as count FROM playlist_songs WHERE songId = ?',
+      [songId],
+    );
+    return result.first['count'] as int? ?? 0;
+  }
+
   // --- DOWNLOAD QUEUE CRUD ---
 
   Future<int> addToDownloadQueue(String videoId, String playlistId) async {

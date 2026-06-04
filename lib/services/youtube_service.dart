@@ -25,6 +25,8 @@ class _CachedVideoMetadata {
 }
 
 class YoutubeService {
+  YoutubeService();
+
   static final Map<String, _CachedVideoMetadata> _metadataCache = {};
 
   /// Preview for the UI — metadata only, no manifest (avoids burning stream URLs).
@@ -261,7 +263,11 @@ class YoutubeService {
     const int concurrency = 4;
     bool cancelled = false;
     Object? firstError;
+    final bytesReceived = [0];
+    var lastUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
 
+    Future<void> downloadChunk((int, int) chunk) async {
+      final (start, end) = chunk;
       final chunkBytes = await _downloadChunkWithRetries(
         url,
         start,

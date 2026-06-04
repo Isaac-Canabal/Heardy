@@ -549,9 +549,12 @@ class DownloadProvider with ChangeNotifier {
 
       await _dbHelper.insertSong(song);
 
-      // 6. Append track to the target playlist
-      final maxOrder = await _dbHelper.getMaxOrderForPlaylist(playlistId) ?? -1;
-      await _dbHelper.addSongToPlaylist(playlistId, song.id, maxOrder + 1);
+      // 6. Append track to the target playlist (only if not already in playlist)
+      final songInPlaylist = await _dbHelper.isSongInPlaylist(playlistId, song.id);
+      if (!songInPlaylist) {
+        final maxOrder = await _dbHelper.getMaxOrderForPlaylist(playlistId) ?? -1;
+        await _dbHelper.addSongToPlaylist(playlistId, song.id, maxOrder + 1);
+      }
 
       // Update session progress
       if (_sessionTotal > 0) {
@@ -571,20 +574,23 @@ class DownloadProvider with ChangeNotifier {
 
       // Dynamic update to active player queue if the same playlist is currently playing
       final currentPlayingPlaylistId = musicProvider?.currentPlaylistId;
-      if (currentPlayingPlaylistId == playlistId && audioHandler != null) {
-        final mediaItem = MediaItem(
-          id: song.id,
-          album: musicProvider?.playlists.firstWhere((p) => p.id == playlistId).name ?? '',
-          title: song.title,
-          artist: song.artist,
-          duration: Duration(seconds: song.duration),
-          artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
-          extras: {
-            'filePath': song.filePath,
-            'artPath': song.artPath,
-          },
-        );
-        await audioHandler!.addQueueItem(mediaItem);
+      if (currentPlayingPlaylistId == playlistId && audioHandler != null && !songInPlaylist) {
+        final playlist = musicProvider?.playlists.where((p) => p.id == playlistId).firstOrNull;
+        if (playlist != null) {
+          final mediaItem = MediaItem(
+            id: song.id,
+            album: playlist.name,
+            title: song.title,
+            artist: song.artist,
+            duration: Duration(seconds: song.duration),
+            artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
+            extras: {
+              'filePath': song.filePath,
+              'artPath': song.artPath,
+            },
+          );
+          await audioHandler!.addQueueItem(mediaItem);
+        }
       }
 
       await _showCompletionNotification(title, true);

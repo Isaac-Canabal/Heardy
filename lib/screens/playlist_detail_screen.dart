@@ -7,7 +7,6 @@ import '../providers/download_provider.dart';
 import '../services/audio_player_handler.dart';
 import '../models/song.dart';
 import '../widgets/song_tile.dart';
-import '../widgets/mini_player.dart';
 import '../theme/app_theme.dart';
 
 class PlaylistDetailScreen extends StatefulWidget {
@@ -23,6 +22,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   final TextEditingController _searchController = TextEditingController();
   final TextEditingController _renameController = TextEditingController();
   String _searchQuery = '';
+  String _sortBy = 'manual'; // manual, artist, title, date
 
   @override
   void initState() {
@@ -59,19 +59,80 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
           : musicProvider.playlists.first, // fallback if deleted
     );
 
-    // Filter tracks based on search bar
+    // Filter and sort tracks based on search bar and sort option
     final allSongs = musicProvider.currentPlaylistSongs;
-    final filteredSongs = allSongs.where((song) {
+    var filteredSongs = allSongs.where((song) {
       final titleMatch = song.title.toLowerCase().contains(_searchQuery);
       final artistMatch = song.artist.toLowerCase().contains(_searchQuery);
       return titleMatch || artistMatch;
     }).toList();
+
+    // Apply sorting
+    if (_sortBy == 'artist') {
+      filteredSongs.sort((a, b) => a.artist.toLowerCase().compareTo(b.artist.toLowerCase()));
+    } else if (_sortBy == 'title') {
+      filteredSongs.sort((a, b) => a.title.toLowerCase().compareTo(b.title.toLowerCase()));
+    } else if (_sortBy == 'duration') {
+      filteredSongs.sort((a, b) => a.duration.compareTo(b.duration));
+    }
+    // manual = keep original order (import order)
 
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
         title: Text(playlist.name),
         actions: [
+          PopupMenuButton<String>(
+            icon: const Icon(Icons.sort_rounded),
+            tooltip: 'Ordenar',
+            onSelected: (value) {
+              setState(() {
+                _sortBy = value;
+              });
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'manual',
+                child: Row(
+                  children: [
+                    Icon(Icons.list_rounded),
+                    SizedBox(width: 12),
+                    Text('Orden de importación'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'artist',
+                child: Row(
+                  children: [
+                    Icon(Icons.person_rounded),
+                    SizedBox(width: 12),
+                    Text('Artista'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'title',
+                child: Row(
+                  children: [
+                    Icon(Icons.music_note_rounded),
+                    SizedBox(width: 12),
+                    Text('Título'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'duration',
+                child: Row(
+                  children: [
+                    Icon(Icons.timer_rounded),
+                    SizedBox(width: 12),
+                    Text('Duración'),
+                  ],
+                ),
+              ),
+            ],
+          ),
           IconButton(
             icon: const Icon(Icons.edit_outlined),
             tooltip: 'Renombrar Lista',
@@ -108,49 +169,52 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       ),
       body: Container(
         decoration: AppTheme.gradientScaffold(),
-        child: Stack(
-        children: [
-          Column(
-            children: [
-              // Sleek premium search field
-              if (allSongs.isNotEmpty) _buildSearchField(),
-              // Playlist songs list
-              Expanded(
-                child: allSongs.isEmpty
-                    ? _buildEmptyState()
-                    : filteredSongs.isEmpty
-                        ? _buildNoResultsState()
-                        : ListView.builder(
-                            padding: const EdgeInsets.only(top: 8, bottom: 80),
-                            itemCount: filteredSongs.length,
-                            itemBuilder: (context, index) {
-                              final song = filteredSongs[index];
+        child: Column(
+          children: [
+            // Sleek premium search field
+            if (allSongs.isNotEmpty) _buildSearchField(),
+            // Playlist songs list
+            Expanded(
+              child: allSongs.isEmpty
+                  ? _buildEmptyState()
+                  : filteredSongs.isEmpty
+                      ? _buildNoResultsState()
+                      : ListView.builder(
+                          padding: const EdgeInsets.only(top: 8, bottom: 90),
+                          itemCount: filteredSongs.length,
+                          itemBuilder: (context, index) {
+                            final song = filteredSongs[index];
 
-                              return StreamBuilder<MediaItem?>(
-                                stream: audioHandler.mediaItem,
-                                builder: (context, mediaSnapshot) {
-                                  final activeItem = mediaSnapshot.data;
-                                  final isPlaying = activeItem?.id == song.id;
+                            return StreamBuilder<MediaItem?>(
+                              stream: audioHandler.mediaItem,
+                              builder: (context, mediaSnapshot) {
+                                final activeItem = mediaSnapshot.data;
+                                final isPlaying = activeItem?.id == song.id;
 
-                                  // Dismissible tile to support swipe-to-delete
-                                  return Dismissible(
-                                    key: Key(song.id),
-                                    direction: DismissDirection.endToStart,
-                                    background: Container(
-                                      color: Colors.redAccent[700],
-                                      alignment: Alignment.centerRight,
-                                      padding: const EdgeInsets.only(right: 24),
-                                      margin: const EdgeInsets.symmetric(
-                                          horizontal: 16, vertical: 6),
-                                      child: const Icon(
-                                        Icons.delete_sweep,
-                                        color: Colors.white,
-                                        size: 28,
-                                      ),
+                                // Dismissible tile to support swipe-to-delete
+                                return Dismissible(
+                                  key: Key(song.id),
+                                  direction: DismissDirection.endToStart,
+                                  background: Container(
+                                    color: Colors.redAccent[700],
+                                    alignment: Alignment.centerRight,
+                                    padding: const EdgeInsets.only(right: 24),
+                                    margin: const EdgeInsets.symmetric(
+                                        horizontal: 16, vertical: 6),
+                                    child: const Icon(
+                                      Icons.delete_sweep,
+                                      color: Colors.white,
+                                      size: 28,
                                     ),
-                                    onDismissed: (direction) {
-                                      musicProvider.removeSongFromPlaylist(
-                                          widget.playlistId, song.id);
+                                  ),
+                                  onDismissed: (direction) async {
+                                    await musicProvider.removeSongFromPlaylist(
+                                        widget.playlistId, song.id);
+                                    // Refresh audio handler queue if this is the current playlist
+                                    if (musicProvider.currentPlaylistId == widget.playlistId) {
+                                      await musicProvider.refreshAudioHandlerQueue(audioHandler);
+                                    }
+                                    if (mounted) {
                                       ScaffoldMessenger.of(context)
                                           .showSnackBar(
                                         SnackBar(
@@ -159,39 +223,44 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                                           backgroundColor: Colors.indigo[900],
                                         ),
                                       );
-                                    },
-                                    child: SongTile(
-                                      song: song,
-                                      isPlaying: isPlaying,
-                                      onTap: () => _playSong(
-                                          audioHandler, allSongs, song, playlist.name),
-                                      onDelete: () {
-                                        musicProvider.removeSongFromPlaylist(
-                                            widget.playlistId, song.id);
-                                      },
-                                    ),
-                                  );
-                                },
-                              );
-                            },
-                          ),
-              ),
-            ],
-          ),
-          // Bottom persistent mini player
-          const Align(
-            alignment: Alignment.bottomCenter,
-            child: MiniPlayer(),
-          ),
-        ],
+                                    }
+                                  },
+                                  child: SongTile(
+                                    song: song,
+                                    isPlaying: isPlaying,
+                                    onTap: () => _playSong(
+                                        audioHandler, filteredSongs, song, playlist.name),
+                                  ),
+                                );
+                              },
+                            );
+                          },
+                        ),
+            ),
+          ],
         ),
       ),
     );
   }
 
+  String _getSortLabel(String sortBy) {
+    switch (sortBy) {
+      case 'manual':
+        return 'Orden de importación';
+      case 'artist':
+        return 'Artista';
+      case 'title':
+        return 'Título';
+      case 'duration':
+        return 'Duración';
+      default:
+        return 'Desconocido';
+    }
+  }
+
   Widget _buildSearchField() {
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+      margin: const EdgeInsets.fromLTRB(16, 100, 16, 8),
       decoration: AppTheme.glassCard(),
       child: TextField(
         controller: _searchController,
@@ -199,7 +268,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         decoration: InputDecoration(
           hintText: 'Buscar en esta lista...',
           hintStyle: TextStyle(color: Colors.grey[600], fontSize: 14),
-          prefixIcon: Icon(Icons.search, color: Colors.grey[500]),
+          prefixIcon: Icon(Icons.search, color: AppTheme.primaryLight),
           suffixIcon: _searchQuery.isNotEmpty
               ? IconButton(
                   icon: const Icon(Icons.clear, color: Colors.white70),
