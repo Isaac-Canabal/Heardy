@@ -2,7 +2,7 @@
 
 Una aplicación completa de descarga y reproducción de música de YouTube que funciona sin conexión.
 
-<img width="94" height="94" alt="image" src="https://github.com/user-attachments/assets/f559d776-36b2-48dc-8954-417d259fa8dd" />
+<img width="300" height="300" alt="image" src="https://github.com/user-attachments/assets/f559d776-36b2-48dc-8954-417d259fa8dd" />
 
 
 ## Características
