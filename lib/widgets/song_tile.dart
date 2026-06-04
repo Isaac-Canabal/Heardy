@@ -8,6 +8,7 @@ class SongTile extends StatelessWidget {
   final VoidCallback onTap;
   final VoidCallback? onDelete;
   final bool isPlaying;
+  final int? index;
 
   const SongTile({
     super.key,
@@ -15,6 +16,7 @@ class SongTile extends StatelessWidget {
     required this.onTap,
     this.onDelete,
     this.isPlaying = false,
+    this.index,
   });
 
   String _formatDuration(int seconds) {
@@ -37,6 +39,21 @@ class SongTile extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(
               children: [
+                if (index != null) ...[
+                  SizedBox(
+                    width: 30,
+                    child: Text(
+                      '${index! + 1}',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.4),
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                ],
                 ClipRRect(
                   borderRadius: BorderRadius.circular(10),
                   child: _buildAlbumArt(),

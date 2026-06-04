@@ -297,4 +297,19 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     }
     await super.onTaskRemoved();
   }
+
+  /// Resets the player state if it gets corrupted. Call this if playback stops working.
+  Future<void> resetPlayerState() async {
+    try {
+      print('Resetting player state...');
+      await _player.stop();
+      _playlistSource = null;
+      queue.add([]);
+      mediaItem.add(null);
+      await Future.delayed(const Duration(milliseconds: 200));
+      print('Player state reset complete');
+    } catch (e) {
+      print('Error resetting player state: $e');
+    }
+  }
 }

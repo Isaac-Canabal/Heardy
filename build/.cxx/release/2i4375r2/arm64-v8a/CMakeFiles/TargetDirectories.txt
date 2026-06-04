@@ -1,2 +1,0 @@
-C:/Heardy/build/.cxx/release/2i4375r2/arm64-v8a/CMakeFiles/edit_cache.dir
-C:/Heardy/build/.cxx/release/2i4375r2/arm64-v8a/CMakeFiles/rebuild_cache.dir

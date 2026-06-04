@@ -352,6 +352,20 @@ class DatabaseHelper {
     return result.first['count'] as int? ?? 0;
   }
 
+  Future<void> reorderSongsInPlaylist(String playlistId, List<String> songIds) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      for (var i = 0; i < songIds.length; i++) {
+        await txn.update(
+          'playlist_songs',
+          {'orderIndex': i},
+          where: 'playlistId = ? AND songId = ?',
+          whereArgs: [playlistId, songIds[i]],
+        );
+      }
+    });
+  }
+
   // --- DOWNLOAD QUEUE CRUD ---
 
   Future<int> addToDownloadQueue(String videoId, String playlistId) async {

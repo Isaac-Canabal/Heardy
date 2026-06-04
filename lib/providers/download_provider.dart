@@ -25,6 +25,7 @@ class DownloadProvider with ChangeNotifier {
   String _currentTitle = '';
   String _statusMessage = '';
   String? _errorMessage;
+  bool _useCooldown = true;
 
   // Cancellation flag for the queue processor
   bool _cancelRequested = false;
@@ -61,6 +62,7 @@ class DownloadProvider with ChangeNotifier {
   String get currentTitle => _currentTitle;
   String get statusMessage => _statusMessage;
   String? get errorMessage => _errorMessage;
+  bool get useCooldown => _useCooldown;
   Duration get downloadElapsed => _downloadStartedAt == null
       ? Duration.zero
       : DateTime.now().difference(_downloadStartedAt!);
@@ -71,6 +73,11 @@ class DownloadProvider with ChangeNotifier {
 
   void clearError() {
     _errorMessage = null;
+    notifyListeners();
+  }
+
+  void setCooldown(bool value) {
+    _useCooldown = value;
     notifyListeners();
   }
 
@@ -167,7 +174,9 @@ class DownloadProvider with ChangeNotifier {
         await _dbHelper.addSongToPlaylist(playlistId, existingSong.id, maxOrder + 1);
 
         if (musicProvider != null) {
-          await musicProvider!.loadSongsForPlaylist(playlistId);
+          // Only update current playlist if user is viewing it
+          final updateCurrent = musicProvider!.currentPlaylistId == playlistId;
+          await musicProvider!.loadSongsForPlaylist(playlistId, updateCurrent: updateCurrent);
           await musicProvider!.loadPlaylists();
         }
 
@@ -266,7 +275,9 @@ class DownloadProvider with ChangeNotifier {
       // Update MusicProvider to show linked songs immediately
       if (existingLinkCount > 0) {
         if (musicProvider != null) {
-          await musicProvider!.loadSongsForPlaylist(targetPlaylistId);
+          // Only update current playlist if user is viewing it
+          final updateCurrent = musicProvider!.currentPlaylistId == targetPlaylistId;
+          await musicProvider!.loadSongsForPlaylist(targetPlaylistId, updateCurrent: updateCurrent);
           await musicProvider!.loadPlaylists();
         }
 
@@ -335,7 +346,7 @@ class DownloadProvider with ChangeNotifier {
           break;
         }
 
-        if (!isFirstItem) {
+        if (!isFirstItem && _useCooldown) {
           await Future.delayed(const Duration(seconds: 5));
         }
         isFirstItem = false;
@@ -568,7 +579,9 @@ class DownloadProvider with ChangeNotifier {
 
       // Refresh UI instantly
       if (musicProvider != null) {
-        await musicProvider!.loadSongsForPlaylist(playlistId);
+        // Only update current playlist if user is viewing it
+        final updateCurrent = musicProvider!.currentPlaylistId == playlistId;
+        await musicProvider!.loadSongsForPlaylist(playlistId, updateCurrent: updateCurrent);
         await musicProvider!.loadPlaylists();
       }
 

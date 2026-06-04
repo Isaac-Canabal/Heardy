@@ -38,6 +38,14 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
   bool _createNewPlaylist = false;
 
   @override
+  void initState() {
+    super.initState();
+    _urlController.addListener(() {
+      setState(() {});
+    });
+  }
+
+  @override
   void dispose() {
     _urlController.dispose();
     _newPlaylistController.dispose();
@@ -163,9 +171,12 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
           : 'Operación completada.';
       _showSnackBar(message, isSuccess: true);
       
-      // Delay navigation to ensure UI is fully refreshed
-      await Future.delayed(const Duration(milliseconds: 500));
-      if (mounted) Navigator.of(context).pop();
+      // Only pop the screen if the operation actually completed (not if song already exists)
+      if (!message.contains('ya está en esta lista')) {
+        // Delay navigation to ensure UI is fully refreshed
+        await Future.delayed(const Duration(milliseconds: 500));
+        if (mounted) Navigator.of(context).pop();
+      }
     } catch (e) {
       _showSnackBar("Error en la descarga: $e", isError: true);
     }
@@ -260,6 +271,17 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
                         decoration: InputDecoration(
                           hintText: 'https://www.youtube.com/watch?v=...',
                           prefixIcon: Icon(Icons.link_rounded, color: AppTheme.primaryLight),
+                          suffixIcon: _urlController.text.isNotEmpty
+                              ? IconButton(
+                                  icon: const Icon(Icons.clear, color: Colors.white70),
+                                  onPressed: () {
+                                    _urlController.clear();
+                                    setState(() {
+                                      _hasAnalyzed = false;
+                                    });
+                                  },
+                                )
+                              : null,
                         ),
                       ),
                       const SizedBox(height: 16),
@@ -284,6 +306,30 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
                                   fontSize: 15,
                                 ),
                               ),
+                      ),
+                      const SizedBox(height: 12),
+                      Row(
+                        children: [
+                          Switch(
+                            value: downloadProvider.useCooldown,
+                            onChanged: downloadProvider.isDownloading
+                                ? null
+                                : (value) {
+                                    downloadProvider.setCooldown(value);
+                                  },
+                            activeColor: AppTheme.accent,
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'Tiempo de enfriamiento entre descargas',
+                              style: TextStyle(
+                                color: Colors.white.withValues(alpha: 0.8),
+                                fontSize: 13,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
                   ),

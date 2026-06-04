@@ -191,7 +191,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                                 final activeItem = mediaSnapshot.data;
                                 final isPlaying = activeItem?.id == song.id;
 
-                                // Dismissible tile to support swipe-to-delete
                                 return Dismissible(
                                   key: Key(song.id),
                                   direction: DismissDirection.endToStart,
@@ -210,7 +209,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                                   onDismissed: (direction) async {
                                     await musicProvider.removeSongFromPlaylist(
                                         widget.playlistId, song.id);
-                                    // Refresh audio handler queue if this is the current playlist
                                     if (musicProvider.currentPlaylistId == widget.playlistId) {
                                       await musicProvider.refreshAudioHandlerQueue(audioHandler);
                                     }
@@ -228,6 +226,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                                   child: SongTile(
                                     song: song,
                                     isPlaying: isPlaying,
+                                    index: index,
                                     onTap: () => _playSong(
                                         audioHandler, filteredSongs, song, playlist.name),
                                   ),
