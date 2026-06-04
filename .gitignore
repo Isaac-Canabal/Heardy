@@ -110,3 +110,7 @@ coverage/
 # Temporary files
 *.tmp
 *.temp
+
+# Additional files
+devtools_options.yaml
+pad_icon.dart
