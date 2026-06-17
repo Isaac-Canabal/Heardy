@@ -5,12 +5,14 @@ class Playlist {
   final String name;
   final DateTime creationDate;
   final int sortOrder;
+  final String? originalUrl;
 
   Playlist({
     required this.id,
     required this.name,
     required this.creationDate,
     this.sortOrder = 0,
+    this.originalUrl,
   });
 
   Map<String, dynamic> toMap() {
@@ -19,6 +21,7 @@ class Playlist {
       'name': name,
       'creationDate': creationDate.toIso8601String(),
       'sortOrder': sortOrder,
+      'originalUrl': originalUrl,
     };
   }
 
@@ -28,15 +31,17 @@ class Playlist {
       name: map['name'] as String,
       creationDate: DateTime.parse(map['creationDate'] as String),
       sortOrder: (map['sortOrder'] as int?) ?? 0,
+      originalUrl: map['originalUrl'] as String?,
     );
   }
 
-  Playlist copyWith({String? name, int? sortOrder}) {
+  Playlist copyWith({String? name, int? sortOrder, String? originalUrl}) {
     return Playlist(
       id: id,
       name: name ?? this.name,
       creationDate: creationDate,
       sortOrder: sortOrder ?? this.sortOrder,
+      originalUrl: originalUrl ?? this.originalUrl,
     );
   }
 

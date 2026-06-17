@@ -91,6 +91,16 @@ class MusicProvider with ChangeNotifier {
     }
   }
 
+  /// Updates the original URL of a playlist.
+  Future<void> updatePlaylistUrl(String id, String url) async {
+    try {
+      await _dbHelper.updatePlaylistUrl(id, url);
+      await loadPlaylists();
+    } catch (e) {
+      print("Error updating playlist URL: $e");
+    }
+  }
+
   /// Reorders playlists (top to bottom).
   Future<void> reorderPlaylists(List<Playlist> ordered) async {
     try {
@@ -155,10 +165,29 @@ class MusicProvider with ChangeNotifier {
     await audioHandler.playPlaylist(items, target.id);
   }
 
-  /// Deletes a playlist, cascades joint tables, and cleans up active references.
+  /// Deletes a playlist, cascades joint tables, cleans up active references, and deletes orphaned songs from device.
   Future<void> deletePlaylist(String id) async {
     try {
+      // 1. Find all songs in this playlist BEFORE deleting anything
+      final songs = await _dbHelper.getSongsForPlaylist(id);
+
+      // 2. For each song, check if it belongs to OTHER playlists (not counting this one)
+      final orphanedSongIds = <String>[];
+      for (var song in songs) {
+        final count = await _dbHelper.getPlaylistCountForSong(song.id);
+        // count includes this playlist, so if count <= 1, the song is only in this playlist
+        if (count <= 1) {
+          orphanedSongIds.add(song.id);
+        }
+      }
+
+      // 3. Delete the playlist from DB (CASCADE deletes playlist_songs rows)
       await _dbHelper.deletePlaylist(id);
+
+      // 4. Delete orphaned songs (files + DB records)
+      for (var songId in orphanedSongIds) {
+        await _dbHelper.deleteSong(songId);
+      }
 
       if (_currentPlaylistId == id) {
         _currentPlaylistId = null;
@@ -276,5 +305,12 @@ class MusicProvider with ChangeNotifier {
     } catch (e) {
       print("Error reordering songs in playlist $playlistId: $e");
     }
+  }
+
+  /// Resets the active playlist reference and song list to clean up player state.
+  void clearPlaybackState() {
+    _currentPlaylistId = null;
+    _currentPlaylistSongs = [];
+    notifyListeners();
   }
 }

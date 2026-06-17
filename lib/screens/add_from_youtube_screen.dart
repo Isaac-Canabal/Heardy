@@ -144,6 +144,7 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
 
     try {
       if (_isPlaylist) {
+        await musicProvider.updatePlaylistUrl(targetId, url);
         await downloadProvider.downloadPlaylist(url, targetId);
       } else {
         await downloadProvider.downloadVideo(url, targetId);

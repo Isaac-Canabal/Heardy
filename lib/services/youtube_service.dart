@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'dart:async';
+import 'dart:convert';
 import 'package:path_provider/path_provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
@@ -155,6 +156,15 @@ class YoutubeService {
   }
 
   Future<List<String>> getPlaylistVideoIds(String url) async {
+    try {
+      final customIds = await _customScrapePlaylist(url);
+      if (customIds.isNotEmpty) {
+        return customIds;
+      }
+    } catch (e) {
+      print('Custom playlist scraper failed, falling back to YoutubeExplode: $e');
+    }
+
     final yt = YoutubeExplode();
     try {
       final playlistId = PlaylistId(url);
@@ -174,6 +184,145 @@ class YoutubeService {
     } finally {
       yt.close();
     }
+  }
+
+  Future<List<String>> _customScrapePlaylist(String url) async {
+    final client = HttpClient();
+    client.connectionTimeout = const Duration(seconds: 15);
+    final List<String> videoIds = [];
+    try {
+      final request = await client.getUrl(Uri.parse(url));
+      request.headers.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+      final response = await request.close();
+      final html = await response.transform(utf8.decoder).join();
+      
+      final match = RegExp(r'var ytInitialData\s*=\s*(\{.*?\});').firstMatch(html);
+      if (match == null) return [];
+      
+      final data = jsonDecode(match.group(1)!);
+      
+      // Extract videos from first page
+      try {
+        final tabContent = data["contents"]["twoColumnBrowseResultsRenderer"]["tabs"][0]["tabRenderer"]["content"];
+        final contents = tabContent["sectionListRenderer"]["contents"][0]["itemSectionRenderer"]["contents"];
+        for (final item in contents) {
+          final lockup = item["lockupViewModel"];
+          if (lockup != null && lockup["contentType"] == "LOCKUP_CONTENT_TYPE_VIDEO") {
+            final contentId = lockup["contentId"];
+            if (contentId != null && contentId.toString().isNotEmpty) {
+              videoIds.add(contentId.toString());
+            }
+          } else if (item["playlistVideoRenderer"] != null) {
+            final videoId = item["playlistVideoRenderer"]["videoId"];
+            if (videoId != null && videoId.toString().isNotEmpty) {
+              videoIds.add(videoId.toString());
+            }
+          }
+        }
+      } catch (e) {
+        print('Error parsing initial videos in custom scraper: $e');
+      }
+      
+      // Find API key
+      final apiKeyMatch = RegExp(r'"INNERTUBE_API_KEY"\s*:\s*"([^"]+)"').firstMatch(html);
+      final apiKey = apiKeyMatch?.group(1) ?? 'AIzaSyAO_FJ2SlqU8Q4STEHLGCilw_Y9_11qcW8';
+      
+      // Extract initial continuation token
+      String? token;
+      try {
+        final tabContent = data["contents"]["twoColumnBrowseResultsRenderer"]["tabs"][0]["tabRenderer"]["content"];
+        final sectionContents = tabContent["sectionListRenderer"]["contents"];
+        
+        if (sectionContents.isNotEmpty && sectionContents[0]["itemSectionRenderer"] != null) {
+          final items = sectionContents[0]["itemSectionRenderer"]["contents"];
+          if (items.isNotEmpty) {
+            final lastItem = items.last;
+            if (lastItem["continuationItemRenderer"] != null) {
+              token = lastItem["continuationItemRenderer"]["continuationEndpoint"]["continuationCommand"]["token"];
+            } else if (lastItem["continuationItemViewModel"] != null) {
+              token = lastItem["continuationItemViewModel"]["continuationCommand"]["token"] ?? 
+                      lastItem["continuationItemViewModel"]["continuationCommand"]["innertubeCommand"]["continuationCommand"]["token"];
+            }
+          }
+        }
+        
+        if (token == null && sectionContents.length > 1) {
+          final continuationItem = sectionContents[1]["continuationItemViewModel"];
+          if (continuationItem != null) {
+            token = continuationItem["continuationCommand"]["token"] ?? 
+                    continuationItem["continuationCommand"]["innertubeCommand"]["continuationCommand"]["token"];
+          }
+        }
+      } catch (e) {
+        print('Error parsing initial token in custom scraper: $e');
+      }
+      
+      int safetyCounter = 0;
+      while (token != null && token.isNotEmpty && safetyCounter < 50) {
+        safetyCounter++;
+        final postUri = Uri.parse('https://www.youtube.com/youtubei/v1/browse?key=$apiKey');
+        final postRequest = await client.postUrl(postUri);
+        postRequest.headers.set('Content-Type', 'application/json');
+        postRequest.headers.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
+        
+        final payload = {
+          'context': {
+            'client': {
+              'clientName': 'WEB',
+              'clientVersion': '2.20240101.00.00'
+            }
+          },
+          'continuation': token
+        };
+        
+        postRequest.write(jsonEncode(payload));
+        final postResponse = await postRequest.close();
+        final postHtml = await postResponse.transform(utf8.decoder).join();
+        final responseData = jsonDecode(postHtml);
+        
+        String? nextToken;
+        try {
+          final actions = responseData["onResponseReceivedActions"];
+          if (actions != null && actions.isNotEmpty) {
+            final appendAction = actions[0]["appendContinuationItemsAction"];
+            if (appendAction != null) {
+              final continuationItems = appendAction["continuationItems"];
+              if (continuationItems != null) {
+                for (final item in continuationItems) {
+                  if (item is Map) {
+                    if (item["lockupViewModel"] != null) {
+                      final contentId = item["lockupViewModel"]["contentId"];
+                      if (contentId != null && contentId.toString().isNotEmpty) {
+                        videoIds.add(contentId.toString());
+                      }
+                    } else if (item["playlistVideoRenderer"] != null) {
+                      final videoId = item["playlistVideoRenderer"]["videoId"];
+                      if (videoId != null && videoId.toString().isNotEmpty) {
+                        videoIds.add(videoId.toString());
+                      }
+                    } else if (item["continuationItemRenderer"] != null) {
+                      nextToken = item["continuationItemRenderer"]["continuationEndpoint"]["continuationCommand"]["token"];
+                    } else if (item["continuationItemViewModel"] != null) {
+                      nextToken = item["continuationItemViewModel"]["continuationCommand"]["token"] ??
+                                  item["continuationItemViewModel"]["continuationCommand"]["innertubeCommand"]["continuationCommand"]["token"];
+                    }
+                  }
+                }
+              }
+            }
+          }
+        } catch (e) {
+          print('Error parsing page $safetyCounter in custom scraper: $e');
+        }
+        
+        token = nextToken;
+      }
+    } catch (e) {
+      print('Custom scraper failed: $e');
+    } finally {
+      client.close();
+    }
+    return videoIds;
   }
 
   Future<String> downloadAudio(

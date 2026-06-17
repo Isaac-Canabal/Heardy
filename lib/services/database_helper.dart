@@ -23,7 +23,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 3,
+      version: 4,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -56,7 +56,8 @@ class DatabaseHelper {
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         creationDate TEXT NOT NULL,
-        sortOrder INTEGER NOT NULL DEFAULT 0
+        sortOrder INTEGER NOT NULL DEFAULT 0,
+        originalUrl TEXT
       )
     ''');
 
@@ -107,6 +108,11 @@ class DatabaseHelper {
           whereArgs: [rows[i]['id']],
         );
       }
+    }
+    if (oldVersion < 4) {
+      await db.execute(
+        'ALTER TABLE playlists ADD COLUMN originalUrl TEXT',
+      );
     }
   }
 
@@ -263,6 +269,16 @@ class DatabaseHelper {
     return await db.update(
       'playlists',
       {'name': newName},
+      where: 'id = ?',
+      whereArgs: [id],
+    );
+  }
+
+  Future<int> updatePlaylistUrl(String id, String url) async {
+    final db = await database;
+    return await db.update(
+      'playlists',
+      {'originalUrl': url},
       where: 'id = ?',
       whereArgs: [id],
     );

@@ -23,6 +23,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   final TextEditingController _renameController = TextEditingController();
   String _searchQuery = '';
   String _sortBy = 'manual'; // manual, artist, title, date
+  bool _isReordering = false;
 
   @override
   void initState() {
@@ -134,35 +135,35 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             ],
           ),
           IconButton(
-            icon: const Icon(Icons.edit_outlined),
-            tooltip: 'Renombrar Lista',
-            onPressed: () => _showRenamePlaylistDialog(context, playlist.name),
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete_outline, color: Colors.redAccent),
-            tooltip: 'Eliminar Lista',
-            onPressed: () => _showDeletePlaylistDialog(context, playlist.name),
-          ),
-          IconButton(
-            icon: const Icon(Icons.delete_forever, color: Colors.redAccent),
-            tooltip: 'Borrar todas las canciones',
+            icon: const Icon(Icons.refresh),
+            tooltip: 'Recargar Playlist',
             onPressed: () async {
-              final confirm = await showDialog<bool>(
-                context: context,
-                builder: (dialogContext) => AlertDialog(
-                  title: const Text('Confirmar borrado'),
-                  content: const Text('¿Quieres eliminar todas las canciones de esta playlist del dispositivo?'),
-                  actions: [
-                    TextButton(onPressed: () => Navigator.pop(dialogContext, false), child: const Text('Cancelar')),
-                    TextButton(onPressed: () => Navigator.pop(dialogContext, true), child: const Text('Eliminar')),
-                  ],
-                ),
-              );
-              if (confirm == true) {
-                await Provider.of<MusicProvider>(context, listen: false)
-                    .deleteAllSongsFromPlaylist(playlist.id);
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Canciones eliminadas')));
+              if (playlist.originalUrl == null || playlist.originalUrl!.isEmpty) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: const Text('No hay URL asociada a esta lista.'),
+                    backgroundColor: Colors.redAccent.shade700,
+                  ),
+                );
+                return;
               }
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(content: Text('Buscando nuevas canciones...')),
+              );
+              final downloadProvider = Provider.of<DownloadProvider>(context, listen: false);
+              await downloadProvider.downloadPlaylist(playlist.originalUrl!, playlist.id);
+            },
+          ),
+          IconButton(
+            icon: Icon(_isReordering ? Icons.done : Icons.edit_outlined),
+            tooltip: _isReordering ? 'Terminar edición' : 'Modificar orden',
+            onPressed: () {
+              setState(() {
+                _isReordering = !_isReordering;
+                if (_isReordering) {
+                  _sortBy = 'manual'; // Force manual sort for reordering
+                }
+              });
             },
           ),
         ],
@@ -179,62 +180,99 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                   ? _buildEmptyState()
                   : filteredSongs.isEmpty
                       ? _buildNoResultsState()
-                      : ListView.builder(
-                          padding: const EdgeInsets.only(top: 8, bottom: 90),
-                          itemCount: filteredSongs.length,
-                          itemBuilder: (context, index) {
-                            final song = filteredSongs[index];
-
-                            return StreamBuilder<MediaItem?>(
-                              stream: audioHandler.mediaItem,
-                              builder: (context, mediaSnapshot) {
-                                final activeItem = mediaSnapshot.data;
-                                final isPlaying = activeItem?.id == song.id;
-
-                                return Dismissible(
+                      : _isReordering
+                          ? ReorderableListView.builder(
+                              padding: const EdgeInsets.only(top: 8, bottom: 90),
+                              itemCount: filteredSongs.length,
+                              onReorder: (oldIndex, newIndex) async {
+                                if (oldIndex < newIndex) {
+                                  newIndex -= 1;
+                                }
+                                final song = filteredSongs.removeAt(oldIndex);
+                                filteredSongs.insert(newIndex, song);
+                                final List<String> songIds = filteredSongs.map((s) => s.id).toList();
+                                await musicProvider.reorderSongsInPlaylist(widget.playlistId, songIds);
+                              },
+                              itemBuilder: (context, index) {
+                                final song = filteredSongs[index];
+                                return Container(
                                   key: Key(song.id),
-                                  direction: DismissDirection.endToStart,
-                                  background: Container(
-                                    color: Colors.redAccent[700],
-                                    alignment: Alignment.centerRight,
-                                    padding: const EdgeInsets.only(right: 24),
-                                    margin: const EdgeInsets.symmetric(
-                                        horizontal: 16, vertical: 6),
-                                    child: const Icon(
-                                      Icons.delete_sweep,
-                                      color: Colors.white,
-                                      size: 28,
-                                    ),
-                                  ),
-                                  onDismissed: (direction) async {
-                                    await musicProvider.removeSongFromPlaylist(
-                                        widget.playlistId, song.id);
-                                    if (musicProvider.currentPlaylistId == widget.playlistId) {
-                                      await musicProvider.refreshAudioHandlerQueue(audioHandler);
-                                    }
-                                    if (mounted) {
-                                      ScaffoldMessenger.of(context)
-                                          .showSnackBar(
-                                        SnackBar(
-                                          content: Text(
-                                              'Se eliminó "${song.title}" de la lista'),
-                                          backgroundColor: Colors.indigo[900],
+                                  color: Colors.transparent, // Need color for ReorderableListView dragging
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: SongTile(
+                                          song: song,
+                                          isPlaying: false,
+                                          index: index,
+                                          onTap: () {},
                                         ),
-                                      );
-                                    }
-                                  },
-                                  child: SongTile(
-                                    song: song,
-                                    isPlaying: isPlaying,
-                                    index: index,
-                                    onTap: () => _playSong(
-                                        audioHandler, filteredSongs, song, playlist.name),
+                                      ),
+                                      const Padding(
+                                        padding: EdgeInsets.symmetric(horizontal: 16.0),
+                                        child: Icon(Icons.drag_handle, color: Colors.white54),
+                                      ),
+                                    ],
                                   ),
                                 );
                               },
-                            );
-                          },
-                        ),
+                            )
+                          : ListView.builder(
+                              padding: const EdgeInsets.only(top: 8, bottom: 90),
+                              itemCount: filteredSongs.length,
+                              itemBuilder: (context, index) {
+                                final song = filteredSongs[index];
+
+                                return StreamBuilder<MediaItem?>(
+                                  stream: audioHandler.mediaItem,
+                                  builder: (context, mediaSnapshot) {
+                                    final activeItem = mediaSnapshot.data;
+                                    final isPlaying = activeItem?.id == song.id;
+
+                                    return Dismissible(
+                                      key: Key(song.id),
+                                      direction: DismissDirection.endToStart,
+                                      background: Container(
+                                        color: Colors.redAccent[700],
+                                        alignment: Alignment.centerRight,
+                                        padding: const EdgeInsets.only(right: 24),
+                                        margin: const EdgeInsets.symmetric(
+                                            horizontal: 16, vertical: 6),
+                                        child: const Icon(
+                                          Icons.delete_sweep,
+                                          color: Colors.white,
+                                          size: 28,
+                                        ),
+                                      ),
+                                      onDismissed: (direction) async {
+                                        await musicProvider.removeSongFromPlaylist(
+                                            widget.playlistId, song.id);
+                                        if (musicProvider.currentPlaylistId == widget.playlistId) {
+                                          await musicProvider.refreshAudioHandlerQueue(audioHandler);
+                                        }
+                                        if (mounted) {
+                                          ScaffoldMessenger.of(context)
+                                              .showSnackBar(
+                                            SnackBar(
+                                              content: Text(
+                                                  'Se eliminó "${song.title}" de la lista'),
+                                              backgroundColor: Colors.indigo[900],
+                                            ),
+                                          );
+                                        }
+                                      },
+                                      child: SongTile(
+                                        song: song,
+                                        isPlaying: isPlaying,
+                                        index: index,
+                                        onTap: () => _playSong(
+                                            audioHandler, filteredSongs, song, playlist.name),
+                                      ),
+                                    );
+                                  },
+                                );
+                              },
+                            ),
             ),
           ],
         ),
@@ -373,86 +411,4 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     await audioHandler.playPlaylist(mediaItems, targetSong.id);
   }
 
-  void _showRenamePlaylistDialog(BuildContext context, String currentName) {
-    _renameController.text = currentName;
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
-          title: const Text(
-            'Renombrar lista',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-          ),
-          content: TextField(
-            controller: _renameController,
-            style: const TextStyle(color: Colors.white),
-            decoration: InputDecoration(
-              hintText: 'Nuevo nombre',
-              hintStyle: TextStyle(color: Colors.grey[600]),
-              enabledBorder: const UnderlineInputBorder(
-                borderSide: BorderSide(color: Colors.grey),
-              ),
-              focusedBorder: const UnderlineInputBorder(
-                borderSide: BorderSide(color: Color(0xFF3F51B5)),
-              ),
-            ),
-            autofocus: true,
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancelar', style: TextStyle(color: Colors.grey)),
-            ),
-            TextButton(
-              onPressed: () {
-                final name = _renameController.text.trim();
-                if (name.isNotEmpty && name != currentName) {
-                  Provider.of<MusicProvider>(context, listen: false)
-                      .renamePlaylist(widget.playlistId, name);
-                  Navigator.of(context).pop();
-                }
-              },
-              child: const Text('Renombrar', style: TextStyle(color: Color(0xFF3F51B5))),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  void _showDeletePlaylistDialog(BuildContext context, String playlistName) {
-    showDialog(
-      context: context,
-      builder: (context) {
-        return AlertDialog(
-          backgroundColor: const Color(0xFF1E1E1E),
-          title: const Text(
-            '¿Eliminar lista?',
-            style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold),
-          ),
-          content: Text(
-            '¿Estás seguro de que deseas eliminar "$playlistName"? Las canciones descargadas seguirán en tu dispositivo, pero la lista se borrará.',
-            style: TextStyle(color: Colors.grey[400]),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('Cancelar', style: TextStyle(color: Colors.grey)),
-            ),
-            TextButton(
-              onPressed: () {
-                Provider.of<DownloadProvider>(context, listen: false).clearQueueForPlaylist(widget.playlistId);
-                Provider.of<MusicProvider>(context, listen: false)
-                    .deletePlaylist(widget.playlistId);
-                Navigator.of(context).pop(); // close dialog
-                Navigator.of(context).pop(); // return to home
-              },
-              child: const Text('Eliminar', style: TextStyle(color: Colors.redAccent)),
-            ),
-          ],
-        );
-      },
-    );
-  }
 }

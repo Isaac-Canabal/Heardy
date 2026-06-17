@@ -5,6 +5,7 @@ import '../providers/music_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/database_helper.dart';
 import '../theme/app_theme.dart';
+import '../services/audio_player_handler.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -230,6 +231,97 @@ class SettingsScreen extends StatelessWidget {
                       );
                     },
                   ),
+          ),
+          const SizedBox(height: 28),
+          _SectionTitle('Mantenimiento'),
+          const SizedBox(height: 10),
+          Container(
+            decoration: AppTheme.glassCard(),
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.build_rounded,
+                      color: AppTheme.primaryLight,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Reparar reproductor',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.7),
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Usa esto si el audio deja de reproducirse. Reinicia el estado del reproductor sin perder tus canciones.',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.45),
+                    fontSize: 12,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.primary.withValues(alpha: 0.3),
+                      foregroundColor: Colors.white,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    icon: const Icon(Icons.refresh_rounded, size: 18),
+                    label: const Text('Reparar', style: TextStyle(fontWeight: FontWeight.w600)),
+                    onPressed: () async {
+                      final confirm = await showDialog<bool>(
+                        context: context,
+                        builder: (ctx) => AlertDialog(
+                          backgroundColor: AppTheme.surface,
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                          title: const Text('Reparar Reproductor', style: TextStyle(color: Colors.white)),
+                          content: const Text(
+                            '¿Deseas reiniciar el estado del reproductor? La reproducción actual se detendrá.',
+                            style: TextStyle(color: Colors.white70),
+                          ),
+                          actions: [
+                            TextButton(
+                              onPressed: () => Navigator.pop(ctx, false),
+                              child: Text('Cancelar', style: TextStyle(color: Colors.white.withAlpha(128))),
+                            ),
+                            TextButton(
+                              onPressed: () => Navigator.pop(ctx, true),
+                              child: Text('Reparar', style: TextStyle(color: AppTheme.primaryLight, fontWeight: FontWeight.bold)),
+                            ),
+                          ],
+                        ),
+                      );
+                      if (confirm == true && context.mounted) {
+                        final audioHandler = Provider.of<AudioPlayerHandler>(context, listen: false);
+                        await audioHandler.resetPlayerState();
+                        musicProvider.clearPlaybackState();
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: const Text('Reproductor reparado. Si el problema persiste, cierra y abre la app.'),
+                            backgroundColor: AppTheme.surface,
+                            behavior: SnackBarBehavior.floating,
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                        );
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
           ),
           const SizedBox(height: 28),
           _SectionTitle('Acerca de'),
