@@ -24,6 +24,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   String _searchQuery = '';
   String _sortBy = 'manual'; // manual, artist, title, date
   bool _isReordering = false;
+  final List<String> _temporarilyRemovedSongIds = [];
 
   @override
   void initState() {
@@ -63,6 +64,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     // Filter and sort tracks based on search bar and sort option
     final allSongs = musicProvider.currentPlaylistSongs;
     var filteredSongs = allSongs.where((song) {
+      if (_temporarilyRemovedSongIds.contains(song.id)) return false;
       final titleMatch = song.title.toLowerCase().contains(_searchQuery);
       final artistMatch = song.artist.toLowerCase().contains(_searchQuery);
       return titleMatch || artistMatch;
@@ -245,20 +247,43 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                                         ),
                                       ),
                                       onDismissed: (direction) async {
-                                        await musicProvider.removeSongFromPlaylist(
-                                            widget.playlistId, song.id);
-                                        if (musicProvider.currentPlaylistId == widget.playlistId) {
-                                          await musicProvider.refreshAudioHandlerQueue(audioHandler);
-                                        }
+                                        final songId = song.id;
+                                        final songTitle = song.title;
+
+                                        setState(() {
+                                          _temporarilyRemovedSongIds.add(songId);
+                                        });
+
+                                        bool undoClicked = false;
                                         if (mounted) {
-                                          ScaffoldMessenger.of(context)
-                                              .showSnackBar(
+                                          ScaffoldMessenger.of(context).clearSnackBars();
+                                          ScaffoldMessenger.of(context).showSnackBar(
                                             SnackBar(
-                                              content: Text(
-                                                  'Se eliminó "${song.title}" de la lista'),
+                                              content: Text('Se eliminó "$songTitle" de la lista'),
                                               backgroundColor: Colors.indigo[900],
+                                              action: SnackBarAction(
+                                                label: 'Deshacer',
+                                                textColor: Colors.amberAccent,
+                                                onPressed: () {
+                                                  undoClicked = true;
+                                                  if (mounted) {
+                                                    setState(() {
+                                                      _temporarilyRemovedSongIds.remove(songId);
+                                                    });
+                                                  }
+                                                },
+                                              ),
                                             ),
-                                          );
+                                          ).closed.then((reason) async {
+                                            if (!undoClicked) {
+                                              await musicProvider.removeSongFromPlaylist(
+                                                  widget.playlistId, songId);
+                                              if (musicProvider.currentPlaylistId == widget.playlistId) {
+                                                await musicProvider.refreshAudioHandlerQueue(audioHandler);
+                                              }
+                                            }
+                                            _temporarilyRemovedSongIds.remove(songId);
+                                          });
                                         }
                                       },
                                       child: SongTile(

@@ -320,7 +320,41 @@ class _PlaylistCard extends StatelessWidget {
                         if (value == 'rename') {
                           _renamePlaylist(context, playlist);
                         } else if (value == 'delete') {
-                          await musicProvider.deletePlaylist(playlist.id);
+                          final confirm = await showDialog<bool>(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              backgroundColor: AppTheme.surface,
+                              title: const Text('Eliminar lista', style: TextStyle(color: Colors.white)),
+                              content: Text(
+                                '¿Estás seguro de que deseas eliminar la lista "${playlist.name}"?\n\nEsto también eliminará permanentemente del dispositivo las canciones descargadas que no pertenezcan a ninguna otra lista.',
+                                style: const TextStyle(color: Colors.white70),
+                              ),
+                              actions: [
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, false),
+                                  child: const Text('Cancelar'),
+                                ),
+                                TextButton(
+                                  onPressed: () => Navigator.pop(ctx, true),
+                                  child: const Text(
+                                    'Eliminar',
+                                    style: TextStyle(color: Colors.redAccent),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                          if (confirm == true) {
+                            await musicProvider.deletePlaylist(playlist.id);
+                            if (context.mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(
+                                  content: Text('Se eliminó la lista "${playlist.name}"'),
+                                  backgroundColor: Colors.indigo[900],
+                                ),
+                              );
+                            }
+                          }
                         }
                       },
                       itemBuilder: (_) => [
