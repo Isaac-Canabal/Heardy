@@ -5,6 +5,7 @@ import '../theme/app_theme.dart';
 import '../widgets/mini_player.dart';
 import 'home_screen.dart';
 import 'add_from_youtube_screen.dart';
+import 'search_screen.dart';
 import 'settings_screen.dart';
 
 class MainShellScreen extends StatefulWidget {
@@ -32,6 +33,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
               children: const [
                 HomeScreen(),
                 AddFromYouTubeScreen(embedInShell: true),
+                SearchScreen(),
                 SettingsScreen(),
               ],
             ),
@@ -58,6 +60,11 @@ class _MainShellScreenState extends State<MainShellScreen> {
             icon: Icon(Icons.download_outlined),
             selectedIcon: Icon(Icons.download_rounded),
             label: 'Descargas',
+          ),
+          NavigationDestination(
+            icon: Icon(Icons.search_outlined),
+            selectedIcon: Icon(Icons.search_rounded),
+            label: 'Buscar',
           ),
           NavigationDestination(
             icon: Icon(Icons.settings_outlined),

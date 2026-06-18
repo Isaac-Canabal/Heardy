@@ -357,6 +357,74 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 28),
+          _SectionTitle('Búsqueda'),
+          const SizedBox(height: 10),
+          Container(
+            decoration: AppTheme.glassCard(),
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      Icons.search_rounded,
+                      color: AppTheme.primaryLight,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Resultados máximos',
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: 0.7),
+                        fontSize: 13,
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Text(
+                  'Número de resultados a mostrar en búsquedas (10-100)',
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.45),
+                    fontSize: 12,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Row(
+                  children: [
+                    IconButton(
+                      icon: const Icon(Icons.remove, size: 20),
+                      color: AppTheme.primaryLight,
+                      onPressed: settings.maxSearchResults > 10
+                          ? () => settings.setMaxSearchResults(settings.maxSearchResults - 10)
+                          : null,
+                    ),
+                    Expanded(
+                      child: Text(
+                        '${settings.maxSearchResults}',
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(
+                          color: Colors.white,
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.add, size: 20),
+                      color: AppTheme.primaryLight,
+                      onPressed: settings.maxSearchResults < 100
+                          ? () => settings.setMaxSearchResults(settings.maxSearchResults + 10)
+                          : null,
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 28),
           _SectionTitle('Acerca de'),
           const SizedBox(height: 10),
           Container(

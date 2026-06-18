@@ -25,6 +25,25 @@ class _CachedVideoMetadata {
   bool get isValid => DateTime.now().difference(cachedAt) < _maxAge;
 }
 
+/// Resultado de búsqueda de YouTube
+class YouTubeSearchResult {
+  final String videoId;
+  final String title;
+  final String artist;
+  final Duration duration;
+  final String thumbnailUrl;
+  final String url;
+
+  const YouTubeSearchResult({
+    required this.videoId,
+    required this.title,
+    required this.artist,
+    required this.duration,
+    required this.thumbnailUrl,
+    required this.url,
+  });
+}
+
 class YoutubeService {
   YoutubeService();
 
@@ -186,6 +205,101 @@ class YoutubeService {
     }
   }
 
+  /// Busca videos en YouTube por query
+  Future<List<YouTubeSearchResult>> searchVideos(String query, {int maxResults = 20}) async {
+    final yt = YoutubeExplode();
+    try {
+      final results = <YouTubeSearchResult>[];
+      
+      final searchResults = await yt.search.search(query);
+      
+      for (final video in searchResults) {
+        if (results.length >= maxResults) break;
+        
+        final videoId = video.id;
+        final parsed = _parseTitleAndArtist(video.title, video.author);
+        final thumbnailUrl = _resolveThumbnailUrl(video, videoId);
+        final url = 'https://www.youtube.com/watch?v=${videoId.value}';
+
+        results.add(YouTubeSearchResult(
+          videoId: videoId.value,
+          title: parsed.title,
+          artist: parsed.artist,
+          duration: video.duration ?? Duration.zero,
+          thumbnailUrl: thumbnailUrl,
+          url: url,
+        ));
+
+        // Cache metadata for future use
+        _metadataCache[videoId.value] = _CachedVideoMetadata(
+          title: parsed.title,
+          artist: parsed.artist,
+          duration: video.duration ?? Duration.zero,
+          thumbnailUrl: thumbnailUrl,
+          cachedAt: DateTime.now(),
+        );
+      }
+
+      return results;
+    } catch (e) {
+      throw Exception('Error buscando videos: ${e.toString()}');
+    } finally {
+      yt.close();
+    }
+  }
+
+  /// Obtiene la URL de streaming directa de alta calidad para un video
+  Future<String?> getStreamingUrl(String videoId) async {
+    final yt = YoutubeExplode();
+    try {
+      final manifest = await yt.videos.streamsClient.getManifest(videoId);
+      
+      // Preferir streams de audio de alta calidad que sean seguros
+      // Usar streams directos sin throttling
+      final audioStreams = manifest.audioOnly;
+      
+      // Buscar stream AAC primero (más compatible con just_audio)
+      final aacStreams = audioStreams
+          .where((s) => s.container.name == 'mp4')
+          .toList();
+      
+      if (aacStreams.isNotEmpty) {
+        final bestAac = aacStreams.withHighestBitrate();
+        // Construir URL con parámetros para evitar throttling
+        return _buildStreamingUrl(bestAac);
+      }
+      
+      // Fallback a Opus
+      final opusStreams = audioStreams
+          .where((s) => s.container.name == 'webm')
+          .toList();
+      
+      if (opusStreams.isNotEmpty) {
+        final bestOpus = opusStreams.withHighestBitrate();
+        return _buildStreamingUrl(bestOpus);
+      }
+      
+      // Último recurso: cualquier stream de audio
+      if (audioStreams.isNotEmpty) {
+        final bestAny = audioStreams.withHighestBitrate();
+        return _buildStreamingUrl(bestAny);
+      }
+      
+      return null;
+    } catch (e) {
+      print('Error obteniendo streaming URL: $e');
+      return null;
+    } finally {
+      yt.close();
+    }
+  }
+
+  /// Construye una URL de streaming con parámetros optimizados
+  String _buildStreamingUrl(AudioOnlyStreamInfo stream) {
+    // La URL directa del stream ya debería funcionar
+    return stream.url.toString();
+  }
+
   Future<List<String>> _customScrapePlaylist(String url) async {
     final client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 15);
@@ -345,10 +459,24 @@ class YoutubeService {
         .toList();
 
     if (directAudio.isNotEmpty) {
+      // Prioridad: Opus 160kbps > Opus 128kbps > AAC 128kbps > AAC 96kbps > cualquiera
+      final opusHigh = directAudio
+          .where((s) => s.container.name == 'webm')
+          .where((s) => s.bitrate.kiloBitsPerSecond >= 150)
+          .toList();
+      if (opusHigh.isNotEmpty) return opusHigh.withHighestBitrate();
+
+      final opusMedium = directAudio
+          .where((s) => s.container.name == 'webm')
+          .where((s) => s.bitrate.kiloBitsPerSecond >= 120)
+          .toList();
+      if (opusMedium.isNotEmpty) return opusMedium.withHighestBitrate();
+
       final m4a = directAudio
           .where((s) => s.container.name == 'm4a' || s.container.name == 'mp4')
           .toList();
       if (m4a.isNotEmpty) {
+        // Preferir tag 140 (128kbps AAC) si está disponible
         final reliable = m4a.where((s) => s.tag == 140).firstOrNull;
         if (reliable != null) return reliable;
         return m4a.withHighestBitrate();
