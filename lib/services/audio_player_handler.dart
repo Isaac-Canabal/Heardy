@@ -286,7 +286,28 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     }
   }
 
+  /// Reorders a queue item at oldIndex to newIndex, updating both the AudioService queue and the just_audio playlist source
+  Future<void> moveQueueItem(int oldIndex, int newIndex) async {
+    final currentQueue = queue.value;
+    if (oldIndex < 0 || oldIndex >= currentQueue.length || newIndex < 0 || newIndex > currentQueue.length) return;
+
+    int targetIndex = newIndex;
+    if (oldIndex < newIndex) {
+      targetIndex = newIndex - 1;
+    }
+
+    final newQueue = List<MediaItem>.from(currentQueue);
+    final item = newQueue.removeAt(oldIndex);
+    newQueue.insert(targetIndex, item);
+    queue.add(newQueue);
+
+    if (_playlistSource != null && oldIndex < _playlistSource!.length && targetIndex < _playlistSource!.length) {
+      await _playlistSource!.move(oldIndex, targetIndex);
+    }
+  }
+
   /// Gracefully terminates background play state when swipe-closing the application.
+
   @override
   Future<void> onTaskRemoved() async {
     try {

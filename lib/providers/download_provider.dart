@@ -8,6 +8,7 @@ import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../models/song.dart';
 import '../services/database_helper.dart';
 import '../services/youtube_service.dart';
+import '../services/lyrics_service.dart';
 import 'music_provider.dart';
 import '../services/audio_player_handler.dart';
 
@@ -559,6 +560,18 @@ class DownloadProvider with ChangeNotifier {
       );
 
       await _dbHelper.insertSong(song);
+
+      // Try to fetch and cache lyrics in background during download
+      try {
+        await LyricsService.instance.getLyrics(
+          songId: song.id,
+          title: song.title,
+          artist: song.artist,
+          durationSeconds: song.duration,
+        );
+      } catch (e) {
+        print('Error pre-fetching lyrics during download: $e');
+      }
 
       // 6. Append track to the target playlist (only if not already in playlist)
       final songInPlaylist = await _dbHelper.isSongInPlaylist(playlistId, song.id);
