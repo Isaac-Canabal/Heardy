@@ -3,7 +3,6 @@ import 'package:path/path.dart';
 import 'package:sqflite/sqflite.dart';
 import '../models/song.dart';
 import '../models/playlist.dart';
-import '../models/playlist_song.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -23,7 +22,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 4,
+      version: 5,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -79,7 +78,12 @@ class DatabaseHelper {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         videoId TEXT NOT NULL,
         playlistId TEXT NOT NULL,
-        addedDate TEXT NOT NULL
+        addedDate TEXT NOT NULL,
+        source TEXT DEFAULT 'youtube',
+        spotifyTitle TEXT,
+        spotifyArtist TEXT,
+        spotifyDurationMs INTEGER,
+        spotifyThumbnailUrl TEXT
       )
     ''');
   }
@@ -113,6 +117,13 @@ class DatabaseHelper {
       await db.execute(
         'ALTER TABLE playlists ADD COLUMN originalUrl TEXT',
       );
+    }
+    if (oldVersion < 5) {
+      await db.execute("ALTER TABLE download_queue ADD COLUMN source TEXT DEFAULT 'youtube'");
+      await db.execute("ALTER TABLE download_queue ADD COLUMN spotifyTitle TEXT");
+      await db.execute("ALTER TABLE download_queue ADD COLUMN spotifyArtist TEXT");
+      await db.execute("ALTER TABLE download_queue ADD COLUMN spotifyDurationMs INTEGER");
+      await db.execute("ALTER TABLE download_queue ADD COLUMN spotifyThumbnailUrl TEXT");
     }
   }
 
@@ -401,6 +412,40 @@ class DatabaseHelper {
         'videoId': videoId,
         'playlistId': playlistId,
         'addedDate': DateTime.now().toIso8601String(),
+        'source': 'youtube',
+      },
+    );
+  }
+
+  Future<int> addSpotifyToDownloadQueue({
+    required String spotifyTrackId,
+    required String playlistId,
+    required String title,
+    required String artist,
+    required int durationMs,
+    String? thumbnailUrl,
+  }) async {
+    final db = await database;
+
+    // Check if already in queue to prevent duplicate downloads in the queue
+    final existing = await db.query(
+      'download_queue',
+      where: 'videoId = ? AND playlistId = ?',
+      whereArgs: [spotifyTrackId, playlistId],
+    );
+    if (existing.isNotEmpty) return 0;
+
+    return await db.insert(
+      'download_queue',
+      {
+        'videoId': spotifyTrackId,
+        'playlistId': playlistId,
+        'addedDate': DateTime.now().toIso8601String(),
+        'source': 'spotify',
+        'spotifyTitle': title,
+        'spotifyArtist': artist,
+        'spotifyDurationMs': durationMs,
+        'spotifyThumbnailUrl': thumbnailUrl,
       },
     );
   }

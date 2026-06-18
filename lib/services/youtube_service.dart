@@ -727,5 +727,104 @@ class YoutubeService {
     }
   }
 
+  /// Searches YouTube for a song by title and artist, downloads the best
+  /// match based on duration similarity, and returns the result with the
+  /// caller's metadata injected instead of YouTube's parsed metadata.
+  ///
+  /// This is the core bridge for Spotify → YouTube downloads.
+  Future<Map<String, dynamic>> searchAndDownload({
+    required String title,
+    required String artist,
+    required int expectedDurationMs,
+    String? spotifyThumbnailUrl,
+    void Function(String title)? onMetadata,
+    void Function(double)? onProgress,
+    void Function(String phase)? onPhase,
+    bool Function()? isCancelled,
+  }) async {
+    onPhase?.call('metadata');
+    onMetadata?.call(title);
+
+    final yt = YoutubeExplode();
+    try {
+      // Search YouTube with "artist - title" query
+      final query = '$artist - $title';
+      final searchResults = await yt.search.search(query);
+
+      if (searchResults.isEmpty) {
+        throw Exception('No se encontraron resultados en YouTube para: "$query"');
+      }
+
+      // Find the best match by duration similarity
+      final expectedDurationSec = (expectedDurationMs / 1000).round();
+      Video? bestMatch;
+      int bestDiff = 999999;
+
+      for (final video in searchResults.take(10)) {
+        final videoDuration = video.duration?.inSeconds ?? 0;
+        if (videoDuration == 0) continue;
+
+        final diff = (videoDuration - expectedDurationSec).abs();
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestMatch = video;
+          // Perfect match — stop searching
+          if (diff <= 3) break;
+        }
+      }
+
+      // If no match within 30 seconds, fall back to the first result
+      bestMatch ??= searchResults.first;
+
+      if (bestDiff > 30 && searchResults.isNotEmpty) {
+        // Use first result as fallback if duration match is poor
+        bestMatch = searchResults.first;
+      }
+
+      final videoUrl = 'https://www.youtube.com/watch?v=${bestMatch.id.value}';
+
+      // Cache the metadata for the download phase
+      _metadataCache[bestMatch.id.value] = _CachedVideoMetadata(
+        title: title,
+        artist: artist,
+        duration: Duration(milliseconds: expectedDurationMs),
+        thumbnailUrl: spotifyThumbnailUrl ?? _resolveThumbnailUrl(bestMatch, bestMatch.id),
+        cachedAt: DateTime.now(),
+      );
+
+      // Download using existing infrastructure
+      final result = await downloadVideoWithAudio(
+        videoUrl,
+        onMetadata: onMetadata,
+        onProgress: onProgress,
+        onPhase: onPhase,
+        isCancelled: isCancelled,
+      );
+
+      // Override with Spotify metadata for higher accuracy
+      result['title'] = title;
+      result['artist'] = artist;
+      result['duration'] = Duration(milliseconds: expectedDurationMs);
+
+      // Download Spotify thumbnail if available (higher quality than YouTube)
+      if (spotifyThumbnailUrl != null && spotifyThumbnailUrl.isNotEmpty) {
+        final spotifyArt = await downloadThumbnail(
+          result['videoId'] as String,
+          spotifyThumbnailUrl,
+        );
+        if (spotifyArt.isNotEmpty) {
+          result['artPath'] = spotifyArt;
+        }
+      }
+
+      return result;
+    } catch (e) {
+      if (_isRateLimitError(e)) rethrow;
+      throw Exception('Error buscando "$artist - $title" en YouTube: ${e.toString()}');
+    } finally {
+      yt.close();
+    }
+  }
+
   void dispose() {}
 }

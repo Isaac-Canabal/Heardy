@@ -11,6 +11,7 @@ import '../services/youtube_service.dart';
 import '../services/lyrics_service.dart';
 import 'music_provider.dart';
 import '../services/audio_player_handler.dart';
+import '../services/spotify_service.dart';
 
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
 
@@ -326,6 +327,205 @@ class DownloadProvider with ChangeNotifier {
     }
   }
 
+  String _getSpotifyTrackId(SpotifyTrackInfo track) {
+    if (track.spotifyUri != null && track.spotifyUri!.startsWith('spotify:track:')) {
+      return track.spotifyUri!.split(':').last;
+    }
+    // Fallback to a sanitized string
+    final sanitized = '${track.artist}_${track.title}'.replaceAll(RegExp(r'[^a-zA-Z0-9]'), '_');
+    return 'spotify_$sanitized';
+  }
+
+  Future<void> downloadSpotifyTrack(
+    SpotifyTrackInfo track,
+    String playlistId, {
+    bool updateGlobalProgress = true,
+  }) async {
+    await prepareForNewDownloads();
+
+    _errorMessage = null;
+    if (updateGlobalProgress) {
+      _isDownloading = true;
+      _progress = 0.0;
+      _currentTitle = '';
+      _statusMessage = 'Analizando pista...';
+      notifyListeners();
+    }
+
+    try {
+      final spotifyTrackId = _getSpotifyTrackId(track);
+
+      // 1. Check duplicate in playlist
+      final alreadyInPlaylist = await _dbHelper.isSongInPlaylist(playlistId, spotifyTrackId);
+      if (alreadyInPlaylist) {
+        if (updateGlobalProgress) {
+          _statusMessage = 'La canción ya está en esta lista de reproducción.';
+          _isDownloading = false;
+          notifyListeners();
+        }
+        return;
+      }
+
+      // 2. Check global duplicate
+      final existingSong = await _dbHelper.getSongById(spotifyTrackId);
+      if (existingSong != null && File(existingSong.filePath).existsSync()) {
+        final maxOrder = await _dbHelper.getMaxOrderForPlaylist(playlistId) ?? -1;
+        await _dbHelper.addSongToPlaylist(playlistId, existingSong.id, maxOrder + 1);
+
+        if (musicProvider != null) {
+          final updateCurrent = musicProvider!.currentPlaylistId == playlistId;
+          await musicProvider!.loadSongsForPlaylist(playlistId, updateCurrent: updateCurrent);
+          await musicProvider!.loadPlaylists();
+        }
+
+        final currentPlayingPlaylistId = musicProvider?.currentPlaylistId;
+        if (currentPlayingPlaylistId == playlistId && audioHandler != null) {
+          final mediaItem = MediaItem(
+            id: existingSong.id,
+            album: musicProvider?.playlists.firstWhere((p) => p.id == playlistId).name ?? '',
+            title: existingSong.title,
+            artist: existingSong.artist,
+            duration: Duration(seconds: existingSong.duration),
+            artUri: existingSong.artPath.isNotEmpty ? Uri.file(existingSong.artPath) : null,
+            extras: {
+              'filePath': existingSong.filePath,
+              'artPath': existingSong.artPath,
+            },
+          );
+          await audioHandler!.addQueueItem(mediaItem);
+        }
+
+        if (updateGlobalProgress) {
+          _isDownloading = false;
+          _statusMessage = '¡Añadida canción existente a la lista!';
+          notifyListeners();
+        }
+        return;
+      }
+
+      // 3. Add to download queue
+      await _dbHelper.addSpotifyToDownloadQueue(
+        spotifyTrackId: spotifyTrackId,
+        playlistId: playlistId,
+        title: track.title,
+        artist: track.artist,
+        durationMs: track.durationMs,
+        thumbnailUrl: track.thumbnailUrl,
+      );
+
+      if (updateGlobalProgress) {
+        _sessionTotal = 1;
+        _sessionCompleted = 0;
+      }
+
+      processQueue();
+    } catch (e) {
+      if (updateGlobalProgress) {
+        _isDownloading = false;
+        _errorMessage = e.toString();
+        _statusMessage = 'Error en la descarga';
+        notifyListeners();
+      }
+      rethrow;
+    }
+  }
+
+  Future<void> downloadSpotifyCollection(
+    List<SpotifyTrackInfo> tracks,
+    String targetPlaylistId,
+  ) async {
+    await prepareForNewDownloads();
+
+    _isDownloading = true;
+    _progress = 0.0;
+    _currentTitle = '';
+    _statusMessage = 'Analizando pistas de Spotify...';
+    _errorMessage = null;
+    notifyListeners();
+
+    try {
+      await WakelockPlus.enable();
+
+      int addedCount = 0;
+      int existingLinkCount = 0;
+
+      for (final track in tracks) {
+        final spotifyTrackId = _getSpotifyTrackId(track);
+
+        // Check duplicate in playlist
+        final alreadyInPlaylist = await _dbHelper.isSongInPlaylist(targetPlaylistId, spotifyTrackId);
+        if (alreadyInPlaylist) continue;
+
+        // Check global duplicate
+        final existingSong = await _dbHelper.getSongById(spotifyTrackId);
+        if (existingSong != null && File(existingSong.filePath).existsSync()) {
+          final maxOrder = await _dbHelper.getMaxOrderForPlaylist(targetPlaylistId) ?? -1;
+          await _dbHelper.addSongToPlaylist(targetPlaylistId, existingSong.id, maxOrder + 1);
+          existingLinkCount++;
+          continue;
+        }
+
+        // Add to persistent queue
+        await _dbHelper.addSpotifyToDownloadQueue(
+          spotifyTrackId: spotifyTrackId,
+          playlistId: targetPlaylistId,
+          title: track.title,
+          artist: track.artist,
+          durationMs: track.durationMs,
+          thumbnailUrl: track.thumbnailUrl,
+        );
+        addedCount++;
+      }
+
+      if (existingLinkCount > 0) {
+        if (musicProvider != null) {
+          final updateCurrent = musicProvider!.currentPlaylistId == targetPlaylistId;
+          await musicProvider!.loadSongsForPlaylist(targetPlaylistId, updateCurrent: updateCurrent);
+          await musicProvider!.loadPlaylists();
+        }
+
+        final currentPlayingPlaylistId = musicProvider?.currentPlaylistId;
+        if (currentPlayingPlaylistId == targetPlaylistId && audioHandler != null) {
+          final songs = await _dbHelper.getSongsForPlaylist(targetPlaylistId);
+          for (final song in songs) {
+            final mediaItem = MediaItem(
+              id: song.id,
+              album: musicProvider?.playlists.firstWhere((p) => p.id == targetPlaylistId).name ?? '',
+              title: song.title,
+              artist: song.artist,
+              duration: Duration(seconds: song.duration),
+              artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
+              extras: {
+                'filePath': song.filePath,
+                'artPath': song.artPath,
+              },
+            );
+            await audioHandler!.addQueueItem(mediaItem);
+          }
+        }
+      }
+
+      if (addedCount > 0) {
+        _sessionTotal += addedCount;
+        _statusMessage = 'Añadidas $addedCount pistas a la cola de descarga.';
+        notifyListeners();
+
+        processQueue();
+      } else {
+        _isDownloading = false;
+        _statusMessage = 'Todas las pistas ya están en la lista.';
+        notifyListeners();
+      }
+    } catch (e) {
+      _isDownloading = false;
+      _errorMessage = e.toString();
+      _statusMessage = 'Error descargando la lista de Spotify';
+      notifyListeners();
+    } finally {
+      await WakelockPlus.disable();
+    }
+  }
+
   /// Background processor loop that processes SQLite queue items sequentially.
   /// Includes retry logic (max 2 retries per item) and a cooldown between downloads.
   Future<void> processQueue() async {
@@ -356,6 +556,7 @@ class DownloadProvider with ChangeNotifier {
         final int queueId = nextItem['id'] as int;
         final String videoId = nextItem['videoId'] as String;
         final String playlistId = nextItem['playlistId'] as String;
+        final String source = nextItem['source'] as String? ?? 'youtube';
 
         final playlistExists = await _dbHelper.getPlaylistById(playlistId) != null;
         if (!playlistExists) {
@@ -364,7 +565,6 @@ class DownloadProvider with ChangeNotifier {
         }
 
         _currentQueueId = queueId;
-        final videoUrl = 'https://www.youtube.com/watch?v=$videoId';
         final itemStarted = DateTime.now();
         const attemptBudget = Duration(minutes: 10);
         const maxAttempts = 2;
@@ -388,17 +588,41 @@ class DownloadProvider with ChangeNotifier {
             }
             notifyListeners();
 
-            await _downloadVideoDirectly(
-              videoUrl,
-              playlistId,
-              sessionId: sessionId,
-              attempt: attempt,
-            ).timeout(attemptBudget, onTimeout: () {
-              throw TimeoutException(
-                'Intento ${attempt + 1}: sin completarse en '
-                '${_formatDuration(attemptBudget)}',
-              );
-            });
+            if (source == 'spotify') {
+              final String title = nextItem['spotifyTitle'] as String? ?? 'Desconocido';
+              final String artist = nextItem['spotifyArtist'] as String? ?? 'Artista';
+              final int durationMs = nextItem['spotifyDurationMs'] as int? ?? 180000;
+              final String? thumbnailUrl = nextItem['spotifyThumbnailUrl'] as String?;
+
+              await _downloadSpotifyDirectly(
+                videoId, // spotifyTrackId
+                playlistId,
+                title,
+                artist,
+                durationMs,
+                thumbnailUrl,
+                sessionId: sessionId,
+                attempt: attempt,
+              ).timeout(attemptBudget, onTimeout: () {
+                throw TimeoutException(
+                  'Intento ${attempt + 1}: sin completarse en '
+                  '${_formatDuration(attemptBudget)}',
+                );
+              });
+            } else {
+              final videoUrl = 'https://www.youtube.com/watch?v=$videoId';
+              await _downloadVideoDirectly(
+                videoUrl,
+                playlistId,
+                sessionId: sessionId,
+                attempt: attempt,
+              ).timeout(attemptBudget, onTimeout: () {
+                throw TimeoutException(
+                  'Intento ${attempt + 1}: sin completarse en '
+                  '${_formatDuration(attemptBudget)}',
+                );
+              });
+            }
 
             success = true;
           } catch (e) {
@@ -622,6 +846,175 @@ class DownloadProvider with ChangeNotifier {
       await _showCompletionNotification(title, true);
     } catch (e) {
       await _showCompletionNotification(_currentTitle.isNotEmpty ? _currentTitle : 'Audio', false);
+      rethrow;
+    } finally {
+      await WakelockPlus.disable();
+    }
+  }
+
+  Future<void> _downloadSpotifyDirectly(
+    String spotifyTrackId,
+    String playlistId,
+    String title,
+    String artist,
+    int durationMs,
+    String? spotifyThumbnailUrl, {
+    required int sessionId,
+    int attempt = 0,
+  }) async {
+    await WakelockPlus.enable();
+
+    DateTime? lastUiUpdate;
+    int lastNotifiedPercent = -1;
+
+    void onDownloadProgress(double p) {
+      _progress = p;
+      if (p > 0 && _currentTitle.isNotEmpty) {
+        _statusMessage = _sessionTotal > 0
+            ? 'Descargando ${_sessionCompleted + 1} de $_sessionTotal: $_currentTitle'
+            : 'Descargando: $_currentTitle';
+      }
+      final percent = (p * 100).toInt();
+      final now = DateTime.now();
+      final shouldUpdateUi = percent >= 100 ||
+          percent == 0 ||
+          lastUiUpdate == null ||
+          now.difference(lastUiUpdate!).inMilliseconds >= 300 ||
+          percent - lastNotifiedPercent >= 2;
+
+      if (!shouldUpdateUi) return;
+
+      lastUiUpdate = now;
+      lastNotifiedPercent = percent;
+      notifyListeners();
+
+      if (_currentTitle.isNotEmpty &&
+          (percent % 5 == 0 || percent >= 99)) {
+        _showProgressNotification(_currentTitle, percent);
+      }
+    }
+
+    try {
+      if (attempt == 0) {
+        _statusMessage = 'Buscando en YouTube...';
+      }
+      notifyListeners();
+
+      final result = await _youtubeService.searchAndDownload(
+        title: title,
+        artist: artist,
+        expectedDurationMs: durationMs,
+        spotifyThumbnailUrl: spotifyThumbnailUrl,
+        onMetadata: (resolvedTitle) {
+          _currentTitle = resolvedTitle;
+          _statusMessage = _sessionTotal > 0
+              ? 'Descargando ${_sessionCompleted + 1} de $_sessionTotal: $resolvedTitle'
+              : 'Descargando: $resolvedTitle';
+          notifyListeners();
+          _showProgressNotification(resolvedTitle, 0);
+        },
+        onPhase: (phase) {
+          switch (phase) {
+            case 'metadata':
+              _statusMessage = 'Buscando canción...';
+              break;
+            case 'manifest':
+              _statusMessage = _currentTitle.isNotEmpty
+                  ? 'Preparando enlace: $_currentTitle'
+                  : 'Preparando enlace de descarga...';
+              break;
+            case 'downloading':
+              if (_currentTitle.isNotEmpty) {
+                _statusMessage = _sessionTotal > 0
+                    ? 'Descargando ${_sessionCompleted + 1} de $_sessionTotal: $_currentTitle'
+                    : 'Descargando: $_currentTitle';
+              }
+              break;
+          }
+          notifyListeners();
+        },
+        onProgress: onDownloadProgress,
+        isCancelled: () => _cancelRequested || sessionId != _downloadSessionId,
+      );
+
+      final format = result['format'] as String;
+      final localAudioPath = result['filePath'] as String;
+      final localThumbnailPath = result['artPath'] as String;
+
+      _statusMessage = 'Guardando carátula...';
+      notifyListeners();
+
+      if (sessionId != _downloadSessionId) {
+        throw Exception('Download cancelled');
+      }
+
+      final song = Song(
+        id: spotifyTrackId,
+        title: title,
+        artist: artist,
+        duration: (durationMs / 1000).round(),
+        filePath: localAudioPath,
+        artPath: localThumbnailPath,
+        format: format,
+        downloadDate: DateTime.now(),
+      );
+
+      await _dbHelper.insertSong(song);
+
+      try {
+        await LyricsService.instance.getLyrics(
+          songId: song.id,
+          title: song.title,
+          artist: song.artist,
+          durationSeconds: song.duration,
+        );
+      } catch (e) {
+        print('Error pre-fetching lyrics during download: $e');
+      }
+
+      final songInPlaylist = await _dbHelper.isSongInPlaylist(playlistId, song.id);
+      if (!songInPlaylist) {
+        final maxOrder = await _dbHelper.getMaxOrderForPlaylist(playlistId) ?? -1;
+        await _dbHelper.addSongToPlaylist(playlistId, song.id, maxOrder + 1);
+      }
+
+      if (_sessionTotal > 0) {
+        _sessionCompleted++;
+      }
+
+      _progress = 1.0;
+      _statusMessage = '¡Descarga completada!';
+      notifyListeners();
+
+      if (musicProvider != null) {
+        final updateCurrent = musicProvider!.currentPlaylistId == playlistId;
+        await musicProvider!.loadSongsForPlaylist(playlistId, updateCurrent: updateCurrent);
+        await musicProvider!.loadPlaylists();
+      }
+
+      final currentPlayingPlaylistId = musicProvider?.currentPlaylistId;
+      if (currentPlayingPlaylistId == playlistId && audioHandler != null && !songInPlaylist) {
+        final playlist = musicProvider?.playlists.where((p) => p.id == playlistId).firstOrNull;
+        if (playlist != null) {
+          final mediaItem = MediaItem(
+            id: song.id,
+            album: playlist.name,
+            title: song.title,
+            artist: song.artist,
+            duration: Duration(seconds: song.duration),
+            artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
+            extras: {
+              'filePath': song.filePath,
+              'artPath': song.artPath,
+            },
+          );
+          await audioHandler!.addQueueItem(mediaItem);
+        }
+      }
+
+      await _showCompletionNotification(title, true);
+    } catch (e) {
+      await _showCompletionNotification(_currentTitle.isNotEmpty ? _currentTitle : title, false);
       rethrow;
     } finally {
       await WakelockPlus.disable();

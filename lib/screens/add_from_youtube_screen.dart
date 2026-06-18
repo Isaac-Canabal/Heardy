@@ -4,6 +4,7 @@ import '../providers/settings_provider.dart';
 import '../providers/download_provider.dart';
 import '../providers/music_provider.dart';
 import '../services/youtube_service.dart';
+import '../services/spotify_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/download_progress_card.dart';
 import '../widgets/glass_card.dart';
@@ -22,10 +23,12 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
   final TextEditingController _urlController = TextEditingController();
   final TextEditingController _newPlaylistController = TextEditingController();
   final YoutubeService _ytService = YoutubeService();
+  final SpotifyService _spotifyService = SpotifyService();
 
   bool _isAnalyzing = false;
   bool _isPlaylist = false;
   bool _hasAnalyzed = false;
+  bool _isSpotify = false;
 
   String _videoTitle = '';
   String _videoArtist = '';
@@ -36,6 +39,9 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
 
   String? _selectedPlaylistId;
   bool _createNewPlaylist = false;
+
+  SpotifyTrackInfo? _spotifyTrack;
+  List<SpotifyTrackInfo> _spotifyTracks = [];
 
   @override
   void initState() {
@@ -56,7 +62,7 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
   Future<void> _analyzeUrl() async {
     final url = _urlController.text.trim();
     if (url.isEmpty) {
-      _showSnackBar("Por favor ingresa una URL de YouTube", isError: true);
+      _showSnackBar("Por favor ingresa una URL", isError: true);
       return;
     }
 
@@ -64,47 +70,83 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
       _isAnalyzing = true;
       _hasAnalyzed = false;
       _isPlaylist = false;
+      _isSpotify = false;
+      _spotifyTrack = null;
+      _spotifyTracks = [];
     });
 
     try {
-      if (url.contains("list=")) {
-        _isPlaylist = true;
-        final videoIds = await _ytService.getPlaylistVideoIds(url);
-        _playlistCount = videoIds.length;
-
-        if (videoIds.isNotEmpty) {
-          final firstInfo = await _ytService.getVideoInfo(
-            'https://www.youtube.com/watch?v=${videoIds.first}',
-          );
-          _playlistPreviewTitles = [firstInfo['title'] as String];
-          if (videoIds.length > 1) {
-            _playlistPreviewTitles.add(
-              "Y ${videoIds.length - 1} videos más...",
-            );
-          }
+      if (SpotifyService.isSpotifyUrl(url)) {
+        _isSpotify = true;
+        final result = await _spotifyService.analyze(url);
+        
+        if (result.isSingleTrack) {
+          setState(() {
+            _isPlaylist = false;
+            _videoTitle = result.name;
+            _videoArtist = result.subtitle ?? 'Artista desconocido';
+            _videoThumbnail = result.thumbnailUrl ?? '';
+            _spotifyTrack = result.tracks.first;
+            _hasAnalyzed = true;
+            _isAnalyzing = false;
+          });
+        } else {
+          setState(() {
+            _isPlaylist = true;
+            _playlistCount = result.tracks.length;
+            _spotifyTracks = result.tracks;
+            
+            _playlistPreviewTitles = result.tracks.take(1).map((t) => "${t.artist} - ${t.title}").toList();
+            if (result.tracks.length > 1) {
+              _playlistPreviewTitles.add(
+                "Y ${result.tracks.length - 1} canciones más...",
+              );
+            }
+            _hasAnalyzed = true;
+            _isAnalyzing = false;
+          });
         }
-
-        setState(() {
-          _hasAnalyzed = true;
-          _isAnalyzing = false;
-        });
       } else {
-        final info = await _ytService.getVideoInfo(url);
-        setState(() {
-          _videoTitle = info['title'] as String;
-          _videoArtist = info['artist'] as String;
-          _videoThumbnail = info['thumbnailUrl'] as String;
-          _isPlaylist = false;
-          _hasAnalyzed = true;
-          _isAnalyzing = false;
-        });
+        _isSpotify = false;
+        if (url.contains("list=")) {
+          _isPlaylist = true;
+          final videoIds = await _ytService.getPlaylistVideoIds(url);
+          _playlistCount = videoIds.length;
+
+          if (videoIds.isNotEmpty) {
+            final firstInfo = await _ytService.getVideoInfo(
+              'https://www.youtube.com/watch?v=${videoIds.first}',
+            );
+            _playlistPreviewTitles = [firstInfo['title'] as String];
+            if (videoIds.length > 1) {
+              _playlistPreviewTitles.add(
+                "Y ${videoIds.length - 1} videos más...",
+              );
+            }
+          }
+
+          setState(() {
+            _hasAnalyzed = true;
+            _isAnalyzing = false;
+          });
+        } else {
+          final info = await _ytService.getVideoInfo(url);
+          setState(() {
+            _videoTitle = info['title'] as String;
+            _videoArtist = info['artist'] as String;
+            _videoThumbnail = info['thumbnailUrl'] as String;
+            _isPlaylist = false;
+            _hasAnalyzed = true;
+            _isAnalyzing = false;
+          });
+        }
       }
     } catch (e) {
       setState(() {
         _isAnalyzing = false;
       });
       _showSnackBar(
-        "Error al analizar la URL. Verifica que sea correcta.",
+        "Error al analizar la URL: ${e.toString()}",
         isError: true,
       );
     }
@@ -143,11 +185,21 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
     }
 
     try {
-      if (_isPlaylist) {
-        await musicProvider.updatePlaylistUrl(targetId, url);
-        await downloadProvider.downloadPlaylist(url, targetId);
+      if (_isSpotify) {
+        if (_isPlaylist) {
+          await downloadProvider.downloadSpotifyCollection(_spotifyTracks, targetId);
+        } else {
+          if (_spotifyTrack != null) {
+            await downloadProvider.downloadSpotifyTrack(_spotifyTrack!, targetId);
+          }
+        }
       } else {
-        await downloadProvider.downloadVideo(url, targetId);
+        if (_isPlaylist) {
+          await musicProvider.updatePlaylistUrl(targetId, url);
+          await downloadProvider.downloadPlaylist(url, targetId);
+        } else {
+          await downloadProvider.downloadVideo(url, targetId);
+        }
       }
 
       if (downloadProvider.errorMessage != null) {
@@ -172,9 +224,7 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
           : 'Operación completada.';
       _showSnackBar(message, isSuccess: true);
       
-      // Only pop the screen if the operation actually completed (not if song already exists)
       if (!message.contains('ya está en esta lista')) {
-        // Delay navigation to ensure UI is fully refreshed
         await Future.delayed(const Duration(milliseconds: 500));
         if (mounted) Navigator.of(context).pop();
       }
@@ -218,123 +268,123 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
       appBar: widget.embedInShell
           ? null
           : AppBar(
-              title: const Text('Añadir desde YouTube'),
-              flexibleSpace: Container(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.topCenter,
-                    end: Alignment.bottomCenter,
-                    colors: [
-                      AppTheme.backgroundTop.withValues(alpha: 0.95),
-                      AppTheme.backgroundTop.withValues(alpha: 0),
-                    ],
+                title: const Text('Añadir Música'),
+                flexibleSpace: Container(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.topCenter,
+                      end: Alignment.bottomCenter,
+                      colors: [
+                        AppTheme.backgroundTop.withValues(alpha: 0.95),
+                        AppTheme.backgroundTop.withValues(alpha: 0),
+                      ],
+                    ),
                   ),
                 ),
               ),
-            ),
-      body: Container(
-        decoration: AppTheme.gradientScaffold(),
-        child: SafeArea(
-          child: SingleChildScrollView(
-            padding: EdgeInsets.fromLTRB(
-              16,
-              widget.embedInShell ? 16 : 8,
-              16,
-              widget.embedInShell ? 90 : 24,
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                if (widget.embedInShell)
-                  const Padding(
-                    padding: EdgeInsets.only(bottom: 16),
-                    child: Text(
-                      'Descargas',
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 28,
-                        fontWeight: FontWeight.w800,
-                      ),
-                    ),
-                  ),
-                _buildHeroBanner(),
-                const SizedBox(height: 20),
-                GlassCard(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      _sectionLabel('Enlace de YouTube', Icons.link_rounded),
-                      const SizedBox(height: 12),
-                      TextField(
-                        controller: _urlController,
-                        enabled: !_isAnalyzing && !downloadProvider.isDownloading,
-                        style: const TextStyle(color: Colors.white),
-                        decoration: InputDecoration(
-                          hintText: 'https://www.youtube.com/watch?v=...',
-                          prefixIcon: Icon(Icons.link_rounded, color: AppTheme.primaryLight),
-                          suffixIcon: _urlController.text.isNotEmpty
-                              ? IconButton(
-                                  icon: const Icon(Icons.clear, color: Colors.white70),
-                                  onPressed: () {
-                                    _urlController.clear();
-                                    setState(() {
-                                      _hasAnalyzed = false;
-                                    });
-                                  },
-                                )
-                              : null,
+        body: Container(
+          decoration: AppTheme.gradientScaffold(),
+          child: SafeArea(
+            child: SingleChildScrollView(
+              padding: EdgeInsets.fromLTRB(
+                16,
+                widget.embedInShell ? 16 : 8,
+                16,
+                widget.embedInShell ? 90 : 24,
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (widget.embedInShell)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 16),
+                      child: Text(
+                        'Descargas',
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 28,
+                          fontWeight: FontWeight.w800,
                         ),
                       ),
-                      const SizedBox(height: 16),
-                      AppTheme.gradientButton(
-                        onPressed: _isAnalyzing || downloadProvider.isDownloading
-                            ? null
-                            : _analyzeUrl,
-                        child: _isAnalyzing
-                            ? const SizedBox(
-                                height: 22,
-                                width: 22,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2.5,
-                                ),
-                              )
-                            : const Text(
-                                'Analizar Enlace',
-                                style: TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                  fontSize: 15,
-                                ),
-                              ),
-                      ),
-                      const SizedBox(height: 12),
-                      Row(
-                        children: [
-                          Switch(
-                            value: downloadProvider.useCooldown,
-                            onChanged: downloadProvider.isDownloading
-                                ? null
-                                : (value) {
-                                    downloadProvider.setCooldown(value);
-                                  },
-                            activeColor: AppTheme.accent,
+                    ),
+                  _buildHeroBanner(),
+                  const SizedBox(height: 20),
+                  GlassCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        _sectionLabel('Enlace de YouTube o Spotify', Icons.link_rounded),
+                        const SizedBox(height: 12),
+                        TextField(
+                          controller: _urlController,
+                          enabled: !_isAnalyzing && !downloadProvider.isDownloading,
+                          style: const TextStyle(color: Colors.white),
+                          decoration: InputDecoration(
+                            hintText: 'Enlace de YouTube o Spotify (canción, playlist...)',
+                            prefixIcon: Icon(Icons.link_rounded, color: AppTheme.primaryLight),
+                            suffixIcon: _urlController.text.isNotEmpty
+                                ? IconButton(
+                                    icon: const Icon(Icons.clear, color: Colors.white70),
+                                    onPressed: () {
+                                      _urlController.clear();
+                                      setState(() {
+                                        _hasAnalyzed = false;
+                                      });
+                                    },
+                                  )
+                                : null,
                           ),
-                          const SizedBox(width: 8),
-                          Expanded(
-                            child: Text(
-                              'Tiempo de enfriamiento entre descargas',
-                              style: TextStyle(
-                                color: Colors.white.withValues(alpha: 0.8),
-                                fontSize: 13,
+                        ),
+                        const SizedBox(height: 16),
+                        AppTheme.gradientButton(
+                          onPressed: _isAnalyzing || downloadProvider.isDownloading
+                              ? null
+                              : _analyzeUrl,
+                          child: _isAnalyzing
+                              ? const SizedBox(
+                                  height: 22,
+                                  width: 22,
+                                  child: CircularProgressIndicator(
+                                    color: Colors.white,
+                                    strokeWidth: 2.5,
+                                  ),
+                                )
+                              : const Text(
+                                  'Analizar Enlace',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 15,
+                                  ),
+                                ),
+                        ),
+                        const SizedBox(height: 12),
+                        Row(
+                          children: [
+                            Switch(
+                              value: downloadProvider.useCooldown,
+                              onChanged: downloadProvider.isDownloading
+                                  ? null
+                                  : (value) {
+                                      downloadProvider.setCooldown(value);
+                                    },
+                              activeThumbColor: AppTheme.accent,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                'Tiempo de enfriamiento entre descargas',
+                                style: TextStyle(
+                                  color: Colors.white.withValues(alpha: 0.8),
+                                  fontSize: 13,
+                                ),
                               ),
                             ),
-                          ),
-                        ],
-                      ),
-                    ],
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
-                ),
                 const SizedBox(height: 16),
                 if (_hasAnalyzed)
                   GlassCard(
@@ -523,7 +573,7 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
               borderRadius: BorderRadius.circular(14),
             ),
             child: const Icon(
-              Icons.play_circle_filled_rounded,
+              Icons.queue_music_rounded,
               color: Colors.white,
               size: 36,
             ),
@@ -543,7 +593,7 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
                 ),
                 SizedBox(height: 4),
                 Text(
-                  'Descarga videos y playlists para escuchar sin conexión.',
+                  'Descarga de YouTube o importa metadatos de Spotify para escuchar sin conexión.',
                   style: TextStyle(
                     color: Colors.white70,
                     fontSize: 13,
@@ -613,7 +663,7 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'VIDEO DETECTADO',
+                _isSpotify ? 'PISTA DE SPOTIFY DETECTADA' : 'VIDEO DETECTADO',
                 style: TextStyle(
                   color: AppTheme.accent.withValues(alpha: 0.95),
                   fontWeight: FontWeight.w800,
@@ -654,7 +704,7 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'PLAYLIST DETECTADA',
+          _isSpotify ? 'PLAYLIST/ÁLBUM DE SPOTIFY DETECTADO' : 'PLAYLIST DETECTADA',
           style: TextStyle(
             color: AppTheme.accent.withValues(alpha: 0.95),
             fontWeight: FontWeight.w800,
@@ -664,7 +714,7 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
         ),
         const SizedBox(height: 8),
         Text(
-          'Contiene $_playlistCount videos',
+          _isSpotify ? 'Contiene $_playlistCount canciones' : 'Contiene $_playlistCount videos',
           style: const TextStyle(
             color: Colors.white,
             fontWeight: FontWeight.bold,
