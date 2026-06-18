@@ -333,4 +333,38 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
       print('Error resetting player state: $e');
     }
   }
+
+  /// Reparación completa del reproductor para problemas de corrupción
+  Future<String> fullRepair() async {
+    try {
+      print('Iniciando reparación completa...');
+      
+      // 1. Detener y limpiar el reproductor completamente
+      await _player.stop();
+      
+      // 2. Limpiar estados
+      _playlistSource = null;
+      queue.add([]);
+      mediaItem.add(null);
+      
+      // 3. Esperar para asegurar liberación de recursos
+      await Future.delayed(const Duration(milliseconds: 500));
+      
+      // 4. Limpiar cualquier cache interno
+      try {
+        // Limpiar buffer de audio forzando speed reset
+        await _player.setSpeed(1.0);
+        // Seek al inicio para limpiar buffer
+        await _player.seek(Duration.zero);
+      } catch (e) {
+        print('Error limpiando buffer: $e');
+      }
+      
+      print('Reparación completa finalizada');
+      return 'Reparación completada exitosamente';
+    } catch (e) {
+      print('Error en reparación completa: $e');
+      return 'Error durante la reparación: $e';
+    }
+  }
 }

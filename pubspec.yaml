@@ -25,6 +25,7 @@ dependencies:
   shared_preferences: ^2.2.2
   cupertino_icons: ^1.0.6
   palette_generator: ^0.3.3
+  audio_waveforms: ^1.0.4
 
 dev_dependencies:
   flutter_test:

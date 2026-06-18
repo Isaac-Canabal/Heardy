@@ -6,6 +6,7 @@ import '../providers/settings_provider.dart';
 import '../services/database_helper.dart';
 import '../theme/app_theme.dart';
 import '../services/audio_player_handler.dart';
+import '../services/repair_service.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -289,7 +290,7 @@ class SettingsScreen extends StatelessWidget {
                           shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
                           title: const Text('Reparar Reproductor', style: TextStyle(color: Colors.white)),
                           content: const Text(
-                            '¿Deseas reiniciar el estado del reproductor? La reproducción actual se detendrá.',
+                            '¿Deseas realizar una reparación completa? Esto incluirá:\n\n• Verificar archivos corruptos\n• Limpiar archivos temporales\n• Verificar base de datos\n• Reiniciar el reproductor\n\nLa reproducción actual se detendrá.',
                             style: TextStyle(color: Colors.white70),
                           ),
                           actions: [
@@ -305,17 +306,49 @@ class SettingsScreen extends StatelessWidget {
                         ),
                       );
                       if (confirm == true && context.mounted) {
-                        final audioHandler = Provider.of<AudioPlayerHandler>(context, listen: false);
-                        await audioHandler.resetPlayerState();
-                        musicProvider.clearPlaybackState();
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          SnackBar(
-                            content: const Text('Reproductor reparado. Si el problema persiste, cierra y abre la app.'),
+                        // Mostrar diálogo de progreso
+                        showDialog(
+                          context: context,
+                          barrierDismissible: false,
+                          builder: (ctx) => AlertDialog(
                             backgroundColor: AppTheme.surface,
-                            behavior: SnackBarBehavior.floating,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                            content: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                CircularProgressIndicator(color: AppTheme.primaryLight),
+                                SizedBox(height: 16),
+                                Text('Reparando...', style: TextStyle(color: Colors.white)),
+                                SizedBox(height: 8),
+                                Text('Esto puede tomar unos segundos', style: TextStyle(color: Colors.white54, fontSize: 12)),
+                              ],
+                            ),
                           ),
                         );
+                        
+                        final audioHandler = Provider.of<AudioPlayerHandler>(context, listen: false);
+                        final result = await RepairService.performFullRepair(
+                          audioHandler: audioHandler,
+                          musicProvider: musicProvider,
+                        );
+                        
+                        if (context.mounted) {
+                          Navigator.pop(context); // Cerrar diálogo de progreso
+                          
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            SnackBar(
+                              content: Text(result.getUserMessage()),
+                              backgroundColor: result.hasErrors 
+                                  ? Colors.red.withValues(alpha: 0.8)
+                                  : result.hasWarnings
+                                      ? Colors.orange.withValues(alpha: 0.8)
+                                      : AppTheme.surface,
+                              behavior: SnackBarBehavior.floating,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              duration: const Duration(seconds: 4),
+                            ),
+                          );
+                        }
                       }
                     },
                   ),
