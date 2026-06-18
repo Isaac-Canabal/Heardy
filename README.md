@@ -1,6 +1,6 @@
 # Heardy
 
-Una aplicación completa de descarga y reproducción de música de YouTube que funciona sin conexión.
+Una aplicación completa de descarga y reproducción de música de YouTube y Spotify que funciona sin conexión.
 
 <img width="300" height="300" alt="image" src="https://github.com/user-attachments/assets/f559d776-36b2-48dc-8954-417d259fa8dd" />
 
@@ -8,6 +8,8 @@ Una aplicación completa de descarga y reproducción de música de YouTube que f
 ## Características
 
 - Descarga de música de YouTube (videos individuales y playlists)
+- **Descarga de música de Spotify**: Soporte completo para tracks, álbumes y playlists de Spotify sin necesidad de API keys
+- **Soporte para enlaces cortos**: Compatible con enlaces directos de Spotify y `spotify.link`
 - Reproducción de música offline
 - **Fondo dinámico en el reproductor**: El fondo del reproductor se adapta de forma visualmente atractiva al color dominante de la carátula de la canción actual.
 - **Letras en tiempo real (Sincronizadas)**: Visualización de letras en tiempo real obtenidas de la base de datos colaborativa **LRCLIB**, con scroll automático al ritmo de la reproducción y capacidad de salto temporal al pulsar sobre cualquier línea.
@@ -19,7 +21,7 @@ Una aplicación completa de descarga y reproducción de música de YouTube que f
 - Numeración de canciones en playlists
 - Control de reproducción en segundo plano
 - Notificaciones de progreso de descarga
-- Soporte para cooldown entre descargas para evitar bloqueos de YouTube
+- Soporte para cooldown entre descargas para evitar bloqueos de YouTube y Spotify
 
 ## Tecnologías Utilizadas
 
@@ -32,8 +34,9 @@ Una aplicación completa de descarga y reproducción de música de YouTube que f
 - **[just_audio](https://pub.dev/packages/just_audio)** - Reproductor de audio para Flutter
 - **[audio_service](https://pub.dev/packages/audio_service)** - Servicio de audio para reproducción en segundo plano
 
-#### Descarga de YouTube
+#### Descarga de Música
 - **[youtube_explode_dart](https://pub.dev/packages/youtube_explode_dart)** - Biblioteca para descargar videos de YouTube sin API key
+- **Servicio de Spotify personalizado** - Extracción de metadatos de Spotify (tracks, álbumes, playlists) sin API key mediante análisis de páginas embed
 
 #### Base de Datos
 - **[sqflite](https://pub.dev/packages/sqflite)** - Base de datos SQLite para Flutter
