@@ -24,6 +24,7 @@ dependencies:
   flutter_background_service: ^5.0.5
   shared_preferences: ^2.2.2
   cupertino_icons: ^1.0.6
+  palette_generator: ^0.3.3
 
 dev_dependencies:
   flutter_test:
