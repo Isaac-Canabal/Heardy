@@ -55,6 +55,13 @@ void main() async {
           update: (_, musicProvider, audioHandler, downloadProvider) {
             downloadProvider!.musicProvider = musicProvider;
             downloadProvider.audioHandler = audioHandler;
+            
+            // Restaurar estado de reproducción después de que todo esté inicializado
+            // Usar Future.microtask para asegurar que se ejecute después del build inicial
+            Future.microtask(() async {
+              await musicProvider.restorePlaybackState(audioHandler);
+            });
+            
             return downloadProvider;
           },
         ),

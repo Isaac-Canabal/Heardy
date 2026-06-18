@@ -33,10 +33,15 @@ class DownloadProvider with ChangeNotifier {
   bool _cancelRequested = false;
   // Holds the id of the currently processed queue item (if any)
   int? _currentQueueId;
+  
+  // Configuración de descarga paralela
+  static const int _maxConcurrentDownloads = 3; // Número de descargas simultáneas
+  final Set<int> _activeDownloads = {}; // IDs de descargas activas
+  bool _isProcessingQueue = false;
 
   // Public method to request cancellation of ongoing and pending downloads
   Future<void> cancelAllDownloads() async {
-    _downloadSessionId++;
+    _downloadSessionId = (int.parse(_downloadSessionId) + 1).toString();
     _cancelRequested = true;
     await _dbHelper.clearDownloadQueue();
     _resetDownloadUi(clearTitle: true, status: 'Descargas canceladas.');
@@ -54,8 +59,7 @@ class DownloadProvider with ChangeNotifier {
 
   int _sessionTotal = 0;
   int _sessionCompleted = 0;
-  bool _isProcessingQueue = false;
-  int _downloadSessionId = 0;
+  String _downloadSessionId = '0';
   DateTime? _downloadStartedAt;
   Timer? _elapsedTicker;
 
@@ -90,7 +94,7 @@ class DownloadProvider with ChangeNotifier {
 
   /// Cancels any in-flight work and clears the persistent queue before a new session.
   Future<void> prepareForNewDownloads() async {
-    _downloadSessionId++;
+    _downloadSessionId = (int.parse(_downloadSessionId) + 1).toString();
     _cancelRequested = true;
     await _dbHelper.clearDownloadQueue();
     _resetDownloadUi(clearTitle: true);
@@ -111,6 +115,12 @@ class DownloadProvider with ChangeNotifier {
     _errorMessage = null;
     if (clearTitle) _currentTitle = '';
     notifyListeners();
+  }
+
+  void _updateProgress() {
+    if (_sessionTotal > 0) {
+      _progress = _sessionCompleted / _sessionTotal;
+    }
   }
 
   void _beginDownloadClock() {
@@ -526,8 +536,8 @@ class DownloadProvider with ChangeNotifier {
     }
   }
 
-  /// Background processor loop that processes SQLite queue items sequentially.
-  /// Includes retry logic (max 2 retries per item) and a cooldown between downloads.
+  /// Background processor loop that processes SQLite queue items in parallel.
+  /// Downloads multiple items simultaneously for better efficiency in background.
   Future<void> processQueue() async {
     if (_isProcessingQueue) return;
     _isProcessingQueue = true;
@@ -535,8 +545,8 @@ class DownloadProvider with ChangeNotifier {
 
     try {
       await WakelockPlus.enable();
-      bool isFirstItem = true;
-
+      
+      // Procesar cola en paralelo
       while (true) {
         if (sessionId != _downloadSessionId || _cancelRequested) {
           break;
@@ -547,134 +557,159 @@ class DownloadProvider with ChangeNotifier {
           break;
         }
 
-        if (!isFirstItem && _useCooldown) {
-          await Future.delayed(const Duration(seconds: 5));
-        }
-        isFirstItem = false;
+        // Filtrar items que no están siendo procesados activamente
+        final availableItems = queueItems
+            .where((item) => !_activeDownloads.contains(item['id'] as int))
+            .toList();
 
-        final nextItem = queueItems.first;
-        final int queueId = nextItem['id'] as int;
-        final String videoId = nextItem['videoId'] as String;
-        final String playlistId = nextItem['playlistId'] as String;
-        final String source = nextItem['source'] as String? ?? 'youtube';
-
-        final playlistExists = await _dbHelper.getPlaylistById(playlistId) != null;
-        if (!playlistExists) {
-          await _dbHelper.removeFromDownloadQueue(queueId);
+        if (availableItems.isEmpty) {
+          // Esperar un poco antes de verificar nuevamente
+          await Future.delayed(const Duration(milliseconds: 500));
           continue;
         }
 
-        _currentQueueId = queueId;
-        final itemStarted = DateTime.now();
-        const attemptBudget = Duration(minutes: 10);
-        const maxAttempts = 2;
-
-        _beginDownloadClock();
-
-        bool success = false;
-        String? lastFailureReason;
-        for (int attempt = 0; attempt < maxAttempts && !success; attempt++) {
-          if (sessionId != _downloadSessionId || _cancelRequested) break;
-
-          try {
-            _isDownloading = true;
-            _errorMessage = null;
-            if (attempt == 0) {
-              _progress = 0.0;
-            } else {
-              _statusMessage =
-                  'Reintentando (${attempt + 1}/$maxAttempts)...';
-              notifyListeners();
-            }
-            notifyListeners();
-
-            if (source == 'spotify') {
-              final String title = nextItem['spotifyTitle'] as String? ?? 'Desconocido';
-              final String artist = nextItem['spotifyArtist'] as String? ?? 'Artista';
-              final int durationMs = nextItem['spotifyDurationMs'] as int? ?? 180000;
-              final String? thumbnailUrl = nextItem['spotifyThumbnailUrl'] as String?;
-
-              await _downloadSpotifyDirectly(
-                videoId, // spotifyTrackId
-                playlistId,
-                title,
-                artist,
-                durationMs,
-                thumbnailUrl,
-                sessionId: sessionId,
-                attempt: attempt,
-              ).timeout(attemptBudget, onTimeout: () {
-                throw TimeoutException(
-                  'Intento ${attempt + 1}: sin completarse en '
-                  '${_formatDuration(attemptBudget)}',
-                );
-              });
-            } else {
-              final videoUrl = 'https://www.youtube.com/watch?v=$videoId';
-              await _downloadVideoDirectly(
-                videoUrl,
-                playlistId,
-                sessionId: sessionId,
-                attempt: attempt,
-              ).timeout(attemptBudget, onTimeout: () {
-                throw TimeoutException(
-                  'Intento ${attempt + 1}: sin completarse en '
-                  '${_formatDuration(attemptBudget)}',
-                );
-              });
-            }
-
-            success = true;
-          } catch (e) {
-            if (sessionId != _downloadSessionId) break;
-            final totalElapsed = DateTime.now().difference(itemStarted);
-            lastFailureReason = _friendlyDownloadError(
-              e,
-              elapsed: totalElapsed,
-              attempt: attempt + 1,
-              maxAttempts: maxAttempts,
-            );
-            print("Attempt ${attempt + 1}/$maxAttempts failed for $videoId: $e");
-            if (attempt < maxAttempts - 1) {
-              final isRateLimit = _isRateLimitError(e);
-              _statusMessage = isRateLimit
-                  ? 'YouTube limitó las peticiones. Esperando 90s... '
-                      '(${attempt + 2}/$maxAttempts)'
-                  : 'Reintentando en unos segundos... '
-                      '(${attempt + 2}/$maxAttempts)';
-              _progress = 0.0;
-              notifyListeners();
-              await Future.delayed(
-                Duration(seconds: isRateLimit ? 90 : 5),
-              );
-            }
-          }
-        }
-
-        await _dbHelper.removeFromDownloadQueue(queueId);
-        _currentQueueId = null;
-
-        if (!success && sessionId == _downloadSessionId) {
-          _errorMessage = lastFailureReason ??
-              'No se pudo descargar la canción después de $maxAttempts intentos.';
-          _statusMessage = 'Error en la descarga';
-          _isDownloading = false;
-          notifyListeners();
-          print("Permanently failed to download $videoId after $maxAttempts attempts.");
-        }
+        // Iniciar hasta _maxConcurrentDownloads descargas simultáneas
+        final itemsToProcess = availableItems.take(_maxConcurrentDownloads).toList();
+        
+        // Procesar cada item en paralelo
+        final futures = itemsToProcess.map((item) => _processQueueItem(item, sessionId));
+        await Future.wait(futures, eagerError: false);
       }
     } finally {
-      if (sessionId == _downloadSessionId) {
-        _isProcessingQueue = false;
-        if (_errorMessage == null) {
-          _resetDownloadUi(clearTitle: true);
-          _sessionTotal = 0;
-          _sessionCompleted = 0;
-        }
-      } else {
-        _isProcessingQueue = false;
+      _isProcessingQueue = false;
+      if (_activeDownloads.isEmpty) {
+        await WakelockPlus.disable();
       }
-      try { await WakelockPlus.disable(); } catch (_) {}
+    }
+  }
+
+  /// Procesa un item individual de la cola de descarga
+  Future<void> _processQueueItem(Map<String, dynamic> item, String sessionId) async {
+    final int queueId = item['id'] as int;
+    final String videoId = item['videoId'] as String;
+    final String playlistId = item['playlistId'] as String;
+    final String source = item['source'] as String? ?? 'youtube';
+
+    // Marcar como activo
+    _activeDownloads.add(queueId);
+    
+    try {
+      final playlistExists = await _dbHelper.getPlaylistById(playlistId) != null;
+      if (!playlistExists) {
+        await _dbHelper.removeFromDownloadQueue(queueId);
+        return;
+      }
+
+      _currentQueueId = queueId;
+      const attemptBudget = Duration(minutes: 10);
+      const maxAttempts = 2;
+
+      bool success = false;
+      String? lastFailureReason;
+
+      for (int attempt = 0; attempt < maxAttempts && !success; attempt++) {
+        if (sessionId != _downloadSessionId || _cancelRequested) break;
+
+        try {
+          _isDownloading = true;
+          _errorMessage = null;
+          
+          // Actualizar UI con información de este item específico
+          if (source == 'spotify') {
+            _currentTitle = item['spotifyTitle'] as String? ?? 'Desconocido';
+          } else {
+            _currentTitle = item['videoId']; // YouTube videoId
+          }
+          
+          if (attempt == 0) {
+            _progress = 0.0;
+            _statusMessage = 'Descargando (${_activeDownloads.length} en paralelo)...';
+          } else {
+            _statusMessage = 'Reintentando (${attempt + 1}/$maxAttempts)...';
+          }
+          notifyListeners();
+
+          if (source == 'spotify') {
+            final String title = item['spotifyTitle'] as String? ?? 'Desconocido';
+            final String artist = item['spotifyArtist'] as String? ?? 'Artista';
+            final int durationMs = item['spotifyDurationMs'] as int? ?? 180000;
+            final String? thumbnailUrl = item['spotifyThumbnailUrl'] as String?;
+
+            await _downloadSpotifyDirectly(
+              videoId,
+              playlistId,
+              title,
+              artist,
+              durationMs,
+              thumbnailUrl,
+              sessionId: sessionId,
+              attempt: attempt,
+            ).timeout(attemptBudget, onTimeout: () {
+              throw TimeoutException(
+                'Intento ${attempt + 1}: sin completarse en '
+                '${_formatDuration(attemptBudget)}',
+              );
+            });
+          } else {
+            final videoUrl = 'https://www.youtube.com/watch?v=$videoId';
+            await _downloadVideoDirectly(
+              videoUrl,
+              playlistId,
+              sessionId: sessionId,
+              attempt: attempt,
+            ).timeout(attemptBudget, onTimeout: () {
+              throw TimeoutException(
+                'Intento ${attempt + 1}: sin completarse en '
+                '${_formatDuration(attemptBudget)}',
+              );
+            });
+          }
+
+          success = true;
+        } catch (e) {
+          lastFailureReason = e.toString();
+          print('Error en descarga (intento ${attempt + 1}): $e');
+          
+          // No usar cooldown entre reintentos en modo paralelo para mayor velocidad
+          if (attempt < maxAttempts - 1) {
+            await Future.delayed(const Duration(seconds: 2));
+          }
+        }
+      }
+
+      if (success) {
+        await _dbHelper.removeFromDownloadQueue(queueId);
+        _sessionCompleted++;
+        _updateProgress();
+        
+        // Si no hay más descargas activas, limpiar UI
+        if (_activeDownloads.length <= 1) {
+          _isDownloading = false;
+          _currentTitle = '';
+          _progress = 0.0;
+          _statusMessage = 'Descarga completada';
+        } else {
+          _statusMessage = 'Descargando (${_activeDownloads.length - 1} restantes)...';
+        }
+        notifyListeners();
+      } else {
+        // Eliminar de cola después de maxAttempts fallidos
+        await _dbHelper.removeFromDownloadQueue(queueId);
+        _errorMessage = lastFailureReason ?? 'Error desconocido';
+        _statusMessage = 'Error en descarga después de $maxAttempts intentos';
+        notifyListeners();
+      }
+    } catch (e) {
+      print('Error procesando item de cola: $e');
+      await _dbHelper.removeFromDownloadQueue(queueId);
+    } finally {
+      _activeDownloads.remove(queueId);
+      _currentQueueId = null;
+      
+      // Si no hay más descargas activas, liberar wake lock
+      if (_activeDownloads.isEmpty) {
+        await WakelockPlus.disable();
+      }
     }
   }
 
@@ -682,7 +717,7 @@ class DownloadProvider with ChangeNotifier {
   Future<void> _downloadVideoDirectly(
     String url,
     String playlistId, {
-    required int sessionId,
+    required String sessionId,
     int attempt = 0,
   }) async {
     await WakelockPlus.enable();
@@ -859,7 +894,7 @@ class DownloadProvider with ChangeNotifier {
     String artist,
     int durationMs,
     String? spotifyThumbnailUrl, {
-    required int sessionId,
+    required String sessionId,
     int attempt = 0,
   }) async {
     await WakelockPlus.enable();

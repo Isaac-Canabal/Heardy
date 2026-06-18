@@ -261,11 +261,13 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                                             SnackBar(
                                               content: Text('Se eliminó "$songTitle" de la lista'),
                                               backgroundColor: Colors.indigo[900],
+                                              duration: const Duration(seconds: 4),
                                               action: SnackBarAction(
                                                 label: 'Deshacer',
                                                 textColor: Colors.amberAccent,
                                                 onPressed: () {
                                                   undoClicked = true;
+                                                  ScaffoldMessenger.of(context).hideCurrentSnackBar();
                                                   if (mounted) {
                                                     setState(() {
                                                       _temporarilyRemovedSongIds.remove(songId);

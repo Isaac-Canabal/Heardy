@@ -2,6 +2,8 @@ import 'dart:io';
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter/services.dart';
+import 'playback_state_service.dart';
 
 final FlutterLocalNotificationsPlugin _errorNotification = FlutterLocalNotificationsPlugin();
 class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
@@ -13,10 +15,15 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   AudioPlayer get player => _player;
 
   AudioPlayerHandler() {
+    // Intentar restaurar estado guardado al iniciar
+    _restoreSavedState();
+    
     // Pipe just_audio events to audio_service's playbackState stream
     _player.playbackEventStream.listen((event) {
       _lastEvent = event;
       playbackState.add(_buildPlaybackState(event));
+      // Guardar estado cuando cambia la reproducción
+      _saveCurrentState();
     }, onError: (Object e, StackTrace stackTrace) {
       print('A stream error occurred: $e');
       _errorNotification.show(
@@ -259,16 +266,36 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> addQueueItem(MediaItem mediaItem) async {
-    final path = mediaItem.extras?['filePath'] as String? ?? '';
-    if (path.isEmpty || !File(path).existsSync()) return;
+    try {
+      final path = mediaItem.extras?['filePath'] as String? ?? '';
+      if (path.isEmpty) {
+        print('Error: path vacío para mediaItem ${mediaItem.id}');
+        return;
+      }
+      
+      final file = File(path);
+      if (!file.existsSync()) {
+        print('Error: archivo no existe para mediaItem ${mediaItem.id}: $path');
+        return;
+      }
 
-    final currentQueue = queue.value;
-    if (currentQueue.any((item) => item.id == mediaItem.id)) return;
+      final currentQueue = queue.value;
+      if (currentQueue.any((item) => item.id == mediaItem.id)) return;
 
-    queue.add([...currentQueue, mediaItem]);
+      queue.add([...currentQueue, mediaItem]);
 
-    if (_playlistSource != null) {
-      await _playlistSource!.add(AudioSource.uri(Uri.file(path), tag: mediaItem));
+      if (_playlistSource != null) {
+        try {
+          await _playlistSource!.add(AudioSource.uri(Uri.file(path), tag: mediaItem));
+        } on PlatformException catch (e) {
+          print('Error PlatformException en addQueueItem: ${e.message}');
+          print('Detalles: ${e.details}');
+          // Quitar el item de la queue si falló cargar
+          queue.add(currentQueue);
+        }
+      }
+    } catch (e) {
+      print('Error agregando item a la queue: $e');
     }
   }
 
@@ -328,9 +355,47 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
       queue.add([]);
       mediaItem.add(null);
       await Future.delayed(const Duration(milliseconds: 200));
+      // Limpiar estado guardado al resetear
+      await PlaybackStateService.clearState();
       print('Player state reset complete');
     } catch (e) {
       print('Error resetting player state: $e');
+    }
+  }
+
+  /// Reproduce una URL directamente (para streaming temporal)
+  Future<void> playUrl(String url, MediaItem item) async {
+    try {
+      // Resetear el reproductor antes de cargar nueva URL
+      await _player.stop();
+      
+      // Cargar la URL con timeout
+      await _player.setUrl(url).timeout(
+        const Duration(seconds: 30),
+        onTimeout: () {
+          throw Exception('Timeout cargando URL de audio');
+        },
+      );
+      
+      mediaItem.add(item);
+      playbackState.add(_buildPlaybackState(
+        PlaybackEvent(
+          processingState: ProcessingState.ready,
+          updateTime: DateTime.now(),
+          updatePosition: Duration.zero,
+          bufferedPosition: Duration.zero,
+          duration: item.duration,
+          currentIndex: 0,
+        ),
+      ));
+      await _player.play();
+    } on PlatformException catch (e) {
+      print('Error de plataforma reproduciendo URL: ${e.message}');
+      print('Detalles: ${e.details}');
+      throw Exception('Error al cargar audio: ${e.message}');
+    } catch (e) {
+      print('Error reproduciendo URL directa: $e');
+      rethrow;
     }
   }
 
@@ -365,6 +430,50 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     } catch (e) {
       print('Error en reparación completa: $e');
       return 'Error durante la reparación: $e';
+    }
+  }
+
+  /// Guarda el estado actual de reproducción
+  Future<void> _saveCurrentState() async {
+    try {
+      final mediaItemValue = mediaItem.value;
+      final queueValue = queue.value;
+      
+      if (mediaItemValue == null || queueValue.isEmpty) {
+        return;
+      }
+      
+      await PlaybackStateService.saveState(
+        isPlaying: _player.playing,
+        currentMediaId: mediaItemValue.id,
+        position: _player.position,
+        queue: queueValue,
+        shuffleMode: playbackState.value.shuffleMode,
+        loopMode: playbackState.value.repeatMode,
+        speed: _player.speed,
+        playlistId: mediaItemValue.extras?['playlist_id'] as String?,
+      );
+    } catch (e) {
+      print('Error guardando estado actual: $e');
+    }
+  }
+
+  /// Restaura el estado guardado de reproducción
+  Future<void> _restoreSavedState() async {
+    try {
+      final savedState = await PlaybackStateService.restoreState();
+      if (savedState == null) {
+        print('No hay estado guardado para restaurar');
+        return;
+      }
+      
+      // Notificar que estamos restaurando
+      print('Estado guardado detectado, esperando a MusicProvider para restauración...');
+      
+      // La restauración real se hará en MusicProvider después de cargar las playlists
+      // Aquí solo verificamos que haya estado guardado
+    } catch (e) {
+      print('Error restaurando estado guardado: $e');
     }
   }
 }
