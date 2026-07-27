@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../providers/download_provider.dart';
 import '../providers/music_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/database_helper.dart';
@@ -481,6 +482,83 @@ class SettingsScreen extends StatelessWidget {
                   ],
                 ),
               ],
+            ),
+          ),
+          const SizedBox(height: 28),
+          _SectionTitle('Descargas'),
+          const SizedBox(height: 10),
+          Container(
+            decoration: AppTheme.glassCard(),
+            padding: const EdgeInsets.all(16),
+            child: Consumer<DownloadProvider>(
+              builder: (context, downloads, _) => Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Icon(
+                        Icons.timer_outlined,
+                        color: AppTheme.primaryLight,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Pausa entre canciones',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.7),
+                          fontSize: 13,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Text(
+                    'YouTube bloquea las descargas cuando recibe muchas '
+                    'peticiones seguidas. Esperar unos segundos entre canciones '
+                    'lo evita: más lento, pero fallan menos. 0 desactiva la '
+                    'pausa.',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.45),
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Row(
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.remove, size: 20),
+                        color: AppTheme.primaryLight,
+                        onPressed: downloads.interDownloadDelaySeconds > 0
+                            ? () => downloads.setInterDownloadDelay(
+                                downloads.interDownloadDelaySeconds - 1)
+                            : null,
+                      ),
+                      Expanded(
+                        child: Text(
+                          downloads.interDownloadDelaySeconds == 0
+                              ? 'Sin pausa'
+                              : '${downloads.interDownloadDelaySeconds} s',
+                          textAlign: TextAlign.center,
+                          style: const TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.add, size: 20),
+                        color: AppTheme.primaryLight,
+                        onPressed: downloads.interDownloadDelaySeconds < 30
+                            ? () => downloads.setInterDownloadDelay(
+                                downloads.interDownloadDelaySeconds + 1)
+                            : null,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
             ),
           ),
           const SizedBox(height: 28),

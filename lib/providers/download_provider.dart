@@ -133,6 +133,7 @@ class DownloadProvider with ChangeNotifier {
   String get statusMessage => _statusMessage;
   String? get errorMessage => _errorMessage;
   bool get useCooldown => _useCooldown;
+  int get interDownloadDelaySeconds => _interDownloadDelay.inSeconds;
   Duration get downloadElapsed => _downloadStartedAt == null
       ? Duration.zero
       : DateTime.now().difference(_downloadStartedAt!);
@@ -154,6 +155,42 @@ class DownloadProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  /// Pausa deliberada entre una descarga y la siguiente.
+  ///
+  /// El muro anti-bot de YouTube se dispara por VOLUMEN de peticiones, y hasta
+  /// ahora no había ningún espaciado real: `_maxConcurrentDownloads = 1` limita
+  /// la concurrencia, pero el `Future.delayed(800ms)` del final de `processQueue`
+  /// sólo separa despachos SIMULTÁNEOS — con un solo slot, el loop se queda
+  /// girando en su poll de 300ms y despacha la siguiente canción ~300ms después
+  /// de que termine la anterior. O sea, encadenadas.
+  ///
+  /// POR DEFECTO DESACTIVADO (0), y el motivo está medido — no lo subas sin
+  /// volver a medir.
+  ///
+  /// `tool/pacing_probe.dart` corrió el mismo set de 12 vídeos en cuatro bloques,
+  /// alternando 0s y 5s de pausa en orden A,B,B,A (los dos órdenes, para que
+  /// ninguna condición se llevara siempre la sesión fresca). Resultado: **42% de
+  /// fallo en ambas condiciones**, exactamente igual. Lo que predice el fallo es
+  /// el ORDEN del bloque, no el espaciado: 0% -> 8% -> 75% -> 83%, monótono.
+  ///
+  /// Es decir, el muro no es un límite de peticiones por segundo: es un
+  /// presupuesto ACUMULADO por IP. Espaciar no ayuda porque lo que cuenta es el
+  /// total, no el ritmo. Y los 150s de pausa entre bloques no bastaron para
+  /// recuperarlo — el bloqueo se fue acumulando bloque a bloque.
+  ///
+  /// El ajuste se conserva porque el mecanismo es correcto y barato, y porque
+  /// esto se midió desde una IP de escritorio: una IP móvil (CGNAT, compartida
+  /// con muchos usuarios) puede comportarse distinto y merece que el usuario
+  /// pueda probarlo. Pero por defecto no se paga un coste que no compra nada.
+  Duration _interDownloadDelay = Duration.zero;
+
+  /// 0 desactiva el espaciado. Se acota por arriba para que un valor absurdo no
+  /// deje la cola parada de forma indistinguible de un cuelgue.
+  void setInterDownloadDelay(int seconds) {
+    _interDownloadDelay = Duration(seconds: seconds.clamp(0, 60));
+    notifyListeners();
+  }
+
   /// Initializes queue on startup — clears any leftover items from previous sessions.
   Future<void> initQueue() async {
     YoutubeService.circuitBreakerEnabled = _useCooldown;
@@ -167,6 +204,9 @@ class DownloadProvider with ChangeNotifier {
     await _dbHelper.clearDownloadQueue();
     _sessionTotal = 0;
     _sessionCompleted = 0;
+    // Sesión nueva: la primera descarga no debe heredar el espaciado pendiente
+    // del último despacho de la sesión anterior.
+    _lastDispatchAt = null;
 
     // Drenar de verdad antes de arrancar la sesión nueva (ver
     // _awaitWorkersDrained). Si se vuelve antes de que los workers viejos
@@ -707,7 +747,21 @@ class DownloadProvider with ChangeNotifier {
 
         // Tomar solo UN item por iteración para llenar slots libres de a uno
         final item = availableItems.first;
-        
+
+        // Espaciado deliberado entre descargas (ver _interDownloadDelay).
+        //
+        // Se mide desde el DESPACHO anterior, no desde que terminó: lo que
+        // YouTube limita es el ritmo de peticiones a InnerTube, y esas se hacen
+        // al principio de cada descarga (getSong + getManifest). Medirlo así hace
+        // que el espaciado sea exactamente "como máximo una descarga nueva cada
+        // N segundos": si la anterior tardó más que N no se espera nada extra, y
+        // si fue rápida (medido: 1.0s para 3.3MB) se completa la diferencia. Un
+        // sleep fijo después de cada descarga penalizaría las lentas sin
+        // necesidad.
+        await _awaitDispatchSpacing(sessionId);
+        if (sessionId != _downloadSessionId || _cancelRequested) break;
+
+        _lastDispatchAt = DateTime.now();
         // Lanzar sin await para que el loop siga buscando items inmediatamente
         _processQueueItem(item, sessionId).ignore();
         
@@ -720,6 +774,31 @@ class DownloadProvider with ChangeNotifier {
         await WakelockPlus.disable();
         _stopDownloadClock();
       }
+    }
+  }
+
+  /// Momento del último despacho, para el espaciado. `null` = sesión recién
+  /// empezada, así que la primera descarga arranca sin esperar.
+  DateTime? _lastDispatchAt;
+
+  /// Espera lo que falte para respetar `_interDownloadDelay` desde el despacho
+  /// anterior. Sondea la cancelación cada 300ms en vez de dormir del tirón, por
+  /// el mismo motivo que `YoutubeService._cancellableDelay`: si no, cancelar
+  /// durante la pausa no surtía efecto hasta que la pausa terminara sola.
+  Future<void> _awaitDispatchSpacing(String sessionId) async {
+    final last = _lastDispatchAt;
+    if (last == null || _interDownloadDelay == Duration.zero) return;
+
+    var remaining = _interDownloadDelay - DateTime.now().difference(last);
+    if (remaining <= Duration.zero) return;
+
+    print('Espaciando descargas: esperando ${remaining.inMilliseconds}ms');
+    const step = Duration(milliseconds: 300);
+    while (remaining > Duration.zero) {
+      if (sessionId != _downloadSessionId || _cancelRequested) return;
+      final sleepFor = remaining < step ? remaining : step;
+      await Future.delayed(sleepFor);
+      remaining -= sleepFor;
     }
   }
 
