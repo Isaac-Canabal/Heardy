@@ -90,13 +90,18 @@ class YoutubeService {
   /// Ordered list of Android client combinations to try when fetching the stream manifest.
   /// YouTube periodically blocks certain clients, so we cascade through these.
   /// NOTE: ytClients is only supported by streamsClient.getManifest(), NOT videos.get().
-  /// `androidVr` estaba aquí y falla el 100% de las veces contra YouTube hoy:
-  /// medido 6/6 fallos (VideoUnplayableException) sobre 3 videos distintos,
-  /// mientras `android` y `androidSdkless` acertaban 6/6 en la misma tanda y en
-  /// las mismas condiciones. Era un intento tirado a la basura por descarga que
-  /// solo añadía volumen de peticiones — justo lo que hay que evitar cuando
-  /// YouTube ya está limitando. Sustituido por `androidSdkless`, que sí
-  /// responde (es además el cliente por defecto de la librería).
+  /// CORRECCIÓN: aquí se afirmaba que `androidVr` "falla el 100% de las veces",
+  /// medido 6/6. Es falso — `tool/client_sweep_probe.dart` barre los 11 clientes
+  /// que expone la librería y `androidVr` sirve bytes igual que `android`,
+  /// `androidSdkless` e `ios`. Aquella tanda de 6/6 midió una sesión ya
+  /// bloqueada, no al cliente.
+  ///
+  /// Aun así la cascada se queda en DOS clientes a propósito. El mismo barrido
+  /// demuestra por qué añadir más no ayuda: cuando YouTube bloquea, bloquea la
+  /// sesión, y los 11 clientes fallan a la vez en la misma corrida. Cada cliente
+  /// extra es entonces una petición tirada a la basura que sólo añade volumen —
+  /// exactamente lo que dispara el bloqueo. Más clientes ayudarían si el rechazo
+  /// fuera por cliente; está medido que no lo es.
   static final List<List<YoutubeApiClient>> _clientFallbacks = [
     [YoutubeApiClient.android],
     [YoutubeApiClient.androidSdkless],
@@ -117,6 +122,15 @@ class YoutubeService {
   /// Whether the shared circuit breaker is active. Wired to DownloadProvider's
   /// "cooldown" setting so users can opt out if they want maximum throughput.
   static bool circuitBreakerEnabled = true;
+
+  /// Limpia el estado del circuit breaker. Para tests: al ser `static`, un test
+  /// que provoque un bloqueo deja a los siguientes esperando cooldowns de hasta
+  /// 180s heredados, lo que los hace fallar por timeout por un motivo que no es
+  /// el que están probando.
+  static void resetCircuitBreaker() {
+    _blockedUntil = null;
+    _consecutiveBlocks = 0;
+  }
 
   /// Cuánto se le permite esperar a una llamada INTERACTIVA (una que tiene una
   /// pantalla bloqueada detrás) antes de rendirse con un error explicativo.
@@ -254,6 +268,24 @@ class YoutubeService {
   bool _isHardBlockError(Object e) {
     final errorStr = e.toString().toLowerCase();
     return errorStr.contains('videounavailableexception') ||
+        // VideoUnplayableException es la forma que toma el bloqueo en el paso del
+        // MANIFEST, y faltaba aquí. Medido con test/download_smoke_test.dart y
+        // tool/client_sweep_probe.dart: una vez que el priming por InnerTube de
+        // YTMusicService arregló el paso de metadata, los fallos se movieron
+        // enteros a `streamsClient.getManifest`, que lanza
+        //   VideoUnplayableException: ... Reason: Sign in to confirm you're not a bot
+        // Sin esta línea el breaker NUNCA se activaba para ese caso: el error sí
+        // se clasificaba como reintentable, pero por accidente —
+        // `_isRetryableError` hace match con 'stream' por el "Streams are not
+        // available for this video." del mensaje— así que la descarga quemaba sus
+        // 5 intentos con backoffs cortos sin activar nunca el cooldown
+        // compartido, manteniendo la sesión bloqueada y haciendo fallar todas las
+        // canciones siguientes.
+        errorStr.contains('videounplayableexception') ||
+        // El marcador inequívoco del muro, independiente del nombre de la
+        // excepción que lo envuelva.
+        errorStr.contains("confirm you're not a bot") ||
+        errorStr.contains('confirm you’re not a bot') ||
         errorStr.contains('403') ||
         errorStr.contains('401') ||
         errorStr.contains('forbidden') ||

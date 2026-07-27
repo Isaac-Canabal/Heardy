@@ -34,6 +34,10 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^3.0.0
   flutter_launcher_icons: ^0.13.1
+  # Sólo para test/download_smoke_test.dart: permite sustituir path_provider por
+  # un directorio temporal, que es lo único que impedía ejercitar el motor de
+  # descarga real desde escritorio (los plugins no cargan bajo `dart run`).
+  path_provider_platform_interface: ^2.1.2
 
 flutter_launcher_icons:
   android: true
