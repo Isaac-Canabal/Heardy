@@ -80,7 +80,8 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
       if (SpotifyService.isSpotifyUrl(url)) {
         _isSpotify = true;
         final result = await _spotifyService.analyze(url);
-        
+        if (!mounted) return;
+
         if (result.isSingleTrack) {
           setState(() {
             _isPlaylist = false;
@@ -89,14 +90,13 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
             _videoThumbnail = result.thumbnailUrl ?? '';
             _spotifyTrack = result.tracks.first;
             _hasAnalyzed = true;
-            _isAnalyzing = false;
           });
         } else {
           setState(() {
             _isPlaylist = true;
             _playlistCount = result.tracks.length;
             _spotifyTracks = result.tracks;
-            
+
             _playlistPreviewTitles = result.tracks.take(1).map((t) => "${t.artist} - ${t.title}").toList();
             if (result.tracks.length > 1) {
               _playlistPreviewTitles.add(
@@ -104,14 +104,13 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
               );
             }
             _hasAnalyzed = true;
-            _isAnalyzing = false;
           });
         }
       } else {
         _isSpotify = false;
         if (url.contains("list=")) {
           _isPlaylist = true;
-          final videoIds = await _ytService.getPlaylistVideoIds(url);
+          final videoIds = await _ytService.getPlaylistVideoIds(url, interactive: true);
           _playlistCount = videoIds.length;
 
           if (videoIds.isNotEmpty) {
@@ -126,31 +125,41 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
             }
           }
 
+          if (!mounted) return;
           setState(() {
             _hasAnalyzed = true;
-            _isAnalyzing = false;
           });
         } else {
           final info = await _ytService.getVideoInfo(url);
+          if (!mounted) return;
           setState(() {
             _videoTitle = info['title'] as String;
             _videoArtist = info['artist'] as String;
             _videoThumbnail = info['thumbnailUrl'] as String;
             _isPlaylist = false;
             _hasAnalyzed = true;
-            _isAnalyzing = false;
           });
         }
       }
     } catch (e) {
-      setState(() {
-        _isAnalyzing = false;
-      });
+      if (!mounted) return;
       _showSnackBar(
         "Error al analizar la URL. Toca para ver detalles.",
         isError: true,
         onTap: () => _showErrorDialog(e.toString()),
       );
+    } finally {
+      // `_isAnalyzing` se apaga aquí y en un solo sitio. Antes se apagaba en las
+      // cinco salidas del método (cuatro de éxito + el catch), así que funcionaba
+      // sólo por casualidad: cualquier `return` temprano nuevo —como los
+      // `if (!mounted) return` de arriba— lo habría dejado en `true` para siempre,
+      // y ese flag es justo el que deshabilita el campo de texto y el botón
+      // "Analizar". La pantalla quedaba inservible hasta reiniciar la app.
+      if (mounted) {
+        setState(() {
+          _isAnalyzing = false;
+        });
+      }
     }
   }
 

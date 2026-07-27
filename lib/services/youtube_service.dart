@@ -118,19 +118,49 @@ class YoutubeService {
   /// "cooldown" setting so users can opt out if they want maximum throughput.
   static bool circuitBreakerEnabled = true;
 
+  /// Cuánto se le permite esperar a una llamada INTERACTIVA (una que tiene una
+  /// pantalla bloqueada detrás) antes de rendirse con un error explicativo.
+  ///
+  /// El cooldown compartido existe para que una tanda de descargas en segundo
+  /// plano no realimente el bloqueo de YouTube; ahí esperar los 180s completos es
+  /// lo correcto. Pero los paths de preview ("Analizar enlace", búsqueda) dejan
+  /// la UI deshabilitada mientras esperan, así que heredar ese mismo cooldown
+  /// convertía un breaker en su tramo más alto en una pantalla muerta durante
+  /// tres minutos, sin texto y sin forma de salir — indistinguible de un cuelgue.
+  /// Para una petición suelta que un humano está esperando, es mejor fallar
+  /// rápido y decir cuánto falta.
+  static const Duration _interactiveCooldownCap = Duration(seconds: 8);
+
   /// Waits out any active global cooldown before a caller issues a new request.
+  ///
   /// [isCancelled], when provided, is polled every 300ms so a cancelled
   /// download doesn't keep sleeping for the full remaining cooldown (up to
   /// 180s) — see `_cancellableDelay` for why this matters.
-  Future<void> _respectGlobalCooldown(String context, {bool Function()? isCancelled}) async {
+  ///
+  /// [maxWait] hace que la llamada falle en vez de esperar cuando lo que queda de
+  /// cooldown lo excede — ver `_interactiveCooldownCap`. Se lanza en lugar de
+  /// esperar, así que los llamadores lo invocan FUERA de su `try`/bucle de
+  /// reintentos para que propague directamente en vez de convertirse en otro
+  /// reintento.
+  Future<void> _respectGlobalCooldown(
+    String context, {
+    bool Function()? isCancelled,
+    Duration? maxWait,
+  }) async {
     if (!circuitBreakerEnabled) return;
     final until = _blockedUntil;
     if (until == null) return;
     final remaining = until.difference(DateTime.now());
-    if (remaining > Duration.zero) {
-      print('[YouTubeService] $context: waiting out shared cooldown (${remaining.inSeconds}s remaining)');
-      await _cancellableDelay(remaining, isCancelled);
+    if (remaining <= Duration.zero) return;
+    if (maxWait != null && remaining > maxWait) {
+      print('[YouTubeService] $context: cooldown de ${remaining.inSeconds}s excede el techo interactivo, fallando rápido');
+      throw Exception(
+        'YouTube está limitando las peticiones ahora mismo. '
+        'Inténtalo de nuevo en ${remaining.inSeconds}s.',
+      );
     }
+    print('[YouTubeService] $context: waiting out shared cooldown (${remaining.inSeconds}s remaining)');
+    await _cancellableDelay(remaining, isCancelled);
   }
 
   /// Sleeps for [duration], polling [isCancelled] every 300ms and returning
@@ -325,7 +355,11 @@ class YoutubeService {
     ];
     
     for (int attempt = 0; attempt <= maxRetries; attempt++) {
-      await _respectGlobalCooldown('getVideoInfo');
+      // Techo interactivo: hoy este método sólo se llama desde "Analizar enlace"
+      // (el path de descarga usa `downloadVideoWithAudio`), así que siempre hay
+      // una pantalla esperando. Si algún día se llama desde un batch, esto tiene
+      // que volverse un parámetro como en `getPlaylistVideoIds`.
+      await _respectGlobalCooldown('getVideoInfo', maxWait: _interactiveCooldownCap);
       final yt = configs[attempt.clamp(0, configs.length - 1)]();
       try {
         final video = await _getVideoWithFallback(yt, videoId);
@@ -665,7 +699,17 @@ class YoutubeService {
   /// el `attemptBudget` de `_processQueueItem` ni `cancelAllDownloads()` lo
   /// alcanzaban, y la UI se quedaba en "Analizando lista de reproducción..." de
   /// forma indefinida y silenciosa.
-  Future<List<String>> getPlaylistVideoIds(String url, {bool Function()? isCancelled}) async {
+  ///
+  /// [interactive] distingue los dos llamadores: `true` para el preview de
+  /// "Analizar enlace" (hay una pantalla bloqueada, así que un cooldown largo se
+  /// convierte en error rápido — ver `_interactiveCooldownCap`), `false` para
+  /// `downloadPlaylist`, que corre en segundo plano y debe esperar el cooldown
+  /// completo para no realimentar el bloqueo.
+  Future<List<String>> getPlaylistVideoIds(
+    String url, {
+    bool Function()? isCancelled,
+    bool interactive = false,
+  }) async {
     try {
       // Convertir enlaces de YouTube Music a YouTube estándar
       final convertedUrl = _convertYouTubeMusicUrl(url);
@@ -687,7 +731,11 @@ class YoutubeService {
       if (isCancelled != null && isCancelled()) {
         throw Exception(cancelledMessage);
       }
-      await _respectGlobalCooldown('getPlaylistVideoIds', isCancelled: isCancelled);
+      await _respectGlobalCooldown(
+        'getPlaylistVideoIds',
+        isCancelled: isCancelled,
+        maxWait: interactive ? _interactiveCooldownCap : null,
+      );
       final yt = YoutubeExplode();
       try {
         final convertedUrl = _convertYouTubeMusicUrl(url);
@@ -747,7 +795,10 @@ class YoutubeService {
     const maxRetries = 2; // Total 3 attempts
     
     for (int attempt = 0; attempt <= maxRetries; attempt++) {
-      await _respectGlobalCooldown('searchVideos');
+      // Idem: la búsqueda siempre es interactiva. El path de descarga de Spotify
+      // hace su propia búsqueda en `searchAndDownload`, que sí espera el cooldown
+      // completo porque corre en segundo plano.
+      await _respectGlobalCooldown('searchVideos', maxWait: _interactiveCooldownCap);
       final yt = YoutubeExplode();
       try {
         final results = <YouTubeSearchResult>[];
@@ -1148,10 +1199,21 @@ class YoutubeService {
             throw Exception(cancelledMessage);
           }
 
-          final end = (received + chunkSize - 1) < totalBytes 
-              ? (received + chunkSize - 1) 
+          // Progreso de esta iteración: el `while` avanza sólo si `received`
+          // crece, y nada garantizaba que creciera. Un 206 con cuerpo vacío hace
+          // que el `await for` de abajo termine sin emitir un solo chunk, dejando
+          // `received` intacto y al bucle repitiendo EXACTAMENTE el mismo Range
+          // para siempre. Ningún timeout lo detecta, porque cada petición
+          // individual responde rápido y correctamente: la descarga se queda
+          // clavada en el mismo porcentaje quemando red y batería de forma
+          // indefinida. Con esto se corta y se deja reintentar al bucle externo
+          // ("chunk" hace que `_isRetryableError` lo clasifique como reintentable).
+          final receivedBeforeChunk = received;
+
+          final end = (received + chunkSize - 1) < totalBytes
+              ? (received + chunkSize - 1)
               : totalBytes - 1;
-              
+
           final request = await client.getUrl(url);
           _addHeaders(request);
           request.headers.add('Range', 'bytes=$received-$end');
@@ -1184,6 +1246,13 @@ class YoutubeService {
                 onProgress(percent.clamp(0.0, 0.99));
               }
             }
+          }
+
+          if (received == receivedBeforeChunk) {
+            throw Exception(
+              'El servidor devolvió un chunk vacío en el byte $received '
+              'de $totalBytes; abortando para no repetir la misma petición.',
+            );
           }
         }
       }
@@ -1378,7 +1447,25 @@ class YoutubeService {
     try {
       // Search YouTube with "artist - title" query
       final query = '$artist - $title';
-      final searchResults = await yt.search.search(query);
+
+      // Este método NO reutiliza `searchVideos`: hace su propia búsqueda porque
+      // necesita los `Video` crudos para emparejar por duración. Eso significaba
+      // que se saltaba las tres protecciones que `searchVideos` sí tiene —
+      // timeout, circuit breaker compartido y check de cancelación — pese a ser
+      // el primer paso de TODA descarga de Spotify. Sin timeout, un socket
+      // colgado aquí congelaba la descarga hasta el attemptBudget de 10 minutos;
+      // sin respetar el cooldown, disparaba peticiones justo cuando YouTube ya
+      // estaba bloqueando, realimentando el bloqueo que el breaker existe para
+      // cortar.
+      if (isCancelled != null && isCancelled()) {
+        throw Exception(cancelledMessage);
+      }
+      await _respectGlobalCooldown('searchAndDownload', isCancelled: isCancelled);
+      final searchResults = await _withTimeout(
+        yt.search.search(query),
+        'La búsqueda de "$query"',
+        _requestTimeout,
+      );
 
       if (searchResults.isEmpty) {
         throw Exception('No se encontraron resultados en YouTube para: "$query"');
@@ -1449,6 +1536,12 @@ class YoutubeService {
       return result;
     } catch (e) {
       if (_isRateLimitError(e)) rethrow;
+      // La cancelación se propaga sin envolver. `isCancellationError` la
+      // reconocería igual dentro del wrapper (busca por substring), pero
+      // envolverla la convierte en un mensaje de error de búsqueda, y el registro
+      // de un fallo de búsqueda es justo lo que no queremos cuando el usuario
+      // simplemente canceló.
+      if (isCancellationError(e)) rethrow;
       throw Exception('Error buscando "$artist - $title" en YouTube: ${e.toString()}');
     } finally {
       yt.close();

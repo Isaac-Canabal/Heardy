@@ -102,7 +102,11 @@ class YTMusicService {
   /// puede tardar de verdad (scraper propio paginado + expansión vía
   /// youtube_explode_dart). El path primario de aquí es una sola petición ya
   /// acotada por `_apiTimeout`, así que no necesita poder interrumpirse.
-  Future<List<String>> getPlaylistVideoIds(String url, {bool Function()? isCancelled}) async {
+  Future<List<String>> getPlaylistVideoIds(
+    String url, {
+    bool Function()? isCancelled,
+    bool interactive = false,
+  }) async {
     try {
       await initialize();
       
@@ -130,7 +134,11 @@ class YTMusicService {
       
       // Fallback to youtube_explode_dart
       try {
-        return await _youtubeService.getPlaylistVideoIds(url, isCancelled: isCancelled);
+        return await _youtubeService.getPlaylistVideoIds(
+          url,
+          isCancelled: isCancelled,
+          interactive: interactive,
+        );
       } catch (fallbackError) {
         // La cancelación se propaga tal cual: envolverla haría que
         // `YoutubeService.isCancellationError` siguiera reconociéndola por el
