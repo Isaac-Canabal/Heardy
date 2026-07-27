@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../providers/settings_provider.dart';
 import '../providers/download_provider.dart';
 import '../providers/music_provider.dart';
-import '../services/youtube_service.dart';
+import '../services/ytmusic_service.dart';
 import '../services/spotify_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/download_progress_card.dart';
@@ -22,7 +23,7 @@ class AddFromYouTubeScreen extends StatefulWidget {
 class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
   final TextEditingController _urlController = TextEditingController();
   final TextEditingController _newPlaylistController = TextEditingController();
-  final YoutubeService _ytService = YoutubeService();
+  final YTMusicService _ytService = YTMusicService();
   final SpotifyService _spotifyService = SpotifyService();
 
   bool _isAnalyzing = false;
@@ -146,8 +147,9 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
         _isAnalyzing = false;
       });
       _showSnackBar(
-        "Error al analizar la URL: ${e.toString()}",
+        "Error al analizar la URL. Toca para ver detalles.",
         isError: true,
+        onTap: () => _showErrorDialog(e.toString()),
       );
     }
   }
@@ -237,15 +239,99 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
     String message, {
     bool isError = false,
     bool isSuccess = false,
+    VoidCallback? onTap,
   }) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: isError
-            ? Colors.redAccent.shade700
-            : isSuccess
-                ? const Color(0xFF059669)
-                : AppTheme.primary,
+    final snackBar = SnackBar(
+      content: GestureDetector(
+        onTap: onTap,
+        child: Text(message),
+      ),
+      backgroundColor: isError
+          ? Colors.redAccent.shade700
+          : isSuccess
+              ? const Color(0xFF059669)
+              : AppTheme.primary,
+      action: onTap != null
+          ? SnackBarAction(
+              label: 'Ver detalles',
+              textColor: Colors.white,
+              onPressed: onTap,
+            )
+          : null,
+    );
+    ScaffoldMessenger.of(context).showSnackBar(snackBar);
+  }
+
+  void _showErrorDialog(String errorDetails) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: AppTheme.surface,
+        title: const Row(
+          children: [
+            Icon(Icons.error_outline, color: Colors.redAccent),
+            SizedBox(width: 12),
+            Text(
+              'Error detallado',
+              style: TextStyle(color: Colors.white),
+            ),
+          ],
+        ),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: Colors.black26,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(
+                errorDetails,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 12,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: ElevatedButton.icon(
+                    onPressed: () {
+                      Clipboard.setData(ClipboardData(text: errorDetails));
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        const SnackBar(
+                          content: Text('Error copiado al portapapeles'),
+                          duration: Duration(seconds: 2),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.copy, size: 18),
+                    label: const Text('Copiar'),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.primary,
+                      foregroundColor: Colors.white,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('Cerrar'),
+                    style: TextButton.styleFrom(
+                      foregroundColor: Colors.white70,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -313,14 +399,14 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
-                        _sectionLabel('Enlace de YouTube o Spotify', Icons.link_rounded),
+                        _sectionLabel('Enlace de YouTube, YouTube Music o Spotify', Icons.link_rounded),
                         const SizedBox(height: 12),
                         TextField(
                           controller: _urlController,
                           enabled: !_isAnalyzing && !downloadProvider.isDownloading,
                           style: const TextStyle(color: Colors.white),
                           decoration: InputDecoration(
-                            hintText: 'Enlace de YouTube o Spotify (canción, playlist...)',
+                            hintText: 'Enlace de YouTube, YouTube Music o Spotify (canción, playlist...)',
                             prefixIcon: Icon(Icons.link_rounded, color: AppTheme.primaryLight),
                             suffixIcon: _urlController.text.isNotEmpty
                                 ? IconButton(
@@ -357,30 +443,6 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
                                     fontSize: 15,
                                   ),
                                 ),
-                        ),
-                        const SizedBox(height: 12),
-                        Row(
-                          children: [
-                            Switch(
-                              value: downloadProvider.useCooldown,
-                              onChanged: downloadProvider.isDownloading
-                                  ? null
-                                  : (value) {
-                                      downloadProvider.setCooldown(value);
-                                    },
-                              activeThumbColor: AppTheme.accent,
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                'Tiempo de enfriamiento entre descargas',
-                                style: TextStyle(
-                                  color: Colors.white.withValues(alpha: 0.8),
-                                  fontSize: 13,
-                                ),
-                              ),
-                            ),
-                          ],
                         ),
                       ],
                     ),
@@ -593,7 +655,7 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
                 ),
                 SizedBox(height: 4),
                 Text(
-                  'Descarga de YouTube o importa metadatos de Spotify para escuchar sin conexión.',
+                  'Descarga de YouTube/YouTube Music o importa metadatos de Spotify para escuchar sin conexión.',
                   style: TextStyle(
                     color: Colors.white70,
                     fontSize: 13,
@@ -613,12 +675,16 @@ class _AddFromYouTubeScreenState extends State<AddFromYouTubeScreen> {
       children: [
         Icon(icon, color: AppTheme.primaryLight, size: 18),
         const SizedBox(width: 8),
-        Text(
-          text,
-          style: const TextStyle(
-            color: Colors.white,
-            fontWeight: FontWeight.w700,
-            fontSize: 15,
+        Expanded(
+          child: Text(
+            text,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w700,
+              fontSize: 15,
+            ),
           ),
         ),
       ],

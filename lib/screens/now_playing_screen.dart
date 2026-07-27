@@ -252,6 +252,13 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                               },
                             ),
                             IconButton(
+                              icon: const Icon(Icons.replay_5, color: Colors.white70, size: 26),
+                              tooltip: 'Retroceder 5 s',
+                              onPressed: () => audioHandler.seekRelative(
+                                const Duration(seconds: -5),
+                              ),
+                            ),
+                            IconButton(
                               icon: const Icon(Icons.skip_previous, color: Colors.white, size: 36),
                               onPressed: () => audioHandler.skipToPrevious(),
                             ),
@@ -280,6 +287,13 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                             IconButton(
                               icon: const Icon(Icons.skip_next, color: Colors.white, size: 36),
                               onPressed: () => audioHandler.skipToNext(),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.forward_5, color: Colors.white70, size: 26),
+                              tooltip: 'Adelantar 5 s',
+                              onPressed: () => audioHandler.seekRelative(
+                                const Duration(seconds: 5),
+                              ),
                             ),
                             _buildRepeatButton(audioHandler, repeatMode),
                           ],

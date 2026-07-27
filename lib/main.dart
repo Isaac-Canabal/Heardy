@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:audio_service/audio_service.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -16,6 +17,11 @@ import 'theme/app_theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+    DeviceOrientation.portraitDown,
+  ]);
 
   await DatabaseHelper.instance.database;
 
@@ -44,24 +50,19 @@ void main() async {
     }
   }
 
+  final musicProvider = MusicProvider();
+
   runApp(
     MultiProvider(
       providers: [
         Provider<AudioPlayerHandler>.value(value: audioHandler),
         ChangeNotifierProvider(create: (_) => SettingsProvider()),
-        ChangeNotifierProvider(create: (_) => MusicProvider()),
+        ChangeNotifierProvider.value(value: musicProvider),
         ChangeNotifierProxyProvider2<MusicProvider, AudioPlayerHandler, DownloadProvider>(
           create: (_) => DownloadProvider()..initQueue(),
           update: (_, musicProvider, audioHandler, downloadProvider) {
             downloadProvider!.musicProvider = musicProvider;
             downloadProvider.audioHandler = audioHandler;
-            
-            // Restaurar estado de reproducción después de que todo esté inicializado
-            // Usar Future.microtask para asegurar que se ejecute después del build inicial
-            Future.microtask(() async {
-              await musicProvider.restorePlaybackState(audioHandler);
-            });
-            
             return downloadProvider;
           },
         ),
@@ -69,6 +70,11 @@ void main() async {
       child: const HeardyApp(),
     ),
   );
+
+  // Restaurar estado de reproduccion UNA sola vez despues de que todo este inicializado
+  Future.delayed(const Duration(milliseconds: 800), () {
+    musicProvider.restorePlaybackState(audioHandler);
+  });
 }
 
 class HeardyApp extends StatelessWidget {

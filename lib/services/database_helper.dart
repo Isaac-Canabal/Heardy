@@ -22,7 +22,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 5,
+      version: 7,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -83,7 +83,19 @@ class DatabaseHelper {
         spotifyTitle TEXT,
         spotifyArtist TEXT,
         spotifyDurationMs INTEGER,
-        spotifyThumbnailUrl TEXT
+        spotifyThumbnailUrl TEXT,
+        expectedOrderIndex INTEGER
+      )
+    ''');
+
+    // Create play_history table for statistics
+    await db.execute('''
+      CREATE TABLE play_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        songId TEXT NOT NULL,
+        playDate TEXT NOT NULL,
+        playDuration INTEGER NOT NULL,
+        FOREIGN KEY (songId) REFERENCES songs (id) ON DELETE CASCADE
       )
     ''');
   }
@@ -124,6 +136,23 @@ class DatabaseHelper {
       await db.execute("ALTER TABLE download_queue ADD COLUMN spotifyArtist TEXT");
       await db.execute("ALTER TABLE download_queue ADD COLUMN spotifyDurationMs INTEGER");
       await db.execute("ALTER TABLE download_queue ADD COLUMN spotifyThumbnailUrl TEXT");
+    }
+    if (oldVersion < 6) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS play_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          songId TEXT NOT NULL,
+          playDate TEXT NOT NULL,
+          playDuration INTEGER NOT NULL,
+          FOREIGN KEY (songId) REFERENCES songs (id) ON DELETE CASCADE
+        )
+      ''');
+    }
+    if (oldVersion < 7) {
+      // Add expectedOrderIndex to preserve playlist order during parallel downloads
+      await db.execute(
+        'ALTER TABLE download_queue ADD COLUMN expectedOrderIndex INTEGER',
+      );
     }
   }
 
@@ -395,7 +424,11 @@ class DatabaseHelper {
 
   // --- DOWNLOAD QUEUE CRUD ---
 
-  Future<int> addToDownloadQueue(String videoId, String playlistId) async {
+  Future<int> addToDownloadQueue(
+    String videoId,
+    String playlistId, {
+    int? expectedOrderIndex,
+  }) async {
     final db = await database;
     
     // Check if already in queue to prevent duplicate downloads in the queue
@@ -413,6 +446,7 @@ class DatabaseHelper {
         'playlistId': playlistId,
         'addedDate': DateTime.now().toIso8601String(),
         'source': 'youtube',
+        'expectedOrderIndex': expectedOrderIndex,
       },
     );
   }
@@ -424,6 +458,7 @@ class DatabaseHelper {
     required String artist,
     required int durationMs,
     String? thumbnailUrl,
+    int? expectedOrderIndex,
   }) async {
     final db = await database;
 
@@ -446,6 +481,7 @@ class DatabaseHelper {
         'spotifyArtist': artist,
         'spotifyDurationMs': durationMs,
         'spotifyThumbnailUrl': thumbnailUrl,
+        'expectedOrderIndex': expectedOrderIndex,
       },
     );
   }
@@ -472,6 +508,149 @@ class DatabaseHelper {
   Future close() async {
     final db = await database;
     db.close();
+  }
+
+  // --- PLAY HISTORY / STATISTICS ---
+
+  Future<int> recordPlay(String songId, int playDuration) async {
+    final db = await database;
+    return await db.insert(
+      'play_history',
+      {
+        'songId': songId,
+        'playDate': DateTime.now().toIso8601String(),
+        'playDuration': playDuration,
+      },
+    );
+  }
+
+  String _getStartOfWeek() {
+    final now = DateTime.now();
+    final daysToSubtract = now.weekday - 1;
+    final monday = DateTime(now.year, now.month, now.day).subtract(Duration(days: daysToSubtract));
+    return monday.toIso8601String();
+  }
+
+  Future<List<Map<String, dynamic>>> getTopSongsThisWeek({int limit = 10}) async {
+    final db = await database;
+    final startOfWeek = _getStartOfWeek();
+    
+    final result = await db.rawQuery('''
+      SELECT s.id, s.title, s.artist, s.artPath, COUNT(*) as playCount
+      FROM play_history ph
+      JOIN songs s ON s.id = ph.songId
+      WHERE ph.playDate >= ?
+      GROUP BY s.id
+      ORDER BY playCount DESC
+      LIMIT ?
+    ''', [startOfWeek, limit]);
+    
+    return result;
+  }
+
+  Future<List<Map<String, dynamic>>> getTopSongsThisMonth({int limit = 10}) async {
+    final db = await database;
+    final oneMonthAgo = DateTime.now().subtract(Duration(days: 30)).toIso8601String();
+    
+    final result = await db.rawQuery('''
+      SELECT s.id, s.title, s.artist, s.artPath, COUNT(*) as playCount
+      FROM play_history ph
+      JOIN songs s ON s.id = ph.songId
+      WHERE ph.playDate >= ?
+      GROUP BY s.id
+      ORDER BY playCount DESC
+      LIMIT ?
+    ''', [oneMonthAgo, limit]);
+    
+    return result;
+  }
+
+  Future<int> getTotalPlaysThisWeek() async {
+    final db = await database;
+    final startOfWeek = _getStartOfWeek();
+    
+    final result = await db.rawQuery('''
+      SELECT COUNT(*) as total
+      FROM play_history
+      WHERE playDate >= ?
+    ''', [startOfWeek]);
+    
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  Future<int> getTotalPlaysThisMonth() async {
+    final db = await database;
+    final oneMonthAgo = DateTime.now().subtract(Duration(days: 30)).toIso8601String();
+    
+    final result = await db.rawQuery('''
+      SELECT COUNT(*) as total
+      FROM play_history
+      WHERE playDate >= ?
+    ''', [oneMonthAgo]);
+    
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  Future<int> getTotalListenTimeThisWeek() async {
+    final db = await database;
+    final startOfWeek = _getStartOfWeek();
+
+    final result = await db.rawQuery('''
+      SELECT COALESCE(SUM(playDuration), 0) as total
+      FROM play_history
+      WHERE playDate >= ?
+    ''', [startOfWeek]);
+
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  Future<int> getTotalListenTimeThisMonth() async {
+    final db = await database;
+    final oneMonthAgo = DateTime.now().subtract(Duration(days: 30)).toIso8601String();
+
+    final result = await db.rawQuery('''
+      SELECT COALESCE(SUM(playDuration), 0) as total
+      FROM play_history
+      WHERE playDate >= ?
+    ''', [oneMonthAgo]);
+
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  Future<Map<String, dynamic>?> getTopArtistThisWeek() async {
+    final db = await database;
+    final startOfWeek = _getStartOfWeek();
+
+    final result = await db.rawQuery('''
+      SELECT s.artist, COUNT(*) as playCount
+      FROM play_history ph
+      JOIN songs s ON s.id = ph.songId
+      WHERE ph.playDate >= ?
+      GROUP BY s.artist
+      ORDER BY playCount DESC
+      LIMIT 1
+    ''', [startOfWeek]);
+
+    if (result.isEmpty) return null;
+    return result.first;
+  }
+
+  Future<Map<String, dynamic>?> getTopArtistThisMonth() async {
+    final db = await database;
+    final oneMonthAgo = DateTime.now().subtract(Duration(days: 30)).toIso8601String();
+
+    final result = await db.rawQuery('''
+      SELECT s.artist, COUNT(*) as playCount
+      FROM play_history ph
+      JOIN songs s ON s.id = ph.songId
+      WHERE ph.playDate >= ?
+      GROUP BY s.artist
+      ORDER BY playCount DESC
+      LIMIT 1
+    ''', [oneMonthAgo]);
+
+    if (result.isEmpty) return null;
+    return result.first;
   }
 
   // Clear queue items for a specific playlist

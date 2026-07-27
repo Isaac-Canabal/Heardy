@@ -3,6 +3,8 @@ import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter/services.dart';
+import 'package:audio_session/audio_session.dart';
+import 'database_helper.dart';
 import 'playback_state_service.dart';
 
 final FlutterLocalNotificationsPlugin _errorNotification = FlutterLocalNotificationsPlugin();
@@ -12,15 +14,22 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   // Store the last emitted PlaybackEvent so we can rebuild state on shuffle/loop changes
   PlaybackEvent _lastEvent = PlaybackEvent();
 
+  String? _trackingSongId;
+  MediaItem? _trackingMediaItem;
+  Duration _trackingMaxPosition = Duration.zero;
+  bool _hasRecordedCurrentTrack = false;
+
   AudioPlayer get player => _player;
 
   AudioPlayerHandler() {
+    _initAudioSession();
     // Intentar restaurar estado guardado al iniciar
     _restoreSavedState();
     
     // Pipe just_audio events to audio_service's playbackState stream
     _player.playbackEventStream.listen((event) {
       _lastEvent = event;
+      _updateTrackingPosition();
       playbackState.add(_buildPlaybackState(event));
       // Guardar estado cuando cambia la reproducción
       _saveCurrentState();
@@ -42,10 +51,14 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     });
 
     // Synchronize mediaItem updates when active track index changes
-    _player.currentIndexStream.listen((index) {
+    _player.currentIndexStream.listen((index) async {
+      await _finalizePlay();
       final playlistQueue = queue.value;
       if (index != null && playlistQueue.isNotEmpty && index < playlistQueue.length) {
         mediaItem.add(playlistQueue[index]);
+        _startTracking(playlistQueue[index]);
+      } else {
+        _resetTracking();
       }
     });
 
@@ -60,8 +73,14 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     });
 
     // Monitor track completion to trigger automatic next track
-    _player.processingStateStream.listen((state) {
+    _player.processingStateStream.listen((state) async {
       if (state == ProcessingState.completed) {
+        final duration = _trackingMediaItem?.duration ?? _player.duration;
+        if (duration != null && duration > Duration.zero) {
+          _trackingMaxPosition = duration;
+        }
+        await _finalizePlay();
+
         // LoopMode.one is handled internally by just_audio (it repeats automatically).
         // LoopMode.all: wrap around to first track after the last one.
         // LoopMode.off: stop naturally at end.
@@ -136,12 +155,24 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
 
   @override
   Future<void> stop() async {
+    await _finalizePlay();
     await _player.stop();
+    _resetTracking();
     await super.stop();
   }
 
   @override
   Future<void> seek(Duration position) => _player.seek(position);
+
+  Future<void> seekRelative(Duration offset) async {
+    final duration = _player.duration ?? Duration.zero;
+    var newPosition = _player.position + offset;
+    if (newPosition < Duration.zero) newPosition = Duration.zero;
+    if (duration > Duration.zero && newPosition > duration) {
+      newPosition = duration;
+    }
+    await seek(newPosition);
+  }
 
   @override
   Future<void> skipToNext() async {
@@ -238,6 +269,7 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
       if (_player.currentIndex != initialIndex) {
         await skipToQueueItem(initialIndex);
       }
+      _startTracking(validItems[initialIndex]);
       if (!_player.playing) {
         await _player.play();
       }
@@ -261,7 +293,45 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     );
 
     mediaItem.add(validItems[initialIndex]);
+    _startTracking(validItems[initialIndex]);
     await _player.play();
+  }
+
+  /// Loads a playlist and seeks to a position WITHOUT auto-playing.
+  /// Used to restore a paused state on app restart.
+  Future<void> restorePlaylist(
+    List<MediaItem> items,
+    String targetMediaId,
+    Duration position,
+  ) async {
+    final validItems = items.where((item) {
+      final path = item.extras?['filePath'] as String? ?? '';
+      return path.isNotEmpty && File(path).existsSync();
+    }).toList();
+
+    if (validItems.isEmpty) return;
+
+    final targetIndex = validItems.indexWhere((item) => item.id == targetMediaId);
+    final initialIndex = targetIndex != -1 ? targetIndex : 0;
+
+    queue.add(validItems);
+
+    final sources = validItems.map((item) {
+      final path = item.extras?['filePath'] as String? ?? '';
+      return AudioSource.uri(Uri.file(path), tag: item);
+    }).toList();
+
+    _playlistSource = ConcatenatingAudioSource(children: sources);
+
+    await _player.setAudioSource(
+      _playlistSource!,
+      initialIndex: initialIndex,
+      initialPosition: position,
+    );
+
+    mediaItem.add(validItems[initialIndex]);
+    _startTracking(validItems[initialIndex]);
+    // Do NOT call _player.play() — restore paused state
   }
 
   @override
@@ -296,6 +366,42 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
       }
     } catch (e) {
       print('Error agregando item a la queue: $e');
+    }
+  }
+
+  @override
+  Future<void> addQueueItems(List<MediaItem> mediaItems) async {
+    try {
+      final validItems = mediaItems.where((item) {
+        final path = item.extras?['filePath'] as String? ?? '';
+        return path.isNotEmpty && File(path).existsSync();
+      }).toList();
+
+      if (validItems.isEmpty) return;
+
+      final currentQueue = queue.value;
+      final existingIds = currentQueue.map((i) => i.id).toSet();
+      final newItems = validItems.where((item) => !existingIds.contains(item.id)).toList();
+
+      if (newItems.isEmpty) return;
+
+      queue.add([...currentQueue, ...newItems]);
+
+      if (_playlistSource != null) {
+        try {
+          final sources = newItems.map((item) {
+            final path = item.extras!['filePath'] as String;
+            return AudioSource.uri(Uri.file(path), tag: item);
+          }).toList();
+          await _playlistSource!.addAll(sources);
+        } on PlatformException catch (e) {
+          print('Error PlatformException en addQueueItems: ${e.message}');
+          print('Detalles: ${e.details}');
+          queue.add(currentQueue);
+        }
+      }
+    } catch (e) {
+      print('Error agregando items a la queue: $e');
     }
   }
 
@@ -366,6 +472,7 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   /// Reproduce una URL directamente (para streaming temporal)
   Future<void> playUrl(String url, MediaItem item) async {
     try {
+      _resetTracking();
       // Resetear el reproductor antes de cargar nueva URL
       await _player.stop();
       
@@ -433,6 +540,69 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     }
   }
 
+  void _startTracking(MediaItem item) {
+    final filePath = item.extras?['filePath'] as String?;
+    if (filePath == null || filePath.isEmpty) {
+      _resetTracking();
+      return;
+    }
+
+    _trackingSongId = item.id;
+    _trackingMediaItem = item;
+    _trackingMaxPosition = Duration.zero;
+    _hasRecordedCurrentTrack = false;
+  }
+
+  void _resetTracking() {
+    _trackingSongId = null;
+    _trackingMediaItem = null;
+    _trackingMaxPosition = Duration.zero;
+    _hasRecordedCurrentTrack = false;
+  }
+
+  void _updateTrackingPosition() {
+    if (_trackingSongId == null || _hasRecordedCurrentTrack) return;
+    if (mediaItem.value?.id != _trackingSongId) return;
+
+    final position = _player.position;
+    if (position > _trackingMaxPosition) {
+      _trackingMaxPosition = position;
+    }
+  }
+
+  Future<void> _finalizePlay() async {
+    if (_hasRecordedCurrentTrack ||
+        _trackingSongId == null ||
+        _trackingMediaItem == null) {
+      return;
+    }
+
+    final filePath = _trackingMediaItem!.extras?['filePath'] as String?;
+    if (filePath == null || filePath.isEmpty || !File(filePath).existsSync()) {
+      return;
+    }
+
+    final duration = _trackingMediaItem!.duration ??
+        _player.duration ??
+        Duration.zero;
+    if (duration.inSeconds <= 0) return;
+
+    final listenedSeconds = _trackingMaxPosition.inSeconds;
+    final threshold = (duration.inSeconds * 0.5).ceil();
+
+    if (listenedSeconds >= threshold) {
+      try {
+        await DatabaseHelper.instance.recordPlay(
+          _trackingSongId!,
+          listenedSeconds,
+        );
+        _hasRecordedCurrentTrack = true;
+      } catch (e) {
+        print('Error registrando reproducción: $e');
+      }
+    }
+  }
+
   /// Guarda el estado actual de reproducción
   Future<void> _saveCurrentState() async {
     try {
@@ -474,6 +644,17 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
       // Aquí solo verificamos que haya estado guardado
     } catch (e) {
       print('Error restaurando estado guardado: $e');
+    }
+  }
+
+  /// Inicializa la sesión de audio para el manejo de foco de audio del SO
+  Future<void> _initAudioSession() async {
+    try {
+      final session = await AudioSession.instance;
+      await session.configure(const AudioSessionConfiguration.music());
+      print('Sesión de audio inicializada exitosamente.');
+    } catch (e) {
+      print('Error inicializando la sesión de audio: $e');
     }
   }
 }

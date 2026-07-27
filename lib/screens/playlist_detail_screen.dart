@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:audio_service/audio_service.dart';
 import '../providers/music_provider.dart';
-import '../services/database_helper.dart';
 import '../providers/download_provider.dart';
 import '../services/audio_player_handler.dart';
 import '../models/song.dart';
@@ -307,20 +306,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
   }
 
-  String _getSortLabel(String sortBy) {
-    switch (sortBy) {
-      case 'manual':
-        return 'Orden de importación';
-      case 'artist':
-        return 'Artista';
-      case 'title':
-        return 'Título';
-      case 'duration':
-        return 'Duración';
-      default:
-        return 'Desconocido';
-    }
-  }
+
 
   Widget _buildSearchField() {
     return Container(

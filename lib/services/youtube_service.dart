@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math';
 import 'package:path_provider/path_provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
@@ -49,39 +50,407 @@ class YoutubeService {
 
   static final Map<String, _CachedVideoMetadata> _metadataCache = {};
 
-  /// Preview for the UI — metadata only, no manifest (avoids burning stream URLs).
-  Future<Map<String, dynamic>> getVideoInfo(String url) async {
-    final yt = YoutubeExplode();
-    try {
-      final videoId = VideoId(url);
-      final video = await yt.videos.get(videoId);
-      final parsed = _parseTitleAndArtist(video.title, video.author);
-      final thumbnailUrl = _resolveThumbnailUrl(video, videoId);
+  /// Lets a caller (namely `YTMusicService`) prime the metadata cache from a
+  /// source other than this class's own `videos.get()` — which, in this
+  /// youtube_explode_dart version, ALWAYS scrapes the raw `/watch` page HTML
+  /// and infers availability from the presence of a `<meta property="og:url">`
+  /// tag (see `WatchPage.isVideoAvailable`). That page is the one YouTube
+  /// serves a "sign in to confirm you're not a bot" wall on under load,
+  /// causing false VideoUnavailableException for videos that play back fine
+  /// everywhere else. `dart_ytmusic_api`'s `getSong()` hits YouTube's
+  /// structured InnerTube `player` JSON endpoint instead and isn't gated by
+  /// that same wall. When it succeeds, priming the cache here makes
+  /// `downloadVideoWithAudio`/`getVideoInfo` skip the scrape entirely (they
+  /// both check this cache before calling `_getVideoWithFallback`).
+  static void primeMetadataCache(
+    String videoId, {
+    required String title,
+    required String artist,
+    required Duration duration,
+    required String thumbnailUrl,
+  }) {
+    _metadataCache[videoId] = _CachedVideoMetadata(
+      title: title,
+      artist: artist,
+      duration: duration,
+      thumbnailUrl: thumbnailUrl,
+      cachedAt: DateTime.now(),
+    );
+  }
 
-      _metadataCache[videoId.value] = _CachedVideoMetadata(
-        title: parsed.title,
-        artist: parsed.artist,
-        duration: video.duration ?? Duration.zero,
-        thumbnailUrl: thumbnailUrl,
-        cachedAt: DateTime.now(),
-      );
-
-      return {
-        'videoId': videoId.value,
-        'title': parsed.title,
-        'artist': parsed.artist,
-        'duration': video.duration ?? Duration.zero,
-        'thumbnailUrl': thumbnailUrl,
-      };
-    } catch (e) {
-      throw Exception('Error analizando el video: ${e.toString()}');
-    } finally {
-      yt.close();
+  /// Convierte enlaces de YouTube Music a enlaces estándar de YouTube
+  /// YouTube Music usa el mismo sistema de IDs, solo cambia el dominio
+  static String _convertYouTubeMusicUrl(String url) {
+    if (url.contains('music.youtube.com')) {
+      return url.replaceAll('music.youtube.com', 'www.youtube.com');
     }
+    return url;
+  }
+
+  /// Ordered list of Android client combinations to try when fetching the stream manifest.
+  /// YouTube periodically blocks certain clients, so we cascade through these.
+  /// NOTE: ytClients is only supported by streamsClient.getManifest(), NOT videos.get().
+  /// `androidVr` estaba aquí y falla el 100% de las veces contra YouTube hoy:
+  /// medido 6/6 fallos (VideoUnplayableException) sobre 3 videos distintos,
+  /// mientras `android` y `androidSdkless` acertaban 6/6 en la misma tanda y en
+  /// las mismas condiciones. Era un intento tirado a la basura por descarga que
+  /// solo añadía volumen de peticiones — justo lo que hay que evitar cuando
+  /// YouTube ya está limitando. Sustituido por `androidSdkless`, que sí
+  /// responde (es además el cliente por defecto de la librería).
+  static final List<List<YoutubeApiClient>> _clientFallbacks = [
+    [YoutubeApiClient.android],
+    [YoutubeApiClient.androidSdkless],
+    [YoutubeApiClient.android, YoutubeApiClient.androidSdkless],
+  ];
+
+  // --- SHARED CIRCUIT BREAKER ---
+  // With up to 3 downloads running concurrently (DownloadProvider._maxConcurrentDownloads),
+  // each with its own retry loop, independent per-worker backoff meant every worker retried
+  // at roughly the same time after YouTube soft-blocked the session, re-triggering the block
+  // (a retry storm). This state is static so it's shared across every YoutubeService instance
+  // and call path — the same pattern already used by _metadataCache — so all workers pause
+  // together instead of hammering YouTube in lockstep.
+  static DateTime? _blockedUntil;
+  static int _consecutiveBlocks = 0;
+  static final Random _jitterRandom = Random();
+
+  /// Whether the shared circuit breaker is active. Wired to DownloadProvider's
+  /// "cooldown" setting so users can opt out if they want maximum throughput.
+  static bool circuitBreakerEnabled = true;
+
+  /// Waits out any active global cooldown before a caller issues a new request.
+  /// [isCancelled], when provided, is polled every 300ms so a cancelled
+  /// download doesn't keep sleeping for the full remaining cooldown (up to
+  /// 180s) — see `_cancellableDelay` for why this matters.
+  Future<void> _respectGlobalCooldown(String context, {bool Function()? isCancelled}) async {
+    if (!circuitBreakerEnabled) return;
+    final until = _blockedUntil;
+    if (until == null) return;
+    final remaining = until.difference(DateTime.now());
+    if (remaining > Duration.zero) {
+      print('[YouTubeService] $context: waiting out shared cooldown (${remaining.inSeconds}s remaining)');
+      await _cancellableDelay(remaining, isCancelled);
+    }
+  }
+
+  /// Sleeps for [duration], polling [isCancelled] every 300ms and returning
+  /// early the moment it turns true, instead of a single uninterruptible
+  /// `Future.delayed`.
+  ///
+  /// Without this, cancelling a download (or the user resubmitting the same
+  /// link right after cancelling) didn't actually stop a worker that was
+  /// mid-sleep in the shared circuit-breaker cooldown (up to 180s) or in a
+  /// retry backoff (up to 20s) — it kept sleeping for the full remaining
+  /// duration before ever checking cancellation again. Meanwhile that worker
+  /// still held its videoId in `DownloadProvider._activeVideoIds`, so a
+  /// resubmission of the exact same video would sit blocked behind that
+  /// stale lock for however long was left on the old worker's sleep,
+  /// appearing "stuck" even though the download had been cancelled.
+  Future<void> _cancellableDelay(Duration duration, bool Function()? isCancelled) async {
+    if (isCancelled == null) {
+      await Future.delayed(duration);
+      return;
+    }
+    const step = Duration(milliseconds: 300);
+    var remaining = duration;
+    while (remaining > Duration.zero) {
+      if (isCancelled()) return;
+      final sleepFor = remaining < step ? remaining : step;
+      await Future.delayed(sleepFor);
+      remaining -= sleepFor;
+    }
+  }
+
+  /// Registers a hard-block signal (403/401/VideoUnavailableException — YouTube
+  /// is actively blocking this session/IP) as opposed to a one-off transient
+  /// hiccup. Escalates the cooldown with consecutive blocks so a sustained
+  /// block backs off further instead of retrying at a fixed interval forever.
+  ///
+  /// Skips escalating if we're already inside an active cooldown window: with up
+  /// to 3 concurrent download workers, several of them can observe the same
+  /// underlying block within the same couple of seconds, and without this guard
+  /// each one bumped the shared counter independently, jumping straight to the
+  /// longest cooldown tier on the very first real incident instead of escalating
+  /// gradually across genuinely separate incidents.
+  void _recordBlock() {
+    if (!circuitBreakerEnabled) return;
+    if (_blockedUntil != null && _blockedUntil!.isAfter(DateTime.now())) return;
+    _consecutiveBlocks = (_consecutiveBlocks + 1).clamp(0, 6);
+    final baseSeconds = 20 * (1 << (_consecutiveBlocks - 1)); // 20, 40, 80, 160, 320, 640
+    final cappedSeconds = baseSeconds.clamp(20, 180);
+    _blockedUntil = DateTime.now().add(Duration(seconds: cappedSeconds));
+    print('[YouTubeService] Hard block detected (consecutive: $_consecutiveBlocks) — '
+        'all workers will pause for ${cappedSeconds}s');
+  }
+
+  void _recordSuccess() {
+    _consecutiveBlocks = 0;
+    _blockedUntil = null;
+  }
+
+  /// True for the errors that indicate YouTube is blocking this session/IP at
+  /// large (as opposed to a generic transient network error) — used to decide
+  /// whether to trip the *shared* circuit breaker that pauses every concurrent
+  /// worker.
+  ///
+  /// `VideoUnavailableException` IS included here — deliberately, and only
+  /// after confirming this with real accounts where the reported "unavailable"
+  /// videos were 100% playable normally. `youtube_explode_dart` 3.1.0 (the
+  /// version this project pins) determines availability with
+  /// `WatchPage.isVideoAvailable`, which just checks for the presence of a
+  /// `<meta property="og:url">` tag in the raw watch-page HTML it scraped —
+  /// see the vendored source at
+  /// `youtube_explode_dart-3.1.0/lib/src/reverse_engineering/pages/watch_page.dart:54`.
+  /// If YouTube serves anything else for that request — a bot-check/consent
+  /// page, a rate-limit response, or just a differently-shaped page under
+  /// load — that tag is missing and the library concludes the video doesn't
+  /// exist, even though it does. With 3 concurrent workers scraping watch
+  /// pages at once, that's exactly the kind of thing that trips. So in
+  /// practice this exception is far more often a mislabeled session-wide
+  /// block than a real deletion, and needs the same shared cooldown as
+  /// 403/401 so every worker backs off together instead of each hammering
+  /// the same (still-blocked) watch page again immediately.
+  ///
+  /// The earlier version of this method excluded `VideoUnavailableException`
+  /// on the assumption it meant one specific video was permanently gone — the
+  /// resulting fix (this comment) was a regression: with that exclusion, one
+  /// falsely-flagged video could still spin through its own retries without
+  /// ever pausing anything, and once several concurrent workers hit the same
+  /// real block, none of them backed off coherently. The dedicated guard in
+  /// `_recordBlock` (skip escalating while already inside an active cooldown)
+  /// is what actually fixes "3 workers pile onto the same incident and jump
+  /// straight to the longest tier" — reinstating this classification does not
+  /// bring that bug back.
+  bool _isHardBlockError(Object e) {
+    final errorStr = e.toString().toLowerCase();
+    return errorStr.contains('videounavailableexception') ||
+        errorStr.contains('403') ||
+        errorStr.contains('401') ||
+        errorStr.contains('forbidden') ||
+        errorStr.contains('unauthorized');
+  }
+
+  /// Techo de tiempo para cada petición de red hecha a través de
+  /// youtube_explode_dart.
+  ///
+  /// Hace falta porque la librería NO tiene ninguno: `YoutubeHttpClient` no
+  /// define un solo timeout, así que `videos.get()` y `streamsClient
+  /// .getManifest()` esperan indefinidamente si el socket se queda colgado —
+  /// algo habitual en datos móviles, o cuando YouTube acepta la conexión pero
+  /// no responde. `getManifest` es el peor caso: además del POST a InnerTube,
+  /// `_parseStreamInfo` dispara un HEAD `getContentLength` POR CADA stream
+  /// (6-20 por video), todos igual de destimeoutados, y encima el `retry()`
+  /// interno de la librería reintenta hasta 5 veces.
+  ///
+  /// Ese cuelgue es invisible: no lanza, así que no se registra nada en
+  /// download_errors.log y la UI se queda clavada en "Preparando enlace" con el
+  /// título ya visible. Lo único que acababa cortando era el
+  /// `.timeout(attemptBudget)` de 10 minutos de `_processQueueItem`, dos veces.
+  /// Con esto, un socket muerto se convierte en un TimeoutException rápido —
+  /// que `_isRetryableError` ya clasifica como reintentable y que sí queda
+  /// registrado.
+  static const Duration _requestTimeout = Duration(seconds: 30);
+
+  /// El manifest necesita más margen que una petición suelta: la librería hace
+  /// un HEAD por stream antes de devolverlo.
+  static const Duration _manifestTimeout = Duration(seconds: 45);
+
+  Future<T> _withTimeout<T>(Future<T> future, String what, Duration limit) {
+    return future.timeout(
+      limit,
+      onTimeout: () => throw TimeoutException(
+        '$what no respondió en ${limit.inSeconds}s',
+      ),
+    );
+  }
+
+  /// The message thrown when `isCancelled()` goes true mid-download. Centralized
+  /// so `isCancellationError` can recognize it instead of every layer matching a
+  /// loose string.
+  static const String cancelledMessage = 'Descarga cancelada por el usuario';
+
+  /// True when an error is just "the user (or a new session) cancelled this",
+  /// not an actual download failure.
+  ///
+  /// This has to be distinguishable because cancellation used to be laundered
+  /// into a genuine failure: it isn't matched by `_isRetryableError`, so the
+  /// retry loop wrapped it as `'Error descargando el audio: … Intentos
+  /// realizados: N'`, `DownloadProvider` then wrote it to `download_errors.log`
+  /// and surfaced it as "Error en descarga después de N intentos". The download
+  /// error log ended up full of cancellations, which hid the real errors from
+  /// the earlier attempts behind them.
+  static bool isCancellationError(Object e) =>
+      e.toString().contains(cancelledMessage);
+
+  /// Adds up to 30% random jitter to a backoff delay so concurrent workers that
+  /// failed at nearly the same time don't retry in lockstep.
+  int _withJitter(int baseMs) {
+    final spread = (baseMs * 0.3).round();
+    return spread > 0 ? baseMs + _jitterRandom.nextInt(spread) : baseMs;
+  }
+
+  /// Fetches video metadata for a single attempt. Retrying used to happen here too
+  /// (up to 3 times), stacked on top of the outer caller's own retry loop — that
+  /// tripled the requests fired per failure and was a major contributor to the
+  /// retry-storm bug. Now this makes exactly one attempt; retrying happens only at
+  /// the outer caller (getVideoInfo / downloadVideoWithAudio), which is also where
+  /// the shared circuit breaker is respected.
+  Future<Video> _getVideoWithFallback(YoutubeExplode yt, VideoId videoId, {bool Function()? isCancelled}) async {
+    await _respectGlobalCooldown('_getVideoWithFallback', isCancelled: isCancelled);
+    return await _withTimeout(
+      yt.videos.get(videoId),
+      'La consulta de metadata',
+      _requestTimeout,
+    );
+  }
+
+
+  /// Preview for the UI — metadata only, no manifest (avoids burning stream URLs).
+  /// Implements automatic retry with backoff for VideoUnavailableException and HTTP 403 errors.
+  /// Also tries different client configurations to evade YouTube blocking.
+  Future<Map<String, dynamic>> getVideoInfo(String url) async {
+    final convertedUrl = _convertYouTubeMusicUrl(url);
+    final videoId = VideoId(convertedUrl);
+    
+    Object? lastError;
+    const maxRetries = 4; // Total 5 attempts (1 initial + 4 retries) for better reliability
+    
+    // Try different configurations to evade blocking
+    final configs = [
+      () => YoutubeExplode(), // Default
+      () => YoutubeExplode(), // Fresh instance
+      () => YoutubeExplode(), // Another fresh instance
+      () => YoutubeExplode(), // Another fresh instance
+      () => YoutubeExplode(), // Another fresh instance
+    ];
+    
+    for (int attempt = 0; attempt <= maxRetries; attempt++) {
+      await _respectGlobalCooldown('getVideoInfo');
+      final yt = configs[attempt.clamp(0, configs.length - 1)]();
+      try {
+        final video = await _getVideoWithFallback(yt, videoId);
+        final parsed = _parseTitleAndArtist(video.title, video.author);
+        final thumbnailUrl = _resolveThumbnailUrl(video, videoId);
+
+        _metadataCache[videoId.value] = _CachedVideoMetadata(
+          title: parsed.title,
+          artist: parsed.artist,
+          duration: video.duration ?? Duration.zero,
+          thumbnailUrl: thumbnailUrl,
+          cachedAt: DateTime.now(),
+        );
+
+        _recordSuccess();
+        return {
+          'videoId': videoId.value,
+          'title': parsed.title,
+          'artist': parsed.artist,
+          'duration': video.duration ?? Duration.zero,
+          'thumbnailUrl': thumbnailUrl,
+        };
+      } catch (e) {
+        lastError = e;
+
+        if (_isHardBlockError(e)) _recordBlock();
+
+        // Check if this is a retryable error
+        final isRetryable = _isRetryableError(e);
+
+        if (!isRetryable || attempt >= maxRetries) {
+          // Not retryable or max retries reached
+          // Include detailed error for debugging
+          final errorDetails = 'Error analizando el video: ${e.toString()}\n\nDetalles técnicos:\n${e.runtimeType}\n\nIntentos realizados: ${attempt + 1}';
+          throw Exception(errorDetails);
+        }
+
+        // Wait with exponential backoff (+ jitter so concurrent workers desync): 3s, 5s, 8s, 12s
+        // YouTube needs time to unblock the request
+        final delays = [3000, 5000, 8000, 12000];
+        final delayMs = _withJitter(delays[attempt.clamp(0, delays.length - 1)]);
+        print('[YouTubeService] Retry ${attempt + 1}/${maxRetries} after ${delayMs}ms delay');
+        await Future.delayed(Duration(milliseconds: delayMs));
+      } finally {
+        yt.close();
+      }
+    }
+    
+    final errorDetails = 'Error analizando el video: ${lastError.toString()}\n\nDetalles técnicos:\n${lastError.runtimeType}\n\nIntentos realizados: ${maxRetries + 1}';
+    throw Exception(errorDetails);
+  }
+
+  /// Checks if an error is retryable (VideoUnavailableException or HTTP 403)
+  bool _isRetryableError(Object e) {
+    final errorStr = e.toString().toLowerCase();
+    
+    print('[YouTubeService] Checking if error is retryable: $errorStr');
+    
+    // Check for VideoUnavailableException
+    if (errorStr.contains('videounavailableexception')) {
+      print('[YouTubeService] -> VideoUnavailableException detected, will retry');
+      return true;
+    }
+    
+    // Check for HTTP 403 / 401 errors (stream URL expired or auth failed)
+    if (errorStr.contains('403') || errorStr.contains('401') ||
+        errorStr.contains('forbidden') || errorStr.contains('unauthorized')) {
+      print('[YouTubeService] -> HTTP 403/401 detected, will retry');
+      return true;
+    }
+    
+    // Check for YoutubeExplodeException (any, not just 403 — often means invalid response)
+    if (errorStr.contains('youtubeexplodeexception')) {
+      print('[YouTubeService] -> YoutubeExplodeException detected, will retry');
+      return true;
+    }
+
+    // Check for chunk download failures (expired stream URL symptoms)
+    if (errorStr.contains('chunk') || errorStr.contains('incompleto') ||
+        errorStr.contains('incomplete') || errorStr.contains('stream')) {
+      print('[YouTubeService] -> Chunk/stream error detected, will retry');
+      return true;
+    }
+    
+    // Check for HTTP errors in general (5xx server errors)
+    if (errorStr.contains('http 5') || errorStr.contains('500') || 
+        errorStr.contains('502') || errorStr.contains('503') || 
+        errorStr.contains('504')) {
+      print('[YouTubeService] -> HTTP 5xx error detected, will retry');
+      return true;
+    }
+    
+    // Check for transient network errors
+    if (errorStr.contains('network') || errorStr.contains('connection') || 
+        errorStr.contains('timeout') || errorStr.contains('socket')) {
+      print('[YouTubeService] -> Network error detected, will retry');
+      return true;
+    }
+    
+    // Check for generic unavailable errors
+    if (errorStr.contains('unavailable') || errorStr.contains('not available')) {
+      print('[YouTubeService] -> Unavailable error detected, will retry');
+      return true;
+    }
+    
+    // Check for rate limiting
+    if (errorStr.contains('rate limit') || errorStr.contains('429') || 
+        errorStr.contains('requestlimitexceeded')) {
+      print('[YouTubeService] -> Rate limit detected, will retry');
+      return true;
+    }
+
+    // Check for OS/file errors that may indicate a transient issue
+    if (errorStr.contains('os error') || errorStr.contains('oserror')) {
+      print('[YouTubeService] -> OS error detected, will retry');
+      return true;
+    }
+    
+    print('[YouTubeService] -> Error not retryable: $errorStr');
+    return false;
   }
 
   /// Downloads audio using a fresh YoutubeExplode session with alternative clients
   /// that bypass the YouTube "n-parameter" throttling.
+  /// Implements automatic retry with backoff for download errors.
   Future<Map<String, dynamic>> downloadVideoWithAudio(
     String url, {
     void Function(String title)? onMetadata,
@@ -89,163 +458,356 @@ class YoutubeService {
     void Function(String phase)? onPhase,
     bool Function()? isCancelled,
   }) async {
-    final videoId = VideoId(url);
+    // Convertir enlaces de YouTube Music a YouTube estándar
+    final convertedUrl = _convertYouTubeMusicUrl(url);
+    final videoId = VideoId(convertedUrl);
     final cached = _metadataCache[videoId.value];
 
-    // Use alternative clients that provide non-throttled stream URLs.
-    // androidVr and safari clients serve URLs where the "n" parameter
-    // is already pre-resolved or not required, avoiding 50KB/s throttling.
-    final yt = YoutubeExplode();
-    try {
-      late final ({String title, String artist}) parsed;
-      late final Duration duration;
-      late final String thumbnailUrl;
-
-      if (cached != null && cached.isValid) {
-        parsed = (title: cached.title, artist: cached.artist);
-        duration = cached.duration;
-        thumbnailUrl = cached.thumbnailUrl;
-        onMetadata?.call(parsed.title);
-      } else {
-        onPhase?.call('metadata');
-        final video = await yt.videos.get(videoId);
-        parsed = _parseTitleAndArtist(video.title, video.author);
-        duration = video.duration ?? Duration.zero;
-        thumbnailUrl = _resolveThumbnailUrl(video, videoId);
-        onMetadata?.call(parsed.title);
-
-        _metadataCache[videoId.value] = _CachedVideoMetadata(
-          title: parsed.title,
-          artist: parsed.artist,
-          duration: duration,
-          thumbnailUrl: thumbnailUrl,
-          cachedAt: DateTime.now(),
-        );
+    Object? lastError;
+    const maxRetries = 4; // Total 5 attempts (1 initial + 4 retries)
+    
+    for (int attempt = 0; attempt <= maxRetries; attempt++) {
+      if (isCancelled != null && isCancelled()) {
+        throw Exception(cancelledMessage);
       }
-
-      onPhase?.call('manifest');
-
-      // Try alternative clients first — these bypass n-parameter throttling.
-      // Fall back to defaults if they fail.
-      StreamManifest manifest;
+      await _respectGlobalCooldown('downloadVideoWithAudio', isCancelled: isCancelled);
+      final yt = YoutubeExplode();
       try {
-        manifest = await yt.videos.streamsClient.getManifest(
+        late final ({String title, String artist}) parsed;
+        late final Duration duration;
+        late final String thumbnailUrl;
+
+        if (cached != null && cached.isValid) {
+          parsed = (title: cached.title, artist: cached.artist);
+          duration = cached.duration;
+          thumbnailUrl = cached.thumbnailUrl;
+          onMetadata?.call(parsed.title);
+        } else {
+          onPhase?.call('metadata');
+          final video = await _getVideoWithFallback(yt, videoId, isCancelled: isCancelled);
+          parsed = _parseTitleAndArtist(video.title, video.author);
+          duration = video.duration ?? Duration.zero;
+          thumbnailUrl = _resolveThumbnailUrl(video, videoId);
+          onMetadata?.call(parsed.title);
+
+          _metadataCache[videoId.value] = _CachedVideoMetadata(
+            title: parsed.title,
+            artist: parsed.artist,
+            duration: duration,
+            thumbnailUrl: thumbnailUrl,
+            cachedAt: DateTime.now(),
+          );
+        }
+
+        onPhase?.call('manifest');
+
+        // Always fetch a fresh manifest on retries — stream URLs expire quickly.
+        StreamManifest manifest = await _getManifestWithFallback(
+          yt,
           videoId,
-          ytClients: [YoutubeApiClient.androidVr, YoutubeApiClient.safari],
+          isCancelled: isCancelled,
         );
-      } catch (_) {
-        // Fallback: let the library pick its default clients
-        manifest = await yt.videos.streamsClient.getManifest(videoId);
+
+        final selectedStream = _selectBestAudioStream(manifest);
+
+        onPhase?.call('downloading');
+
+        // Download thumbnail concurrently in the background
+        final Future<String> thumbnailDownloadFuture = downloadThumbnail(
+          videoId.value,
+          thumbnailUrl,
+        );
+
+        final localAudioPath = await _downloadViaParallelChunks(
+          selectedStream,
+          onProgress: onProgress,
+          isCancelled: isCancelled,
+        );
+
+        final localThumbnailPath = await thumbnailDownloadFuture;
+
+        _recordSuccess();
+        return {
+          'videoId': videoId.value,
+          'title': parsed.title,
+          'artist': parsed.artist,
+          'duration': duration,
+          'format': selectedStream.container.name,
+          'thumbnailUrl': thumbnailUrl,
+          'filePath': localAudioPath,
+          'artPath': localThumbnailPath,
+        };
+      } catch (e) {
+        lastError = e;
+
+        // A cancellation isn't a download failure — propagate it verbatim so the
+        // caller can tell the two apart, before it gets counted as an attempt,
+        // trips the circuit breaker, or gets wrapped in an "Error descargando el
+        // audio" message that lands in the user's error log.
+        if (isCancellationError(e)) rethrow;
+
+        if (_isHardBlockError(e)) _recordBlock();
+
+        // Check if this is a retryable error
+        final isRetryable = _isRetryableError(e);
+
+        if (!isRetryable || attempt >= maxRetries) {
+          // Not retryable or max retries reached
+          if (_isRateLimitError(e)) rethrow;
+          print('[YouTubeService] Download failed after ${attempt + 1} attempts: $e');
+          throw Exception('Error descargando el audio: ${e.toString()}\n\nIntentos realizados: ${attempt + 1}');
+        }
+
+        // Longer exponential backoff (+ jitter so concurrent workers desync): 5s, 10s, 15s, 20s
+        // YouTube stream URLs expire and need real time before a new one works.
+        final delays = [5000, 10000, 15000, 20000];
+        final delayMs = _withJitter(delays[attempt.clamp(0, delays.length - 1)]);
+        print('[YouTubeService] Download retry ${attempt + 1}/${maxRetries} after ${delayMs}ms delay: $e');
+        await _cancellableDelay(Duration(milliseconds: delayMs), isCancelled);
+      } finally {
+        yt.close();
       }
-
-      final selectedStream = _selectBestAudioStream(manifest);
-
-      onPhase?.call('downloading');
-
-      // Download thumbnail concurrently in the background
-      final Future<String> thumbnailDownloadFuture = downloadThumbnail(
-        videoId.value,
-        thumbnailUrl,
-      );
-
-      final localAudioPath = await _downloadViaParallelChunks(
-        selectedStream,
-        onProgress: onProgress,
-        isCancelled: isCancelled,
-      );
-
-      final localThumbnailPath = await thumbnailDownloadFuture;
-
-      return {
-        'videoId': videoId.value,
-        'title': parsed.title,
-        'artist': parsed.artist,
-        'duration': duration,
-        'format': selectedStream.container.name,
-        'thumbnailUrl': thumbnailUrl,
-        'filePath': localAudioPath,
-        'artPath': localThumbnailPath,
-      };
-    } catch (e) {
-      if (_isRateLimitError(e)) rethrow;
-      throw Exception('Error descargando el audio: ${e.toString()}');
-    } finally {
-      yt.close();
     }
+
+    if (lastError != null && _isRateLimitError(lastError)) {
+      throw lastError;
+    }
+    print('[YouTubeService] Download failed after ${maxRetries + 1} attempts');
+    throw Exception('Error descargando el audio: ${lastError.toString()}\n\nIntentos realizados: ${maxRetries + 1}');
   }
 
-  Future<List<String>> getPlaylistVideoIds(String url) async {
+  /// Fetches the stream manifest trying all client fallbacks.
+  ///
+  /// Every call passes `requireWatchPage: false`. In youtube_explode_dart 3.1.0
+  /// that parameter defaults to `true`, and with it on, `StreamClient._getStream`
+  /// does `watchPage = await WatchPage.get(...)` *before* it ever touches the
+  /// InnerTube player endpoint — i.e. the stream step scraped the same raw
+  /// `/watch` HTML that `videos.get()` does, once per client in the cascade
+  /// below. `WatchPage.get` throws `TransientFailureException('Video watch page
+  /// is broken.')` whenever the scraped page has no `#player` element, which is
+  /// what YouTube's "sign in to confirm you're not a bot" wall looks like.
+  ///
+  /// Skipping it is safe for the Android clients used here:
+  /// `VideoController.getPlayerResponse` treats `watchPage` as optional (it only
+  /// supplies the `STS`/visitor-id extras) and stream deciphering in
+  /// `_parseStreamInfo` is gated behind `watchPage != null`, because these
+  /// clients return unciphered stream URLs — not needing that scrape is the
+  /// entire reason they exist.
+  ///
+  /// CAVEAT, measured: this is an optimization, NOT a proven fix for the
+  /// intermittent download failures. A repeated A/B against the video IDs from a
+  /// real `download_errors.log` showed `true` and `false` both succeeding 6/6
+  /// while YouTube wasn't blocking this host — the only reliable difference was
+  /// latency (~335ms vs ~1424ms) and one fewer HTTP request per attempt. It
+  /// removes a known-fragile request from the hot path and lowers request
+  /// volume, which is worth having, but do not assume it makes the block go
+  /// away. The failures were not reproducible from a desktop connection at all.
+  /// Cada intento lleva su propio `_manifestTimeout`, y el conjunto está acotado
+  /// además por [isCancelled]: antes, con 4 configuraciones probadas en serie y
+  /// ninguna con techo de tiempo, un solo socket colgado bloqueaba la descarga
+  /// indefinidamente y de forma silenciosa.
+  Future<StreamManifest> _getManifestWithFallback(
+    YoutubeExplode yt,
+    VideoId videoId, {
+    bool Function()? isCancelled,
+  }) async {
+    Future<StreamManifest> attempt(List<YoutubeApiClient>? clients) {
+      return _withTimeout(
+        clients == null
+            ? yt.videos.streamsClient.getManifest(
+                videoId,
+                requireWatchPage: false,
+              )
+            : yt.videos.streamsClient.getManifest(
+                videoId,
+                ytClients: clients,
+                requireWatchPage: false,
+              ),
+        'La obtención de streams',
+        _manifestTimeout,
+      );
+    }
+
+    // Try default first
     try {
-      final customIds = await _customScrapePlaylist(url);
+      return await attempt(null);
+    } catch (e) {
+      print('[YouTubeService] Manifest (cliente por defecto) falló: $e');
+    }
+
+    // Cascade through all client combinations
+    Object? lastError;
+    for (final clients in _clientFallbacks) {
+      if (isCancelled != null && isCancelled()) {
+        throw Exception(cancelledMessage);
+      }
+      try {
+        return await attempt(clients);
+      } catch (e) {
+        lastError = e;
+        print('[YouTubeService] Manifest (${clients.map((c) => c.payload['context']['client']['clientName']).join('+')}) falló: $e');
+      }
+    }
+    throw lastError ?? Exception('No se pudieron obtener streams de audio.');
+  }
+
+  /// Techo de tiempo ENTRE páginas de un stream paginado (la expansión de una
+  /// playlist). No acota el total —una playlist de 500 temas legítimamente tarda—
+  /// sino el hueco sin recibir nada, que es la firma de un socket muerto.
+  static const Duration _playlistPageTimeout = Duration(seconds: 30);
+
+  /// Resuelve todos los video IDs de una playlist.
+  ///
+  /// [isCancelled] importa porque este método NO es sólo el preview de "Analizar
+  /// enlace": `DownloadProvider.downloadPlaylist` lo llama para expandir la lista
+  /// antes de encolar nada. Un cuelgue aquí ocurre por tanto *dentro* de una
+  /// descarga, pero antes de que exista un item en `download_queue` — así que ni
+  /// el `attemptBudget` de `_processQueueItem` ni `cancelAllDownloads()` lo
+  /// alcanzaban, y la UI se quedaba en "Analizando lista de reproducción..." de
+  /// forma indefinida y silenciosa.
+  Future<List<String>> getPlaylistVideoIds(String url, {bool Function()? isCancelled}) async {
+    try {
+      // Convertir enlaces de YouTube Music a YouTube estándar
+      final convertedUrl = _convertYouTubeMusicUrl(url);
+      final customIds = await _customScrapePlaylist(convertedUrl, isCancelled: isCancelled);
       if (customIds.isNotEmpty) {
         return customIds;
       }
     } catch (e) {
+      // Idem: sin esto, cancelar durante el scraper propio sólo lo saltaba y
+      // acto seguido arrancaba el intento con youtube_explode_dart.
+      if (isCancellationError(e)) rethrow;
       print('Custom playlist scraper failed, falling back to YoutubeExplode: $e');
     }
 
-    final yt = YoutubeExplode();
-    try {
-      final playlistId = PlaylistId(url);
-      final List<String> videoIds = [];
+    Object? lastError;
+    const maxRetries = 2; // Total 3 attempts
 
-      await for (final video in yt.playlists.getVideos(playlistId)) {
-        if (video.id.value.isNotEmpty) {
-          videoIds.add(video.id.value);
-        }
+    for (int attempt = 0; attempt <= maxRetries; attempt++) {
+      if (isCancelled != null && isCancelled()) {
+        throw Exception(cancelledMessage);
       }
+      await _respectGlobalCooldown('getPlaylistVideoIds', isCancelled: isCancelled);
+      final yt = YoutubeExplode();
+      try {
+        final convertedUrl = _convertYouTubeMusicUrl(url);
+        final playlistId = PlaylistId(convertedUrl);
+        final List<String> videoIds = [];
 
-      return videoIds;
-    } catch (e) {
-      throw Exception(
-        'Error cargando la lista de reproducción: ${e.toString()}',
-      );
-    } finally {
-      yt.close();
+        // `.timeout(...)` sobre el stream, no sobre el future completo: la
+        // librería pagina internamente (~100 videos por petición) y no expone
+        // ningún timeout, así que un socket que muere a mitad de la paginación
+        // dejaba este `await for` esperando para siempre — sin lanzar, sin
+        // registrar nada. El timeout por evento corta ese caso sin penalizar a
+        // las playlists grandes, que sí siguen recibiendo páginas.
+        await for (final video
+            in yt.playlists.getVideos(playlistId).timeout(_playlistPageTimeout)) {
+          if (isCancelled != null && isCancelled()) {
+            throw Exception(cancelledMessage);
+          }
+          if (video.id.value.isNotEmpty) {
+            videoIds.add(video.id.value);
+          }
+        }
+
+        _recordSuccess();
+        return videoIds;
+      } catch (e) {
+        lastError = e;
+
+        if (isCancellationError(e)) rethrow;
+
+        if (_isHardBlockError(e)) _recordBlock();
+
+        // Check if this is a retryable error
+        final isRetryable = _isRetryableError(e);
+
+        if (!isRetryable || attempt >= maxRetries) {
+          throw Exception(
+            'Error cargando la lista de reproducción: ${e.toString()}',
+          );
+        }
+
+        // Wait 2-3 seconds before retrying (+ jitter)
+        final delayMs = _withJitter(2000 + (attempt * 500));
+        await _cancellableDelay(Duration(milliseconds: delayMs), isCancelled);
+      } finally {
+        yt.close();
+      }
     }
+    
+    throw Exception(
+      'Error cargando la lista de reproducción: ${lastError.toString()}',
+    );
   }
 
   /// Busca videos en YouTube por query
   Future<List<YouTubeSearchResult>> searchVideos(String query, {int maxResults = 20}) async {
-    final yt = YoutubeExplode();
-    try {
-      final results = <YouTubeSearchResult>[];
-      
-      final searchResults = await yt.search.search(query);
-      
-      for (final video in searchResults) {
-        if (results.length >= maxResults) break;
-        
-        final videoId = video.id;
-        final parsed = _parseTitleAndArtist(video.title, video.author);
-        final thumbnailUrl = _resolveThumbnailUrl(video, videoId);
-        final url = 'https://www.youtube.com/watch?v=${videoId.value}';
+    Object? lastError;
+    const maxRetries = 2; // Total 3 attempts
+    
+    for (int attempt = 0; attempt <= maxRetries; attempt++) {
+      await _respectGlobalCooldown('searchVideos');
+      final yt = YoutubeExplode();
+      try {
+        final results = <YouTubeSearchResult>[];
 
-        results.add(YouTubeSearchResult(
-          videoId: videoId.value,
-          title: parsed.title,
-          artist: parsed.artist,
-          duration: video.duration ?? Duration.zero,
-          thumbnailUrl: thumbnailUrl,
-          url: url,
-        ));
-
-        // Cache metadata for future use
-        _metadataCache[videoId.value] = _CachedVideoMetadata(
-          title: parsed.title,
-          artist: parsed.artist,
-          duration: video.duration ?? Duration.zero,
-          thumbnailUrl: thumbnailUrl,
-          cachedAt: DateTime.now(),
+        final searchResults = await _withTimeout(
+          yt.search.search(query),
+          'La búsqueda',
+          _requestTimeout,
         );
-      }
 
-      return results;
-    } catch (e) {
-      throw Exception('Error buscando videos: ${e.toString()}');
-    } finally {
-      yt.close();
+        for (final video in searchResults) {
+          if (results.length >= maxResults) break;
+          
+          final videoId = video.id;
+          final parsed = _parseTitleAndArtist(video.title, video.author);
+          final thumbnailUrl = _resolveThumbnailUrl(video, videoId);
+          final url = 'https://www.youtube.com/watch?v=${videoId.value}';
+
+          results.add(YouTubeSearchResult(
+            videoId: videoId.value,
+            title: parsed.title,
+            artist: parsed.artist,
+            duration: video.duration ?? Duration.zero,
+            thumbnailUrl: thumbnailUrl,
+            url: url,
+          ));
+
+          // Cache metadata for future use
+          _metadataCache[videoId.value] = _CachedVideoMetadata(
+            title: parsed.title,
+            artist: parsed.artist,
+            duration: video.duration ?? Duration.zero,
+            thumbnailUrl: thumbnailUrl,
+            cachedAt: DateTime.now(),
+          );
+        }
+
+        _recordSuccess();
+        return results;
+      } catch (e) {
+        lastError = e;
+
+        if (_isHardBlockError(e)) _recordBlock();
+
+        // Check if this is a retryable error
+        final isRetryable = _isRetryableError(e);
+
+        if (!isRetryable || attempt >= maxRetries) {
+          throw Exception('Error buscando videos: ${e.toString()}');
+        }
+
+        // Wait 2-3 seconds before retrying (+ jitter)
+        final delayMs = _withJitter(2000 + (attempt * 500));
+        await Future.delayed(Duration(milliseconds: delayMs));
+      } finally {
+        yt.close();
+      }
     }
+
+    throw Exception('Error buscando videos: ${lastError.toString()}');
   }
 
   /// Obtiene la URL de streaming directa de alta calidad para un video
@@ -300,16 +862,33 @@ class YoutubeService {
     return stream.url.toString();
   }
 
-  Future<List<String>> _customScrapePlaylist(String url) async {
+  /// Scraper propio de playlists — el primer intento de `getPlaylistVideoIds`.
+  ///
+  /// `client.connectionTimeout` sólo acota el ESTABLECIMIENTO de la conexión, no
+  /// la lectura del cuerpo: con la conexión ya abierta, tanto el `.join()` del
+  /// HTML inicial como los POST de continuación del bucle de paginación (hasta 50
+  /// iteraciones) podían quedarse esperando indefinidamente si YouTube aceptaba
+  /// la conexión y luego no respondía. Al ser el primer intento del método, un
+  /// cuelgue aquí colgaba la resolución de la playlist entera antes incluso de
+  /// llegar al fallback de youtube_explode_dart.
+  Future<List<String>> _customScrapePlaylist(String url, {bool Function()? isCancelled}) async {
     final client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 15);
     final List<String> videoIds = [];
     try {
       final request = await client.getUrl(Uri.parse(url));
       request.headers.set('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36');
-      final response = await request.close();
-      final html = await response.transform(utf8.decoder).join();
-      
+      final response = await _withTimeout(
+        request.close(),
+        'La petición de la lista',
+        _requestTimeout,
+      );
+      final html = await _withTimeout(
+        response.transform(utf8.decoder).join(),
+        'La lectura de la lista',
+        _requestTimeout,
+      );
+
       final match = RegExp(r'var ytInitialData\s*=\s*(\{.*?\});').firstMatch(html);
       if (match == null) return [];
       
@@ -373,6 +952,9 @@ class YoutubeService {
       
       int safetyCounter = 0;
       while (token != null && token.isNotEmpty && safetyCounter < 50) {
+        if (isCancelled != null && isCancelled()) {
+          throw Exception(cancelledMessage);
+        }
         safetyCounter++;
         final postUri = Uri.parse('https://www.youtube.com/youtubei/v1/browse?key=$apiKey');
         final postRequest = await client.postUrl(postUri);
@@ -390,8 +972,16 @@ class YoutubeService {
         };
         
         postRequest.write(jsonEncode(payload));
-        final postResponse = await postRequest.close();
-        final postHtml = await postResponse.transform(utf8.decoder).join();
+        final postResponse = await _withTimeout(
+          postRequest.close(),
+          'La página $safetyCounter de la lista',
+          _requestTimeout,
+        );
+        final postHtml = await _withTimeout(
+          postResponse.transform(utf8.decoder).join(),
+          'La lectura de la página $safetyCounter',
+          _requestTimeout,
+        );
         final responseData = jsonDecode(postHtml);
         
         String? nextToken;
@@ -432,6 +1022,11 @@ class YoutubeService {
         token = nextToken;
       }
     } catch (e) {
+      // Una cancelación tiene que propagarse: este catch devuelve `videoIds`
+      // tal cual, así que tragársela haría que una lista a medio expandir
+      // pareciera una expansión completa y correcta, y `getPlaylistVideoIds`
+      // encolaría sólo los temas resueltos hasta el momento de cancelar.
+      if (isCancellationError(e)) rethrow;
       print('Custom scraper failed: $e');
     } finally {
       client.close();
@@ -490,8 +1085,13 @@ class YoutubeService {
     throw Exception('No hay streams de audio disponibles para este video.');
   }
 
+
   /// Downloads audio using parallel HTTP Range requests (4 concurrent workers).
-  /// This dramatically improves throughput vs a single sequential connection.
+  /// Chunks are downloaded concurrently into memory and then written sequentially
+  /// to avoid RandomAccessFile race conditions that corrupt the output file.
+  /// Downloads audio using a simple sequential HTTP connection.
+  /// This is extremely reliable, avoids CPU/network race conditions, and bypasses
+  /// YouTube limits regarding concurrent range requests.
   Future<String> _downloadViaParallelChunks(
     AudioOnlyStreamInfo streamInfo, {
     void Function(double)? onProgress,
@@ -510,7 +1110,6 @@ class YoutubeService {
     final filePath = '${musicDir.path}/$videoId.$finalExt';
     final file = File(filePath);
     final totalBytes = streamInfo.size.totalBytes;
-    final url = streamInfo.url;
 
     // Check if already fully downloaded
     if (file.existsSync()) {
@@ -519,109 +1118,14 @@ class YoutubeService {
         onProgress?.call(1.0);
         return filePath;
       }
-      file.deleteSync();
+      try { file.deleteSync(); } catch (_) {}
     }
 
-    // Unknown size — fall back to single sequential download
-    if (totalBytes <= 0) {
-      return _downloadSequential(url, file, filePath, onProgress, isCancelled);
-    }
-
-    // Build list of (start, end) chunk ranges (1 MB each)
-    const int chunkSize = 1024 * 1024;
-    final chunks = <(int, int)>[];
-    for (int start = 0; start < totalBytes; start += chunkSize) {
-      final end = (start + chunkSize - 1).clamp(0, totalBytes - 1);
-      chunks.add((start, end));
-    }
-
-    // Download all chunks concurrently into memory, then write sequentially.
-    // Using 4 concurrent HTTP connections.
-    const int concurrency = 4;
-    bool cancelled = false;
-    Object? firstError;
-    final bytesReceived = [0];
-    var lastUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
-
-    Future<void> downloadChunk((int, int) chunk) async {
-      final (start, end) = chunk;
-      final chunkBytes = await _downloadChunkWithRetries(
-        url,
-        start,
-        end,
-        isCancelled: () {
-          if (isCancelled != null && isCancelled()) {
-            cancelled = true;
-            return true;
-          }
-          return cancelled;
-        },
-      );
-
-      if (cancelled) return;
-
-      // Write chunk at its exact offset using RandomAccessFile
-      final raf2 = await file.open(mode: FileMode.append);
-      try {
-        await raf2.setPosition(start);
-        await raf2.writeFrom(chunkBytes);
-      } finally {
-        await raf2.close();
-      }
-
-      bytesReceived[0] += chunkBytes.length;
-
-      if (onProgress != null) {
-        final now = DateTime.now();
-        final percent = bytesReceived[0] / totalBytes;
-        if (percent >= 1.0 ||
-            now.difference(lastUiUpdate).inMilliseconds >= 200) {
-          lastUiUpdate = now;
-          onProgress(percent.clamp(0.0, 0.99));
-        }
-      }
-    }
-
-    // Process chunks with limited concurrency (semaphore pattern)
-    int chunkIndex = 0;
-
-    Future<void> worker() async {
-      while (true) {
-        if (cancelled) return;
-        int myIndex;
-        // Atomically grab the next chunk index
-        myIndex = chunkIndex++;
-        if (myIndex >= chunks.length) return;
-
-        try {
-          await downloadChunk(chunks[myIndex]);
-        } catch (e) {
-          firstError ??= e;
-          cancelled = true;
-          return;
-        }
-      }
-    }
-
-    // Launch workers concurrently
-    await Future.wait(List.generate(concurrency, (_) => worker()));
-
-    if (cancelled) {
-      try {
-        if (file.existsSync()) file.deleteSync();
-      } catch (_) {}
-      if (firstError != null) throw firstError!;
-      throw Exception('Descarga cancelada por el usuario');
-    }
-
-    _validateDownloadedFile(file, totalBytes);
-    onProgress?.call(1.0);
-    return filePath;
+    return _downloadSequential(streamInfo, file, filePath, onProgress, isCancelled);
   }
 
-  /// Fallback: sequential stream download for when totalBytes is unknown.
   Future<String> _downloadSequential(
-    Uri url,
+    AudioOnlyStreamInfo streamInfo,
     File file,
     String filePath,
     void Function(double)? onProgress,
@@ -632,45 +1136,102 @@ class YoutubeService {
     final sink = file.openWrite();
     var received = 0;
     var lastUiUpdate = DateTime.fromMillisecondsSinceEpoch(0);
+    final totalBytes = streamInfo.size.totalBytes;
+    final url = streamInfo.url;
 
     try {
-      final request = await client.getUrl(url);
-      _addHeaders(request);
-      final response = await request.close().timeout(const Duration(seconds: 20));
+      if (totalBytes > 0) {
+        // Intentar descarga por fragmentos de 5MB
+        const chunkSize = 5 * 1024 * 1024;
+        while (received < totalBytes) {
+          if (isCancelled != null && isCancelled()) {
+            throw Exception(cancelledMessage);
+          }
 
-      if (response.statusCode != 200 && response.statusCode != 206) {
-        throw HttpException('HTTP ${response.statusCode}');
+          final end = (received + chunkSize - 1) < totalBytes 
+              ? (received + chunkSize - 1) 
+              : totalBytes - 1;
+              
+          final request = await client.getUrl(url);
+          _addHeaders(request);
+          request.headers.add('Range', 'bytes=$received-$end');
+          
+          final response = await request.close().timeout(const Duration(seconds: 20));
+
+          if (response.statusCode != 200 && response.statusCode != 206) {
+            // Si Range falla, salir del loop chunked para caer en la descarga directa
+            break;
+          }
+
+          await for (final chunk in response.timeout(
+            const Duration(seconds: 60),
+            onTimeout: (eventSink) => eventSink.addError(
+              TimeoutException('Sin datos del servidor durante 60s'),
+            ),
+          )) {
+            if (isCancelled != null && isCancelled()) {
+              throw Exception(cancelledMessage);
+            }
+            sink.add(chunk);
+            received += chunk.length;
+
+            if (onProgress != null && totalBytes > 0) {
+              final now = DateTime.now();
+              final percent = received / totalBytes;
+              if (percent >= 1.0 ||
+                  now.difference(lastUiUpdate).inMilliseconds >= 200) {
+                lastUiUpdate = now;
+                onProgress(percent.clamp(0.0, 0.99));
+              }
+            }
+          }
+        }
       }
 
-      final totalBytes = response.contentLength;
+      // Si no se descargó nada por el esquema de chunks (totalBytes <= 0 o Range no soportado)
+      if (received == 0) {
+        final request = await client.getUrl(url);
+        _addHeaders(request);
+        final response = await request.close().timeout(const Duration(seconds: 20));
 
-      await for (final chunk in response.timeout(
-        const Duration(seconds: 60),
-        onTimeout: (eventSink) => eventSink.addError(
-          TimeoutException('Sin datos del servidor durante 60s'),
-        ),
-      )) {
-        if (isCancelled != null && isCancelled()) {
-          throw Exception('Descarga cancelada por el usuario');
+        if (response.statusCode != 200 && response.statusCode != 206) {
+          throw HttpException('HTTP ${response.statusCode}');
         }
-        sink.add(chunk);
-        received += chunk.length;
 
-        if (onProgress != null && totalBytes > 0) {
-          final now = DateTime.now();
-          final percent = received / totalBytes;
-          if (percent >= 1.0 ||
-              now.difference(lastUiUpdate).inMilliseconds >= 200) {
-            lastUiUpdate = now;
-            onProgress(percent.clamp(0.0, 0.99));
+        final expectedTotal = response.contentLength > 0 ? response.contentLength : totalBytes;
+
+        await for (final chunk in response.timeout(
+          const Duration(seconds: 60),
+          onTimeout: (eventSink) => eventSink.addError(
+            TimeoutException('Sin datos del servidor durante 60s'),
+          ),
+        )) {
+          if (isCancelled != null && isCancelled()) {
+            throw Exception(cancelledMessage);
+          }
+          sink.add(chunk);
+          received += chunk.length;
+
+          if (onProgress != null && expectedTotal > 0) {
+            final now = DateTime.now();
+            final percent = received / expectedTotal;
+            if (percent >= 1.0 ||
+                now.difference(lastUiUpdate).inMilliseconds >= 200) {
+              lastUiUpdate = now;
+              onProgress(percent.clamp(0.0, 0.99));
+            }
           }
         }
       }
 
       await sink.flush();
       await sink.close();
+
+      // Validar que el archivo descargado no esté corrupto o vacío (mínimo 50 KB)
+      _validateDownloadedFile(file, totalBytes);
+
     } catch (e) {
-      await sink.close();
+      try { await sink.close(); } catch (_) {}
       try {
         if (file.existsSync()) file.deleteSync();
       } catch (_) {}
@@ -683,76 +1244,16 @@ class YoutubeService {
     return filePath;
   }
 
-  /// Downloads a single byte range chunk with automatic retries.
-  Future<List<int>> _downloadChunkWithRetries(
-    Uri url,
-    int start,
-    int end, {
-    bool Function()? isCancelled,
-    int maxRetries = 4,
-  }) async {
-    Exception? lastError;
 
-    for (int attempt = 1; attempt <= maxRetries; attempt++) {
-      if (isCancelled != null && isCancelled()) {
-        throw Exception('Descarga cancelada por el usuario');
-      }
-
-      final client = HttpClient();
-      client.connectionTimeout = const Duration(seconds: 20);
-
-      try {
-        final request = await client.getUrl(url);
-        request.followRedirects = true;
-        request.maxRedirects = 5;
-        request.headers.add('Range', 'bytes=$start-$end');
-        _addHeaders(request);
-
-        final response = await request.close().timeout(
-          const Duration(seconds: 30),
-        );
-
-        if (response.statusCode != 200 && response.statusCode != 206) {
-          throw HttpException('HTTP ${response.statusCode}');
-        }
-
-        final bytes = await response.fold<List<int>>(
-          [],
-          (prev, chunk) => prev..addAll(chunk),
-        ).timeout(const Duration(seconds: 60));
-
-        // Validate chunk integrity
-        final expected = end - start + 1;
-        if (bytes.length != expected) {
-          throw Exception(
-            'Chunk incompleto: recibidos ${bytes.length} de $expected bytes',
-          );
-        }
-
-        return bytes;
-      } on Exception catch (e) {
-        lastError = e;
-        if (attempt < maxRetries && (isCancelled == null || !isCancelled())) {
-          // Exponential backoff: 1s, 2s, 4s
-          await Future.delayed(Duration(seconds: 1 << (attempt - 1)));
-        }
-      } finally {
-        client.close();
-      }
-    }
-
-    throw lastError ?? Exception('No se pudo descargar el chunk');
-  }
 
   void _addHeaders(HttpClientRequest request) {
     request.headers.add(
       'User-Agent',
-      'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.18 Safari/537.36',
     );
     request.headers.add('Accept', '*/*');
-    request.headers.add('Accept-Language', 'en-US,en;q=0.9');
-    request.headers.add('Origin', 'https://www.youtube.com');
-    request.headers.add('Referer', 'https://www.youtube.com/');
+    request.headers.add('Accept-Encoding', 'identity');
+    request.headers.add('Connection', 'keep-alive');
   }
 
   void _validateDownloadedFile(File file, int expectedBytes) {

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
@@ -7,16 +8,19 @@ import 'package:audio_service/audio_service.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 import '../models/song.dart';
 import '../services/database_helper.dart';
+import '../services/ytmusic_service.dart';
 import '../services/youtube_service.dart';
 import '../services/lyrics_service.dart';
 import 'music_provider.dart';
 import '../services/audio_player_handler.dart';
 import '../services/spotify_service.dart';
 
+import '../services/log_service.dart';
+
 final FlutterLocalNotificationsPlugin flutterLocalNotificationsPlugin = FlutterLocalNotificationsPlugin();
 
 class DownloadProvider with ChangeNotifier {
-  final YoutubeService _youtubeService = YoutubeService();
+  final YTMusicService _youtubeService = YTMusicService();
   final DatabaseHelper _dbHelper = DatabaseHelper.instance;
 
   MusicProvider? musicProvider;
@@ -34,9 +38,25 @@ class DownloadProvider with ChangeNotifier {
   // Holds the id of the currently processed queue item (if any)
   int? _currentQueueId;
   
-  // Configuración de descarga paralela
-  static const int _maxConcurrentDownloads = 3; // Número de descargas simultáneas
+  // Configuración de descarga
+  // Una canción a la vez — la paralelización de chunks dentro de cada
+  // descarga ya provee velocidad óptima y preserva el orden de la playlist.
+  //
+  // El comentario de arriba decía "una a la vez" mientras la constante estaba en
+  // 3: alguien la subió sin actualizarlo. Vuelve a 1 porque la detección de bots
+  // de YouTube reacciona al VOLUMEN de peticiones, y con 3 workers cada uno con
+  // su cascada de clientes y sus reintentos, una playlist dispara decenas de
+  // peticiones casi simultáneas. Medido: 24/24 peticiones secuenciales
+  // correctas, mientras que las ráfagas multi-cliente producían fallos
+  // constantes. Es el único mitigante real disponible — la librería no puede
+  // resolver el reto JS que YouTube exige (ver _requestTimeout en
+  // youtube_service.dart y las notas de "Sign in to confirm you're not a bot").
+  static const int _maxConcurrentDownloads = 1;
   final Set<int> _activeDownloads = {}; // IDs de descargas activas
+  // videoId/spotifyTrackId de descargas activas — evita que la misma pista, encolada
+  // para dos playlists distintas antes de terminar, se descargue dos veces en paralelo
+  // y ambas escriban al mismo archivo local (<musicDir>/<videoId>.<ext>), corrompiéndolo.
+  final Set<String> _activeVideoIds = {};
   bool _isProcessingQueue = false;
 
   // Public method to request cancellation of ongoing and pending downloads
@@ -44,7 +64,51 @@ class DownloadProvider with ChangeNotifier {
     _downloadSessionId = (int.parse(_downloadSessionId) + 1).toString();
     _cancelRequested = true;
     await _dbHelper.clearDownloadQueue();
+
+    await _awaitWorkersDrained(const Duration(seconds: 8));
+
+    _cancelRequested = false;
     _resetDownloadUi(clearTitle: true, status: 'Descargas canceladas.');
+  }
+
+  /// Espera a que los workers en vuelo terminen de verdad y suelten sus locks.
+  ///
+  /// Esto esperaba solo por `_isProcessingQueue`, y esa era la condición
+  /// equivocada: `_isProcessingQueue` pertenece al loop despachador de
+  /// `processQueue()`, pero las descargas se lanzan con `.ignore()`
+  /// (`_processQueueItem(item, sessionId).ignore()`), así que son futures
+  /// sueltos que el loop no espera. En cuanto se pone `_cancelRequested = true`,
+  /// el despachador corta en su primer `if` y su `finally` pone
+  /// `_isProcessingQueue = false` en ~300ms — mientras los 3 workers siguen
+  /// vivos. La espera se daba por satisfecha ahí y volvía, dejando workers
+  /// zombis de la sesión anterior corriendo dentro de la sesión nueva, todavía
+  /// reteniendo `_activeDownloads`/`_activeVideoIds` (que es lo que hace que
+  /// `processQueue()` se niegue a despachar) y a punto de pisar la UI al morir.
+  /// Lo que hay que esperar son los workers, no el despachador.
+  Future<void> _awaitWorkersDrained(Duration budget) async {
+    final deadline = DateTime.now().add(budget);
+    while ((_isProcessingQueue || _activeDownloads.isNotEmpty) &&
+        DateTime.now().isBefore(deadline)) {
+      await Future.delayed(const Duration(milliseconds: 100));
+    }
+    if (_activeDownloads.isNotEmpty) {
+      // Se agotó el presupuesto. Los workers restantes son de una sesión
+      // obsoleta y ya no pueden tocar la UI (guarda de sessionId), pero siguen
+      // ocupando slots de concurrencia, así que se liberan para que la sesión
+      // nueva pueda avanzar.
+      //
+      // _activeVideoIds NO se limpia a propósito: ese lock es lo único que
+      // impide que dos workers descarguen el mismo videoId a la vez y escriban
+      // ambos sobre <musicDir>/<videoId>.<ext>, corrompiendo el archivo.
+      // Soltarlo aquí reintroduciría justo ese bug. Cada worker zombi quita su
+      // propio videoId en su finally, así que el lock se libera solo; como mucho
+      // processQueue() posterga ESE video (sigue despachando los demás) hasta
+      // que el zombi muera de verdad.
+      print('[DownloadProvider] ${_activeDownloads.length} descarga(s) no '
+          'terminaron dentro del presupuesto; liberando sus slots '
+          '(se conserva el lock por videoId).');
+      _activeDownloads.clear();
+    }
   }
 
   // Clear pending downloads for a specific playlist
@@ -84,11 +148,15 @@ class DownloadProvider with ChangeNotifier {
 
   void setCooldown(bool value) {
     _useCooldown = value;
+    // Wires this setting to YoutubeService's shared circuit breaker — previously
+    // _useCooldown was read nowhere and had no effect on retry/backoff behavior.
+    YoutubeService.circuitBreakerEnabled = value;
     notifyListeners();
   }
 
   /// Initializes queue on startup — clears any leftover items from previous sessions.
   Future<void> initQueue() async {
+    YoutubeService.circuitBreakerEnabled = _useCooldown;
     await _dbHelper.clearDownloadQueue();
   }
 
@@ -97,14 +165,21 @@ class DownloadProvider with ChangeNotifier {
     _downloadSessionId = (int.parse(_downloadSessionId) + 1).toString();
     _cancelRequested = true;
     await _dbHelper.clearDownloadQueue();
-    _resetDownloadUi(clearTitle: true);
+    _sessionTotal = 0;
+    _sessionCompleted = 0;
 
-    final deadline = DateTime.now().add(const Duration(seconds: 5));
-    while (_isProcessingQueue && DateTime.now().isBefore(deadline)) {
-      await Future.delayed(const Duration(milliseconds: 100));
-    }
+    // Drenar de verdad antes de arrancar la sesión nueva (ver
+    // _awaitWorkersDrained). Si se vuelve antes de que los workers viejos
+    // mueran, el processQueue() nuevo se queda girando contra
+    // _maxConcurrentDownloads sin despachar nada.
+    await _awaitWorkersDrained(const Duration(seconds: 8));
+
     _isProcessingQueue = false;
     _cancelRequested = false;
+    // La UI se limpia al final: hacerlo antes dejaba que un worker moribundo de
+    // la sesión anterior escribiera su mensaje de error encima del estado recién
+    // reseteado.
+    _resetDownloadUi(clearTitle: true);
   }
 
   void _resetDownloadUi({bool clearTitle = false, String status = ''}) {
@@ -127,7 +202,7 @@ class DownloadProvider with ChangeNotifier {
     _downloadStartedAt ??= DateTime.now();
     _elapsedTicker?.cancel();
     _elapsedTicker = Timer.periodic(const Duration(seconds: 1), (_) {
-      if (_isDownloading) {
+      if (_isProcessingQueue) {
         notifyListeners();
       } else {
         _stopDownloadClock();
@@ -253,34 +328,60 @@ class DownloadProvider with ChangeNotifier {
     try {
       await WakelockPlus.enable();
 
-      // Resolve all video IDs in the playlist
-      final videoIds = await _youtubeService.getPlaylistVideoIds(playlistUrl);
+      // Resolve all video IDs in the playlist.
+      //
+      // Esta resolución ocurre ANTES de que exista un solo item en
+      // `download_queue`, así que ni el `attemptBudget` de `_processQueueItem`
+      // ni `cancelAllDownloads()` la alcanzaban: expandir una playlist grande
+      // (scraper paginado + fallback) puede tardar, y hasta ahora no había forma
+      // de abortarla. Se le pasa el mismo criterio de staleness que usan los
+      // workers, capturado después de `prepareForNewDownloads()` para que sea el
+      // id de ESTA sesión.
+      final sessionId = _downloadSessionId;
+      final videoIds = await _youtubeService.getPlaylistVideoIds(
+        playlistUrl,
+        isCancelled: () => _cancelRequested || _downloadSessionId != sessionId,
+      );
       if (videoIds.isEmpty) {
         throw Exception("La lista de reproducción está vacía o es privada.");
       }
 
       int addedCount = 0;
       int existingLinkCount = 0;
+      // Track the next orderIndex for newly queued items, continuing from
+      // songs already linked to the playlist.
+      int nextOrder = (await _dbHelper.getMaxOrderForPlaylist(targetPlaylistId) ?? -1) + 1;
+
+      final existingPlaylistSongs = await _dbHelper.getSongsForPlaylist(targetPlaylistId);
+      final existingPlaylistIds = existingPlaylistSongs.map((s) => s.id).toSet();
+      final allSongs = await _dbHelper.getSongs();
+      final allSongsMap = {for (var s in allSongs) s.id: s};
 
       for (final videoId in videoIds) {
         // Check duplicate in playlist
-        final alreadyInPlaylist = await _dbHelper.isSongInPlaylist(targetPlaylistId, videoId);
+        final alreadyInPlaylist = existingPlaylistIds.contains(videoId);
         if (alreadyInPlaylist) {
           continue; // Skip completely
         }
 
         // Check duplicate globally
-        final existingSong = await _dbHelper.getSongById(videoId);
+        final existingSong = allSongsMap[videoId];
         if (existingSong != null && File(existingSong.filePath).existsSync()) {
-          // Just link it to the playlist
-          final maxOrder = await _dbHelper.getMaxOrderForPlaylist(targetPlaylistId) ?? -1;
-          await _dbHelper.addSongToPlaylist(targetPlaylistId, existingSong.id, maxOrder + 1);
+          // Just link it to the playlist at the correct order position
+          await _dbHelper.addSongToPlaylist(targetPlaylistId, existingSong.id, nextOrder);
+          existingPlaylistIds.add(existingSong.id);
+          nextOrder++;
           existingLinkCount++;
           continue;
         }
 
-        // Add to persistent SQLite download queue
-        await _dbHelper.addToDownloadQueue(videoId, targetPlaylistId);
+        // Add to persistent SQLite download queue with expected order index
+        await _dbHelper.addToDownloadQueue(
+          videoId,
+          targetPlaylistId,
+          expectedOrderIndex: nextOrder,
+        );
+        nextOrder++;
         addedCount++;
       }
 
@@ -297,8 +398,9 @@ class DownloadProvider with ChangeNotifier {
         final currentPlayingPlaylistId = musicProvider?.currentPlaylistId;
         if (currentPlayingPlaylistId == targetPlaylistId && audioHandler != null) {
           final songs = await _dbHelper.getSongsForPlaylist(targetPlaylistId);
+          final mediaItems = <MediaItem>[];
           for (final song in songs) {
-            final mediaItem = MediaItem(
+            mediaItems.add(MediaItem(
               id: song.id,
               album: musicProvider?.playlists.firstWhere((p) => p.id == targetPlaylistId).name ?? '',
               title: song.title,
@@ -309,8 +411,10 @@ class DownloadProvider with ChangeNotifier {
                 'filePath': song.filePath,
                 'artPath': song.artPath,
               },
-            );
-            await audioHandler!.addQueueItem(mediaItem);
+            ));
+          }
+          if (mediaItems.isNotEmpty) {
+            await audioHandler!.addQueueItems(mediaItems);
           }
         }
       }
@@ -328,10 +432,19 @@ class DownloadProvider with ChangeNotifier {
         notifyListeners();
       }
     } catch (e) {
-      _isDownloading = false;
-      _errorMessage = e.toString();
-      _statusMessage = 'Error descargando la lista';
-      notifyListeners();
+      // Cancelar durante la expansión de la lista no es un fallo: mostrarlo como
+      // "Error descargando la lista" pisaba el "Descargas canceladas." que
+      // `cancelAllDownloads()` acababa de poner.
+      if (YoutubeService.isCancellationError(e)) {
+        print('Expansión de la lista cancelada por el usuario');
+        _isDownloading = false;
+        notifyListeners();
+      } else {
+        _isDownloading = false;
+        _errorMessage = e.toString();
+        _statusMessage = 'Error descargando la lista';
+        notifyListeners();
+      }
     } finally {
       await WakelockPlus.disable();
     }
@@ -458,24 +571,32 @@ class DownloadProvider with ChangeNotifier {
 
       int addedCount = 0;
       int existingLinkCount = 0;
+      // Track the next orderIndex for newly queued items
+      int nextOrder = (await _dbHelper.getMaxOrderForPlaylist(targetPlaylistId) ?? -1) + 1;
+
+      final existingPlaylistSongs = await _dbHelper.getSongsForPlaylist(targetPlaylistId);
+      final existingPlaylistIds = existingPlaylistSongs.map((s) => s.id).toSet();
+      final allSongs = await _dbHelper.getSongs();
+      final allSongsMap = {for (var s in allSongs) s.id: s};
 
       for (final track in tracks) {
         final spotifyTrackId = _getSpotifyTrackId(track);
 
         // Check duplicate in playlist
-        final alreadyInPlaylist = await _dbHelper.isSongInPlaylist(targetPlaylistId, spotifyTrackId);
+        final alreadyInPlaylist = existingPlaylistIds.contains(spotifyTrackId);
         if (alreadyInPlaylist) continue;
 
         // Check global duplicate
-        final existingSong = await _dbHelper.getSongById(spotifyTrackId);
+        final existingSong = allSongsMap[spotifyTrackId];
         if (existingSong != null && File(existingSong.filePath).existsSync()) {
-          final maxOrder = await _dbHelper.getMaxOrderForPlaylist(targetPlaylistId) ?? -1;
-          await _dbHelper.addSongToPlaylist(targetPlaylistId, existingSong.id, maxOrder + 1);
+          await _dbHelper.addSongToPlaylist(targetPlaylistId, existingSong.id, nextOrder);
+          existingPlaylistIds.add(existingSong.id);
+          nextOrder++;
           existingLinkCount++;
           continue;
         }
 
-        // Add to persistent queue
+        // Add to persistent queue with expected order index
         await _dbHelper.addSpotifyToDownloadQueue(
           spotifyTrackId: spotifyTrackId,
           playlistId: targetPlaylistId,
@@ -483,7 +604,9 @@ class DownloadProvider with ChangeNotifier {
           artist: track.artist,
           durationMs: track.durationMs,
           thumbnailUrl: track.thumbnailUrl,
+          expectedOrderIndex: nextOrder,
         );
+        nextOrder++;
         addedCount++;
       }
 
@@ -497,8 +620,9 @@ class DownloadProvider with ChangeNotifier {
         final currentPlayingPlaylistId = musicProvider?.currentPlaylistId;
         if (currentPlayingPlaylistId == targetPlaylistId && audioHandler != null) {
           final songs = await _dbHelper.getSongsForPlaylist(targetPlaylistId);
+          final mediaItems = <MediaItem>[];
           for (final song in songs) {
-            final mediaItem = MediaItem(
+            mediaItems.add(MediaItem(
               id: song.id,
               album: musicProvider?.playlists.firstWhere((p) => p.id == targetPlaylistId).name ?? '',
               title: song.title,
@@ -509,8 +633,10 @@ class DownloadProvider with ChangeNotifier {
                 'filePath': song.filePath,
                 'artPath': song.artPath,
               },
-            );
-            await audioHandler!.addQueueItem(mediaItem);
+            ));
+          }
+          if (mediaItems.isNotEmpty) {
+            await audioHandler!.addQueueItems(mediaItems);
           }
         }
       }
@@ -538,6 +664,7 @@ class DownloadProvider with ChangeNotifier {
 
   /// Background processor loop that processes SQLite queue items in parallel.
   /// Downloads multiple items simultaneously for better efficiency in background.
+  /// Limited to _maxConcurrentDownloads with delays between starts to avoid rate limiting.
   Future<void> processQueue() async {
     if (_isProcessingQueue) return;
     _isProcessingQueue = true;
@@ -545,40 +672,53 @@ class DownloadProvider with ChangeNotifier {
 
     try {
       await WakelockPlus.enable();
-      
-      // Procesar cola en paralelo
+      _beginDownloadClock();
+
       while (true) {
-        if (sessionId != _downloadSessionId || _cancelRequested) {
-          break;
-        }
+        if (sessionId != _downloadSessionId || _cancelRequested) break;
 
-        final queueItems = await _dbHelper.getDownloadQueue();
-        if (queueItems.isEmpty) {
-          break;
-        }
-
-        // Filtrar items que no están siendo procesados activamente
-        final availableItems = queueItems
-            .where((item) => !_activeDownloads.contains(item['id'] as int))
-            .toList();
-
-        if (availableItems.isEmpty) {
-          // Esperar un poco antes de verificar nuevamente
-          await Future.delayed(const Duration(milliseconds: 500));
+        // Si ya tenemos el máximo de descargas activas, esperar y reintentar
+        if (_activeDownloads.length >= _maxConcurrentDownloads) {
+          await Future.delayed(const Duration(milliseconds: 300));
           continue;
         }
 
-        // Iniciar hasta _maxConcurrentDownloads descargas simultáneas
-        final itemsToProcess = availableItems.take(_maxConcurrentDownloads).toList();
+        // Obtener cola y filtrar los que ya están en proceso
+        final queueItems = await _dbHelper.getDownloadQueue();
+        if (queueItems.isEmpty) {
+          // Si tampoco hay activos, terminamos
+          if (_activeDownloads.isEmpty) break;
+          // Si hay activos todavía, esperar a que terminen
+          await Future.delayed(const Duration(milliseconds: 300));
+          continue;
+        }
+
+        final availableItems = queueItems
+            .where((item) => !_activeDownloads.contains(item['id'] as int))
+            // Nunca despachar dos items con el mismo videoId a la vez (ver _activeVideoIds).
+            .where((item) => !_activeVideoIds.contains(item['videoId'] as String))
+            .toList();
+
+        if (availableItems.isEmpty) {
+          // Hay items en cola pero todos están activos — esperar
+          await Future.delayed(const Duration(milliseconds: 300));
+          continue;
+        }
+
+        // Tomar solo UN item por iteración para llenar slots libres de a uno
+        final item = availableItems.first;
         
-        // Procesar cada item en paralelo
-        final futures = itemsToProcess.map((item) => _processQueueItem(item, sessionId));
-        await Future.wait(futures, eagerError: false);
+        // Lanzar sin await para que el loop siga buscando items inmediatamente
+        _processQueueItem(item, sessionId).ignore();
+        
+        // Pequeño delay antes de lanzar el siguiente para evitar rate limiting
+        await Future.delayed(const Duration(milliseconds: 800));
       }
     } finally {
       _isProcessingQueue = false;
       if (_activeDownloads.isEmpty) {
         await WakelockPlus.disable();
+        _stopDownloadClock();
       }
     }
   }
@@ -592,10 +732,33 @@ class DownloadProvider with ChangeNotifier {
 
     // Marcar como activo
     _activeDownloads.add(queueId);
-    
+    _activeVideoIds.add(videoId);
+
     try {
       final playlistExists = await _dbHelper.getPlaylistById(playlistId) != null;
       if (!playlistExists) {
+        await _dbHelper.removeFromDownloadQueue(queueId);
+        return;
+      }
+
+      // Si otra descarga concurrente (misma pista, otra playlist) ya la completó
+      // mientras esta esperaba su turno en _activeVideoIds, no volver a descargarla:
+      // solo enlazarla a esta playlist. Evita dos workers escribiendo al mismo
+      // archivo local <musicDir>/<videoId>.<ext> a la vez.
+      final existingSong = await _dbHelper.getSongById(videoId);
+      if (existingSong != null && File(existingSong.filePath).existsSync()) {
+        final alreadyLinked = await _dbHelper.isSongInPlaylist(playlistId, videoId);
+        if (!alreadyLinked) {
+          final expectedOrderIndex = item['expectedOrderIndex'] as int?;
+          final orderIndex = expectedOrderIndex ??
+              (await _dbHelper.getMaxOrderForPlaylist(playlistId) ?? -1) + 1;
+          await _dbHelper.addSongToPlaylist(playlistId, existingSong.id, orderIndex);
+          if (musicProvider != null) {
+            final updateCurrent = musicProvider!.currentPlaylistId == playlistId;
+            await musicProvider!.loadSongsForPlaylist(playlistId, updateCurrent: updateCurrent);
+            await musicProvider!.loadPlaylists();
+          }
+        }
         await _dbHelper.removeFromDownloadQueue(queueId);
         return;
       }
@@ -605,10 +768,21 @@ class DownloadProvider with ChangeNotifier {
       const maxAttempts = 2;
 
       bool success = false;
+      bool cancelled = false;
       String? lastFailureReason;
 
+      // Este worker pertenece a `sessionId`. Si la sesión avanzó (el usuario
+      // canceló, o mandó una descarga nueva y prepareForNewDownloads() bumpeó el
+      // contador), este worker es un zombi: puede terminar de morir, pero no
+      // puede seguir escribiendo en el estado compartido de la UI, que ya es de
+      // otra sesión.
+      bool isStale() => sessionId != _downloadSessionId;
+
       for (int attempt = 0; attempt < maxAttempts && !success; attempt++) {
-        if (sessionId != _downloadSessionId || _cancelRequested) break;
+        if (isStale() || _cancelRequested) {
+          cancelled = true;
+          break;
+        }
 
         try {
           _isDownloading = true;
@@ -634,6 +808,7 @@ class DownloadProvider with ChangeNotifier {
             final String artist = item['spotifyArtist'] as String? ?? 'Artista';
             final int durationMs = item['spotifyDurationMs'] as int? ?? 180000;
             final String? thumbnailUrl = item['spotifyThumbnailUrl'] as String?;
+            final int? expectedOrderIndex = item['expectedOrderIndex'] as int?;
 
             await _downloadSpotifyDirectly(
               videoId,
@@ -644,6 +819,7 @@ class DownloadProvider with ChangeNotifier {
               thumbnailUrl,
               sessionId: sessionId,
               attempt: attempt,
+              expectedOrderIndex: expectedOrderIndex,
             ).timeout(attemptBudget, onTimeout: () {
               throw TimeoutException(
                 'Intento ${attempt + 1}: sin completarse en '
@@ -652,11 +828,13 @@ class DownloadProvider with ChangeNotifier {
             });
           } else {
             final videoUrl = 'https://www.youtube.com/watch?v=$videoId';
+            final int? expectedOrderIndex = item['expectedOrderIndex'] as int?;
             await _downloadVideoDirectly(
               videoUrl,
               playlistId,
               sessionId: sessionId,
               attempt: attempt,
+              expectedOrderIndex: expectedOrderIndex,
             ).timeout(attemptBudget, onTimeout: () {
               throw TimeoutException(
                 'Intento ${attempt + 1}: sin completarse en '
@@ -666,22 +844,57 @@ class DownloadProvider with ChangeNotifier {
           }
 
           success = true;
-        } catch (e) {
+        } catch (e, stack) {
+          // Una cancelación no es un fallo de descarga: no se registra en el log
+          // de errores ni se le muestra al usuario como "error". Antes sí, y por
+          // eso download_errors.log terminaba lleno de "Descarga cancelada por el
+          // usuario" tapando los errores reales de los intentos anteriores.
+          if (YoutubeService.isCancellationError(e) || isStale() || _cancelRequested) {
+            cancelled = true;
+            print('Descarga de $videoId cancelada (sesión $sessionId)');
+            break;
+          }
+
           lastFailureReason = e.toString();
           print('Error en descarga (intento ${attempt + 1}): $e');
-          
-          // No usar cooldown entre reintentos en modo paralelo para mayor velocidad
+          await LogService.logError('Download error for video $videoId (attempt ${attempt + 1})', e, stack);
+
+          // Backoff exponencial entre reintentos para evitar rate limiting.
+          // +jitter para que workers concurrentes no reintenten en lockstep.
+          // Se interrumpe en cuanto se cancela, en vez de dormir el delay completo —
+          // si no, este worker sigue reteniendo su lock en _activeVideoIds y un
+          // reenvío del mismo video queda bloqueado detrás de él innecesariamente.
           if (attempt < maxAttempts - 1) {
-            await Future.delayed(const Duration(seconds: 2));
+            final baseMs = 3000 * (attempt + 1); // 3s, 6s
+            final jitterMs = Random().nextInt((baseMs * 0.3).round());
+            var remainingMs = baseMs + jitterMs;
+            const stepMs = 300;
+            while (remainingMs > 0) {
+              if (sessionId != _downloadSessionId || _cancelRequested) break;
+              final sleepMs = remainingMs < stepMs ? remainingMs : stepMs;
+              await Future.delayed(Duration(milliseconds: sleepMs));
+              remainingMs -= sleepMs;
+            }
           }
         }
+      }
+
+      // Un worker cancelado/obsoleto sale sin tocar nada compartido: no reporta
+      // error, no toca la cola (prepareForNewDownloads/cancelAllDownloads ya la
+      // limpiaron, y la que hay ahora pertenece a la sesión nueva) y no resetea
+      // _isDownloading. Ese último punto era el síntoma visible: al morir, un
+      // zombi entraba por la rama de fallo, ponía "Error en descarga después de 2
+      // intentos" y _isDownloading = false sobre una sesión recién arrancada, así
+      // que la descarga nueva se veía muerta antes de empezar.
+      if (cancelled || isStale()) {
+        return;
       }
 
       if (success) {
         await _dbHelper.removeFromDownloadQueue(queueId);
         _sessionCompleted++;
         _updateProgress();
-        
+
         // Si no hay más descargas activas, limpiar UI
         if (_activeDownloads.length <= 1) {
           _isDownloading = false;
@@ -695,19 +908,33 @@ class DownloadProvider with ChangeNotifier {
       } else {
         // Eliminar de cola después de maxAttempts fallidos
         await _dbHelper.removeFromDownloadQueue(queueId);
-        _errorMessage = lastFailureReason ?? 'Error desconocido';
+        _errorMessage = _friendlyDownloadError(lastFailureReason ?? 'Error desconocido');
         _statusMessage = 'Error en descarga después de $maxAttempts intentos';
+
+        // Limpiar estado de descarga actual solo si no quedan más descargas activas
+        if (_activeDownloads.length <= 1) {
+          _isDownloading = false;
+          _currentTitle = '';
+          _progress = 0.0;
+        } else {
+          _statusMessage = 'Descargando (${_activeDownloads.length - 1} restantes)...';
+        }
         notifyListeners();
       }
-    } catch (e) {
+    } catch (e, stack) {
       print('Error procesando item de cola: $e');
+      await LogService.logError('Outer queue item processing error', e, stack);
       await _dbHelper.removeFromDownloadQueue(queueId);
     } finally {
       _activeDownloads.remove(queueId);
-      _currentQueueId = null;
-      
-      // Si no hay más descargas activas, liberar wake lock
-      if (_activeDownloads.isEmpty) {
+      _activeVideoIds.remove(videoId);
+      if (_currentQueueId == queueId) _currentQueueId = null;
+
+      // Liberar el wake lock solo si además ya no queda despachador activo: un
+      // worker zombi de la sesión anterior puede terminar justo después de que
+      // arrancó la sesión nueva y, viendo _activeDownloads vacío por un instante,
+      // apagaba el wake lock que esa sesión nueva acababa de pedir.
+      if (_activeDownloads.isEmpty && !_isProcessingQueue) {
         await WakelockPlus.disable();
       }
     }
@@ -719,6 +946,7 @@ class DownloadProvider with ChangeNotifier {
     String playlistId, {
     required String sessionId,
     int attempt = 0,
+    int? expectedOrderIndex,
   }) async {
     await WakelockPlus.enable();
 
@@ -835,8 +1063,11 @@ class DownloadProvider with ChangeNotifier {
       // 6. Append track to the target playlist (only if not already in playlist)
       final songInPlaylist = await _dbHelper.isSongInPlaylist(playlistId, song.id);
       if (!songInPlaylist) {
-        final maxOrder = await _dbHelper.getMaxOrderForPlaylist(playlistId) ?? -1;
-        await _dbHelper.addSongToPlaylist(playlistId, song.id, maxOrder + 1);
+        // Use the pre-assigned order index to preserve playlist order,
+        // falling back to appending at the end if not set.
+        final orderIndex = expectedOrderIndex ?? 
+            (await _dbHelper.getMaxOrderForPlaylist(playlistId) ?? -1) + 1;
+        await _dbHelper.addSongToPlaylist(playlistId, song.id, orderIndex);
       }
 
       // Update session progress
@@ -896,6 +1127,7 @@ class DownloadProvider with ChangeNotifier {
     String? spotifyThumbnailUrl, {
     required String sessionId,
     int attempt = 0,
+    int? expectedOrderIndex,
   }) async {
     await WakelockPlus.enable();
 
@@ -1009,8 +1241,9 @@ class DownloadProvider with ChangeNotifier {
 
       final songInPlaylist = await _dbHelper.isSongInPlaylist(playlistId, song.id);
       if (!songInPlaylist) {
-        final maxOrder = await _dbHelper.getMaxOrderForPlaylist(playlistId) ?? -1;
-        await _dbHelper.addSongToPlaylist(playlistId, song.id, maxOrder + 1);
+        final orderIndex = expectedOrderIndex ?? 
+            (await _dbHelper.getMaxOrderForPlaylist(playlistId) ?? -1) + 1;
+        await _dbHelper.addSongToPlaylist(playlistId, song.id, orderIndex);
       }
 
       if (_sessionTotal > 0) {

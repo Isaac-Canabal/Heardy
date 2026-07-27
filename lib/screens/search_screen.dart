@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../services/youtube_service.dart';
+import '../services/ytmusic_service.dart';
 import '../providers/music_provider.dart';
 import '../providers/download_provider.dart';
 import '../providers/settings_provider.dart';
@@ -15,7 +16,7 @@ class SearchScreen extends StatefulWidget {
 
 class _SearchScreenState extends State<SearchScreen> {
   final TextEditingController _searchController = TextEditingController();
-  final YoutubeService _youtubeService = YoutubeService();
+  final YTMusicService _youtubeService = YTMusicService();
   
   List<YouTubeSearchResult> _searchResults = [];
   bool _isSearching = false;
@@ -105,47 +106,7 @@ class _SearchScreenState extends State<SearchScreen> {
     }
   }
 
-  Future<void> _playDirectly(YouTubeSearchResult result) async {
-    // Temporalmente deshabilitado debido a limitaciones de streaming de YouTube
-    // Las URLs de YouTube no son compatibles con reproductores de audio estándar
-    // Por ahora, el usuario debe descargar primero
-    _showSnackBar('Por favor descarga primero para reproducir. El streaming de YouTube requiere descarga previa.', isError: true);
-    return;
-    
-    /* Streaming directo deshabilitado temporalmente
-    final audioHandler = Provider.of<AudioPlayerHandler>(context, listen: false);
-    
-    try {
-      _showSnackBar('Cargando audio de alta calidad...', isSuccess: true);
-      
-      final streamingUrl = await _youtubeService.getStreamingUrl(result.videoId);
-      if (streamingUrl == null) {
-        _showSnackBar('Error cargando audio. Intenta descargar primero.', isError: true);
-        return;
-      }
-      
-      // Crear MediaItem para reproducción temporal
-      final mediaItem = MediaItem(
-        id: result.videoId,
-        title: result.title,
-        artist: result.artist,
-        duration: result.duration,
-        artUri: Uri.parse(result.thumbnailUrl),
-        extras: {
-          'is_streaming': true,
-          'streaming_url': streamingUrl,
-        },
-      );
-      
-      // Configurar el handler para streaming
-      await audioHandler.playUrl(streamingUrl, mediaItem);
-      
-      _showSnackBar('Reproduciendo streaming...', isSuccess: true);
-    } catch (e) {
-      _showSnackBar('Error reproduciendo: $e', isError: true);
-    }
-    */
-  }
+
 
   void _showSnackBar(String message, {bool isError = false, bool isSuccess = false}) {
     ScaffoldMessenger.of(context).showSnackBar(

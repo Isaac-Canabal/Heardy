@@ -84,6 +84,8 @@ app.*.map.json
 **/android/local.properties
 **/android/**/GeneratedPluginRegistrant.java
 **/android/key.properties
+**/android/keystore.properties
+keystore.properties
 *.jks
 *.keystore
 
@@ -115,3 +117,5 @@ coverage/
 devtools_options.yaml
 pad_icon.dart
 ios/Runner/Info.plist
+*.apk
+.claude/skills/isaac-fullstack-dev/SKILL.md

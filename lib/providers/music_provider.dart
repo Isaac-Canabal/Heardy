@@ -22,8 +22,12 @@ class MusicProvider with ChangeNotifier {
     loadPlaylists();
   }
 
+  bool _playbackRestored = false;
+
   /// Intenta restaurar el estado de reproducción guardado
   Future<void> restorePlaybackState(AudioPlayerHandler audioHandler) async {
+    if (_playbackRestored) return;
+    _playbackRestored = true;
     try {
       print('Verificando estado de reproducción guardado...');
       final savedState = await PlaybackStateService.restoreState();
@@ -34,10 +38,6 @@ class MusicProvider with ChangeNotifier {
 
       print('Estado guardado encontrado, iniciando restauración...');
 
-      // Esperar un poco para asegurar que audio_service esté completamente inicializado
-      await Future.delayed(const Duration(milliseconds: 500));
-
-      // Obtener datos guardados
       final playlistId = savedState['playlistId'] as String?;
       final currentMediaId = savedState['currentMediaId'] as String;
       final position = savedState['position'] as Duration;
@@ -47,123 +47,101 @@ class MusicProvider with ChangeNotifier {
       final loopModeStr = savedState['loopModeStr'] as String?;
       final speed = savedState['speed'] as double?;
 
-      // Cargar la playlist si existe
-      if (playlistId != null && playlistId.isNotEmpty) {
-        final playlistExists = _playlists.any((p) => p.id == playlistId);
-        if (!playlistExists) {
-          print('La playlist guardada ya no existe');
-          await PlaybackStateService.clearState();
-          return;
-        }
-
-        await loadSongsForPlaylist(playlistId, updateCurrent: true);
-        
-        // Esperar un poco más después de cargar las canciones
-        await Future.delayed(const Duration(milliseconds: 200));
-
-        // Reconstruir la queue
-        final queueSongs = _currentPlaylistSongs.where((song) {
-          return queueIds.contains(song.id);
-        }).toList();
-
-        if (queueSongs.isEmpty) {
-          print('La queue guardada está vacía o inválida');
-          await PlaybackStateService.clearState();
-          return;
-        }
-
-        // Convertir a MediaItems
-        final mediaItems = queueSongs.map((song) => MediaItem(
-          id: song.id,
-          title: song.title,
-          artist: song.artist,
-          duration: Duration(seconds: song.duration),
-          artUri: song.artPath.isNotEmpty
-              ? Uri.file(song.artPath)
-              : null,
-          extras: {'playlist_id': playlistId},
-        )).toList();
-
-        // Setear la queue
-        try {
-          audioHandler.queue.add(mediaItems);
-        } catch (e) {
-          print('Error seteando queue: $e');
-          await PlaybackStateService.clearState();
-          return;
-        }
-
-        // Encontrar el índice de la canción actual
-        final currentIndex = mediaItems.indexWhere((item) => item.id == currentMediaId);
-        if (currentIndex == -1) {
-          print('Canción actual no encontrada en la queue');
-          await PlaybackStateService.clearState();
-          return;
-        }
-
-        // Ir a la posición con retry en caso de fallo
-        try {
-          await audioHandler.skipToQueueItem(currentIndex);
-          await Future.delayed(const Duration(milliseconds: 100));
-          await audioHandler.seek(position);
-        } catch (e) {
-          print('Error al navegar a la canción: $e');
-          await PlaybackStateService.clearState();
-          return;
-        }
-
-        // Restaurar shuffle y repeat mode
-        if (shuffleModeStr != null) {
-          try {
-            final shuffleMode = AudioServiceShuffleMode.values.firstWhere(
-              (mode) => mode.name == shuffleModeStr,
-              orElse: () => AudioServiceShuffleMode.none,
-            );
-            await audioHandler.setShuffleMode(shuffleMode);
-          } catch (e) {
-            print('Error restaurando shuffle mode: $e');
-          }
-        }
-
-        if (loopModeStr != null) {
-          try {
-            final loopMode = AudioServiceRepeatMode.values.firstWhere(
-              (mode) => mode.name == loopModeStr,
-              orElse: () => AudioServiceRepeatMode.one,
-            );
-            await audioHandler.setRepeatMode(loopMode);
-          } catch (e) {
-            print('Error restaurando loop mode: $e');
-          }
-        }
-
-        // Restaurar velocidad
-        if (speed != null && speed > 0) {
-          try {
-            await audioHandler.player.setSpeed(speed);
-          } catch (e) {
-            print('Error restaurando velocidad: $e');
-          }
-        }
-
-        // Solo reproducir si estaba reproduciendo
-        if (isPlaying) {
-          try {
-            await audioHandler.play();
-          } catch (e) {
-            print('Error iniciando reproducción: $e');
-          }
-        } else {
-          print('Estado restaurado: canción pausada en ${position.inSeconds}s');
-        }
-
-        print('Estado de reproducción restaurado exitosamente');
+      if (playlistId == null || playlistId.isEmpty) {
+        print('No hay playlistId guardado');
+        await PlaybackStateService.clearState();
+        return;
       }
+
+      // Asegurar que la lista de playlists esté cargada de la base de datos
+      await loadPlaylists();
+
+      final playlistExists = _playlists.any((p) => p.id == playlistId);
+      if (!playlistExists) {
+        print('La playlist guardada ya no existe');
+        await PlaybackStateService.clearState();
+        return;
+      }
+
+      await loadSongsForPlaylist(playlistId, updateCurrent: true);
+
+      // Reconstruir la queue CON filePath y artPath en extras
+      final playlist = _playlists.firstWhere((p) => p.id == playlistId);
+      final queueSongs = _currentPlaylistSongs.where((song) {
+        return queueIds.contains(song.id);
+      }).toList();
+
+      if (queueSongs.isEmpty) {
+        print('La queue guardada está vacía o inválida');
+        await PlaybackStateService.clearState();
+        return;
+      }
+
+      final mediaItems = queueSongs.map((song) => MediaItem(
+        id: song.id,
+        album: playlist.name,
+        title: song.title,
+        artist: song.artist,
+        duration: Duration(seconds: song.duration),
+        artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
+        extras: {
+          'filePath': song.filePath,   // ← crítico para que just_audio cargue el audio
+          'artPath': song.artPath,
+          'playlist_id': playlistId,
+        },
+      )).toList();
+
+      // Restaurar shuffle y repeat mode ANTES de cargar
+      if (shuffleModeStr != null) {
+        try {
+          final shuffleMode = AudioServiceShuffleMode.values.firstWhere(
+            (mode) => mode.name == shuffleModeStr,
+            orElse: () => AudioServiceShuffleMode.none,
+          );
+          await audioHandler.setShuffleMode(shuffleMode);
+        } catch (e) {
+          print('Error restaurando shuffle mode: $e');
+        }
+      }
+
+      if (loopModeStr != null) {
+        try {
+          final loopMode = AudioServiceRepeatMode.values.firstWhere(
+            (mode) => mode.name == loopModeStr,
+            orElse: () => AudioServiceRepeatMode.one,
+          );
+          await audioHandler.setRepeatMode(loopMode);
+        } catch (e) {
+          print('Error restaurando loop mode: $e');
+        }
+      }
+
+      if (speed != null && speed > 0) {
+        try {
+          await audioHandler.player.setSpeed(speed);
+        } catch (e) {
+          print('Error restaurando velocidad: $e');
+        }
+      }
+
+      // Cargar playlist con o sin reproducción según el estado guardado
+      if (isPlaying) {
+        // Estaba reproduciendo: cargar y reproducir desde la posición
+        await audioHandler.playPlaylist(mediaItems, currentMediaId);
+        await Future.delayed(const Duration(milliseconds: 150));
+        await audioHandler.seek(position);
+      } else {
+        // Estaba pausado: cargar fuente de audio SIN reproducir
+        await audioHandler.restorePlaylist(mediaItems, currentMediaId, position);
+      }
+
+      print('Estado de reproducción restaurado exitosamente (${isPlaying ? "PLAYING" : "PAUSED"} en ${position.inSeconds}s)');
     } catch (e) {
       print('Error restaurando estado de reproducción: $e');
       await PlaybackStateService.clearState();
     }
   }
+
 
   /// Fetches all playlists from the database and updates the local cache.
   Future<void> loadPlaylists() async {

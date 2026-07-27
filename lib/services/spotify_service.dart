@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -76,15 +77,50 @@ class SpotifyService {
     return (type: match.group(4)!, id: match.group(5)!);
   }
 
+  /// Techo de tiempo por petición HTTP a Spotify.
+  ///
+  /// `HttpClient.connectionTimeout` sólo acota el ESTABLECIMIENTO de la conexión:
+  /// una vez abierta, `request.close()` y la lectura del cuerpo
+  /// (`transform(...).join()`, `drain()`) esperan indefinidamente si Spotify
+  /// acepta la conexión y luego no responde. Como todo este servicio corre detrás
+  /// del botón "Analizar enlace", un cuelgue dejaba `_isAnalyzing` en `true` para
+  /// siempre en `add_from_youtube_screen`, que es lo que deshabilita el campo de
+  /// texto y el botón — la pantalla entera quedaba inutilizable hasta reiniciar
+  /// la app, sin mensaje de error.
+  static const Duration _requestTimeout = Duration(seconds: 20);
+
+  Future<T> _withTimeout<T>(Future<T> future, String what) {
+    return future.timeout(
+      _requestTimeout,
+      onTimeout: () => throw TimeoutException(
+        '$what no respondió en ${_requestTimeout.inSeconds}s',
+      ),
+    );
+  }
+
+  /// Cuántos saltos de redirección se siguen antes de rendirse.
+  ///
+  /// `resolveShortLink` se llama a sí misma con el `location` recibido y no tenía
+  /// ningún límite: una cadena de redirecciones cíclica (A→B→A) la dejaba
+  /// recursando y haciendo peticiones de red para siempre.
+  static const int _maxRedirects = 5;
+
   /// Resolves a short `spotify.link/xxx` URL to its full `open.spotify.com` URL.
-  Future<String> resolveShortLink(String url) async {
+  Future<String> resolveShortLink(String url, {int depth = 0}) async {
+    if (depth >= _maxRedirects) {
+      print('Spotify short link: demasiadas redirecciones ($depth), me quedo con $url');
+      return url;
+    }
     final client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 10);
     try {
       final request = await client.getUrl(Uri.parse(url));
       request.followRedirects = false;
-      final response = await request.close();
-      await response.drain<void>();
+      final response = await _withTimeout(
+        request.close(),
+        'La resolución del enlace corto',
+      );
+      await _withTimeout(response.drain<void>(), 'La resolución del enlace corto');
 
       if (response.statusCode >= 300 && response.statusCode < 400) {
         final location = response.headers.value('location');
@@ -96,7 +132,7 @@ class SpotifyService {
       if (response.statusCode >= 300 && response.statusCode < 400) {
         final location = response.headers.value('location');
         if (location != null) {
-          return resolveShortLink(location);
+          return resolveShortLink(location, depth: depth + 1);
         }
       }
       return url;
@@ -150,7 +186,10 @@ class SpotifyService {
       request.headers.set('Accept', 'text/html,application/xhtml+xml');
       request.headers.set('Accept-Language', 'en-US,en;q=0.9');
 
-      final response = await request.close();
+      final response = await _withTimeout(
+        request.close(),
+        'La petición a Spotify',
+      );
       if (response.statusCode != 200) {
         await response.drain<void>();
         throw Exception(
@@ -158,7 +197,10 @@ class SpotifyService {
             'Verifica que el enlace sea correcto y público.');
       }
 
-      final html = await response.transform(utf8.decoder).join();
+      final html = await _withTimeout(
+        response.transform(utf8.decoder).join(),
+        'La lectura de la página de Spotify',
+      );
 
       // Extract __NEXT_DATA__ JSON from the HTML
       final regex = RegExp(
@@ -244,9 +286,15 @@ class SpotifyService {
             if (trackId != null) {
               final oembedUrl = 'https://open.spotify.com/oembed?url=https://open.spotify.com/track/$trackId';
               final request = await client.getUrl(Uri.parse(oembedUrl));
-              final response = await request.close();
+              final response = await _withTimeout(
+                request.close(),
+                'La miniatura de "${track.title}"',
+              );
               if (response.statusCode == 200) {
-                final body = await response.transform(utf8.decoder).join();
+                final body = await _withTimeout(
+                  response.transform(utf8.decoder).join(),
+                  'La miniatura de "${track.title}"',
+                );
                 final data = jsonDecode(body) as Map<String, dynamic>;
                 final trackThumbnail = data['thumbnail_url'] as String?;
                 if (trackThumbnail != null && trackThumbnail.isNotEmpty) {
