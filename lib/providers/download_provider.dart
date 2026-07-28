@@ -147,6 +147,25 @@ class DownloadProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  /// Nombre de una playlist para el campo `album` del `MediaItem`, o '' si ya no
+  /// existe.
+  ///
+  /// Los cuatro sitios que construyen MediaItems hacían
+  /// `musicProvider?.playlists.firstWhere((p) => p.id == id).name ?? ''`, y ese
+  /// `?? ''` sólo cubría que `musicProvider` fuese null: si el provider existía
+  /// pero `firstWhere` no encontraba la playlist, lanzaba StateError antes de que
+  /// el `??` entrara en juego. Es alcanzable —una descarga dura minutos y la
+  /// playlist se puede borrar mientras corre— y hacía que los items restantes
+  /// fallaran con un StateError opaco en el log en vez de terminar limpiamente.
+  String _playlistName(String playlistId) {
+    final playlists = musicProvider?.playlists;
+    if (playlists == null) return '';
+    for (final p in playlists) {
+      if (p.id == playlistId) return p.name;
+    }
+    return '';
+  }
+
   void setCooldown(bool value) {
     _useCooldown = value;
     // Wires this setting to YoutubeService's shared circuit breaker — previously
@@ -312,7 +331,7 @@ class DownloadProvider with ChangeNotifier {
         if (currentPlayingPlaylistId == playlistId && audioHandler != null) {
           final mediaItem = MediaItem(
             id: existingSong.id,
-            album: musicProvider?.playlists.firstWhere((p) => p.id == playlistId).name ?? '',
+            album: _playlistName(playlistId),
             title: existingSong.title,
             artist: existingSong.artist,
             duration: Duration(seconds: existingSong.duration),
@@ -442,7 +461,7 @@ class DownloadProvider with ChangeNotifier {
           for (final song in songs) {
             mediaItems.add(MediaItem(
               id: song.id,
-              album: musicProvider?.playlists.firstWhere((p) => p.id == targetPlaylistId).name ?? '',
+              album: _playlistName(targetPlaylistId),
               title: song.title,
               artist: song.artist,
               duration: Duration(seconds: song.duration),
@@ -545,7 +564,7 @@ class DownloadProvider with ChangeNotifier {
         if (currentPlayingPlaylistId == playlistId && audioHandler != null) {
           final mediaItem = MediaItem(
             id: existingSong.id,
-            album: musicProvider?.playlists.firstWhere((p) => p.id == playlistId).name ?? '',
+            album: _playlistName(playlistId),
             title: existingSong.title,
             artist: existingSong.artist,
             duration: Duration(seconds: existingSong.duration),
@@ -664,7 +683,7 @@ class DownloadProvider with ChangeNotifier {
           for (final song in songs) {
             mediaItems.add(MediaItem(
               id: song.id,
-              album: musicProvider?.playlists.firstWhere((p) => p.id == targetPlaylistId).name ?? '',
+              album: _playlistName(targetPlaylistId),
               title: song.title,
               artist: song.artist,
               duration: Duration(seconds: song.duration),

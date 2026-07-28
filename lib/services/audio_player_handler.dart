@@ -444,10 +444,18 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   @override
   Future<void> onTaskRemoved() async {
     try {
+      // `stop()` sí, `dispose()` NO. `_player` es `final` (ver arriba), así que
+      // destruirlo es irreversible: no hay forma de recrearlo en este proceso.
+      //
+      // Aquí había un `dispose()`, y sólo era inocuo si el proceso moría justo
+      // después. Pero con `androidNotificationOngoing: true` (main.dart) el
+      // servicio está en foreground y el proceso suele sobrevivir a que el
+      // usuario deslice la app fuera de recientes — que es exactamente cuando
+      // salta este callback. En ese caso reabrir la app daba un reproductor
+      // muerto hasta forzar el cierre.
       await _player.stop();
-      await _player.dispose();
     } catch (e) {
-      print("Error disposing player on task remove: $e");
+      print("Error stopping player on task remove: $e");
     }
     await super.onTaskRemoved();
   }

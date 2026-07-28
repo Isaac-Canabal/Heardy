@@ -332,6 +332,11 @@ class YTMusicService {
   }
   
   void dispose() {
+    // `YTMusic` no expone close/dispose (revisado en dart_ytmusic_api 1.3.7: sólo
+    // tiene un `CookieJar` en memoria, nada de sockets propios que cerrar), así
+    // que lo único posible es soltar la referencia para que se libere. Sin esto la
+    // instancia sobrevivía al dispose del provider.
+    _ytmusic = null;
     _youtubeService.dispose();
   }
 }

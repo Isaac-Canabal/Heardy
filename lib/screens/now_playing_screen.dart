@@ -1045,6 +1045,8 @@ class SmartAlbumArt extends StatefulWidget {
 class _SmartAlbumArtState extends State<SmartAlbumArt> {
   double? _imageAspectRatio;
   bool _hasError = false;
+  ImageStream? _imageStream;
+  ImageStreamListener? _imageListener;
 
   @override
   void initState() {
@@ -1078,10 +1080,19 @@ class _SmartAlbumArtState extends State<SmartAlbumArt> {
       return;
     }
 
+    // El listener anterior se retira antes de resolver otra imagen. Sin esto,
+    // `_resolveImageSize()` —que se llama desde `initState` Y desde
+    // `didUpdateWidget`, o sea en cada cambio de carátula— añadía un
+    // `ImageStreamListener` más y no quitaba ninguno nunca. El `ImageStream`
+    // retiene la closure, y la closure retiene este `State`, así que el objeto no
+    // se podía liberar: la memoria crecía a cada canción. No llegaba a petar
+    // porque los callbacks comprueban `mounted`, pero la fuga era real.
+    _detachImageListener();
+
     final image = FileImage(file);
     final stream = image.resolve(ImageConfiguration.empty);
-    stream.addListener(
-      ImageStreamListener(
+    _imageStream = stream;
+    _imageListener = ImageStreamListener(
         (ImageInfo info, bool synchronousCall) {
           if (mounted) {
             setState(() {
@@ -1098,8 +1109,25 @@ class _SmartAlbumArtState extends State<SmartAlbumArt> {
             });
           }
         },
-      ),
     );
+    stream.addListener(_imageListener!);
+  }
+
+  void _detachImageListener() {
+    final stream = _imageStream;
+    final listener = _imageListener;
+    if (stream != null && listener != null) {
+      stream.removeListener(listener);
+    }
+    _imageStream = null;
+    _imageListener = null;
+  }
+
+  @override
+  void dispose() {
+    // Este State no tenía `dispose()` en absoluto.
+    _detachImageListener();
+    super.dispose();
   }
 
   @override
