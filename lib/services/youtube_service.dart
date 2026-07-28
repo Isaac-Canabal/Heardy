@@ -265,8 +265,24 @@ class YoutubeService {
   /// is what actually fixes "3 workers pile onto the same incident and jump
   /// straight to the longest tier" — reinstating this classification does not
   /// bring that bug back.
+  /// Marca los errores HTTP que vienen de pedir BYTES a googlevideo.com, para
+  /// poder distinguirlos de los que vienen de la API de InnerTube.
+  static const String streamHttpErrorMarker = 'al descargar el stream';
+
   bool _isHardBlockError(Object e) {
     final errorStr = e.toString().toLowerCase();
+
+    // Un 403 al pedir los bytes NO es un bloqueo de sesión, y tratarlo como tal
+    // sale carísimo. Significa que esa URL de stream no vale para nosotros
+    // (caducó, o se emitió a otro cliente), y el remedio es pedir un manifest
+    // nuevo — que es justo lo que hace el bucle de reintentos, sin necesidad de
+    // esperar nada. Al no distinguirlo, el 403 de desajuste de User-Agent
+    // (ver _streamUserAgent) disparaba el cooldown compartido y lo escalaba
+    // 20s->40s->80s->160s a lo largo de los 5 intentos: ~15 minutos atascado en
+    // la primera canción, esperando a que se despeje un bloqueo que no existía,
+    // para volver a fallar igual porque la causa era determinista.
+    if (errorStr.contains(streamHttpErrorMarker)) return false;
+
     return errorStr.contains('videounavailableexception') ||
         // VideoUnplayableException es la forma que toma el bloqueo en el paso del
         // MANIFEST, y faltaba aquí. Medido con test/download_smoke_test.dart y
@@ -1296,7 +1312,8 @@ class YoutubeService {
         final response = await request.close().timeout(const Duration(seconds: 20));
 
         if (response.statusCode != 200 && response.statusCode != 206) {
-          throw HttpException('HTTP ${response.statusCode}');
+          throw HttpException(
+              'HTTP ${response.statusCode} $streamHttpErrorMarker');
         }
 
         final expectedTotal = response.contentLength > 0 ? response.contentLength : totalBytes;
@@ -1347,11 +1364,29 @@ class YoutubeService {
 
 
 
+  /// User-Agent para las peticiones de bytes a googlevideo.com.
+  ///
+  /// TIENE que coincidir con el del cliente que pidió el manifest. YouTube emite
+  /// las URLs de stream ligadas al cliente que las solicitó y valida que quien
+  /// pide los bytes sea el mismo; si no coinciden, responde **403**.
+  ///
+  /// Aquí había un User-Agent de Chrome 96 de escritorio (de 2021) mientras el
+  /// manifest se pedía con `YoutubeApiClient.android` — o sea, pedíamos la URL
+  /// como la app de Android de YouTube y descargábamos como un Chrome viejo de
+  /// Windows. Eso producía el `HttpException: HTTP 403` que aparecía en
+  /// download_errors.log tras agotar los 5 intentos, con metadata y manifest
+  /// funcionando correctamente: el fallo estaba sólo en la descarga de bytes.
+  ///
+  /// El valor es el `userAgent` que declaran los dos clientes de
+  /// `_clientFallbacks` (`android` y `androidSdkless`); ambos declaran
+  /// exactamente el mismo, así que una sola constante es correcta para todos los
+  /// caminos actuales. Si se añade a la cascada un cliente con otro UA, esto
+  /// tiene que pasar a derivarse del cliente que realmente resolvió el manifest.
+  static const String _streamUserAgent =
+      'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip';
+
   void _addHeaders(HttpClientRequest request) {
-    request.headers.add(
-      'User-Agent',
-      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.18 Safari/537.36',
-    );
+    request.headers.add('User-Agent', _streamUserAgent);
     request.headers.add('Accept', '*/*');
     request.headers.add('Accept-Encoding', 'identity');
     request.headers.add('Connection', 'keep-alive');
