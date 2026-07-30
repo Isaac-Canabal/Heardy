@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math';
+import 'package:meta/meta.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:youtube_explode_dart/youtube_explode_dart.dart';
 
@@ -43,6 +44,63 @@ class YouTubeSearchResult {
     required this.thumbnailUrl,
     required this.url,
   });
+}
+
+/// El muro anti-bot de YouTube, como TIPO.
+///
+/// Existe para que el corte temprano no dependa de volver a hacer match por
+/// subcadena en cada capa — que es justo el acoplamiento frágil que ya sufre
+/// `_isRetryableError`, donde `VideoUnplayableException` se clasifica como
+/// reintentable de rebote, porque su mensaje contiene la palabra "Streams".
+///
+/// Conserva el error original en `toString()` a propósito: `_isHardBlockError`,
+/// `LogService` y el log de errores siguen viendo el texto completo de YouTube.
+class BotWallException implements Exception {
+  BotWallException(this.original);
+
+  final Object original;
+
+  @override
+  String toString() => 'BotWallException: $original';
+}
+
+/// Un chunk a mitad de descarga (no el primero — ver `_downloadSequential`)
+/// respondió con un status ≠ 200/206.
+///
+/// Existe para que ese modo de fallo sea DIAGNOSTICABLE la próxima vez que
+/// ocurra, no para arreglarlo — hasta ahora nunca se observó un caso real, sólo
+/// el corte al inicio (chunk 0, cubierto por el fallback sin Range y el
+/// `streamHttpErrorMarker`). A propósito NO lleva ese marcador ni dispara el
+/// salto de cliente de `downloadVideoWithAudio`: un corte a mitad puede ser el
+/// mismo cliente-condenado del 403-al-inicio (Test A/B,
+/// docs/investigacion_muro_antibot.md), pero también puede ser la URL de
+/// stream expirando de verdad a mitad de una descarga larga — un fenómeno
+/// distinto cuya solución es la opuesta (pedir un manifest nuevo SÍ sirve ahí,
+/// saltar de cliente no tiene por qué). El primer caso real que capture esto
+/// dice, por el `statusCode`, cuál de las dos hipótesis es: 403/401 apunta a
+/// cliente-condenado, 410/otro apunta a expiración real.
+class MidDownloadCutException implements Exception {
+  MidDownloadCutException({
+    required this.statusCode,
+    required this.chunkIndex,
+    required this.bytesReceived,
+    required this.totalBytes,
+    required this.manifestClientIndex,
+    required this.manifestClientNames,
+  });
+
+  final int statusCode;
+  final int chunkIndex;
+  final int bytesReceived;
+  final int totalBytes;
+  final int? manifestClientIndex;
+  final String? manifestClientNames;
+
+  @override
+  String toString() =>
+      'MidDownloadCutException: HTTP $statusCode en el chunk $chunkIndex '
+      '($bytesReceived/$totalBytes bytes recibidos antes del corte), '
+      'cliente de manifest #$manifestClientIndex ($manifestClientNames)';
 }
 
 class YoutubeService {
@@ -96,17 +154,39 @@ class YoutubeService {
   /// `androidSdkless` e `ios`. Aquella tanda de 6/6 midió una sesión ya
   /// bloqueada, no al cliente.
   ///
-  /// Aun así la cascada se queda en DOS clientes a propósito. El mismo barrido
-  /// demuestra por qué añadir más no ayuda: cuando YouTube bloquea, bloquea la
-  /// sesión, y los 11 clientes fallan a la vez en la misma corrida. Cada cliente
-  /// extra es entonces una petición tirada a la basura que sólo añade volumen —
-  /// exactamente lo que dispara el bloqueo. Más clientes ayudarían si el rechazo
-  /// fuera por cliente; está medido que no lo es.
+  /// Aquella cascada se quedaba en DOS clientes a propósito porque el barrido
+  /// demuestra que añadir más no ayuda contra el bloqueo de SESIÓN: cuando
+  /// YouTube bloquea, bloquea la sesión entera, y los 11 clientes fallan a la
+  /// vez en la misma corrida. Ese razonamiento sigue siendo cierto — pero es
+  /// sobre un modo de fallo distinto al que motiva el orden de abajo.
+  ///
+  /// `[androidVr, safari]` va PRIMERO ahora, no por el bloqueo de sesión sino
+  /// por el modo de fallo separado descrito en `_streamUserAgent` y
+  /// `docs/investigacion_muro_antibot.md` (Test A/B, 2026-07-29): con manifest
+  /// sano, `android`/`androidSdkless` pueden devolver URLs de stream que dan
+  /// 403 determinista al pedir los BYTES con el UA de navegador que usa esta
+  /// app — no es un problema de UA desajustado sino del cliente que resolvió
+  /// el manifest. `[androidVr, safari]`, la combinación de `main`, no lo
+  /// reproduce (2/2 en Test B, mismos vídeos, mismo UA, único cambio: el
+  /// cliente). `android`/`androidSdkless` NO se eliminan — quedan como último
+  /// recurso, porque no está medido que `androidVr`/`safari` cubran el 100% de
+  /// los vídeos (podría haber vídeos donde sea al revés).
   static final List<List<YoutubeApiClient>> _clientFallbacks = [
+    [YoutubeApiClient.androidVr, YoutubeApiClient.safari],
     [YoutubeApiClient.android],
     [YoutubeApiClient.androidSdkless],
     [YoutubeApiClient.android, YoutubeApiClient.androidSdkless],
   ];
+
+  /// Copia de `_clientFallbacks`, en orden. Para que un test de tabla verifique
+  /// el orden de la cascada (`[androidVr, safari]` primero) sin depender de un
+  /// símbolo privado. Los objetos son los mismos `const YoutubeApiClient.*`
+  /// que usa la cascada real, así que un test puede compararlos por identidad
+  /// en vez de por `clientName` — `android` y `androidSdkless` declaran el
+  /// mismo `clientName` ("ANDROID") y no se distinguirían por texto.
+  @visibleForTesting
+  static List<List<YoutubeApiClient>> get clientFallbacksForTesting =>
+      _clientFallbacks.map((clients) => List<YoutubeApiClient>.of(clients)).toList();
 
   // --- SHARED CIRCUIT BREAKER ---
   // With up to 3 downloads running concurrently (DownloadProvider._maxConcurrentDownloads),
@@ -125,31 +205,86 @@ class YoutubeService {
 
   /// Limpia el estado del circuit breaker. Para tests: al ser `static`, un test
   /// que provoque un bloqueo deja a los siguientes esperando cooldowns de hasta
-  /// 180s heredados, lo que los hace fallar por timeout por un motivo que no es
-  /// el que están probando.
+  /// 20 min heredados, lo que los hace fallar por timeout por un motivo que no
+  /// es el que están probando.
   static void resetCircuitBreaker() {
     _blockedUntil = null;
     _consecutiveBlocks = 0;
   }
 
+  /// Invoca `_recordBlock` desde un test sin tener que fabricar un error de red
+  /// real — `_recordBlock` es privado a este archivo, así que un test en otro
+  /// archivo no puede llamarlo directamente aunque instancie `YoutubeService`.
+  @visibleForTesting
+  void recordBlockForTesting() => _recordBlock();
+
+  /// Cuánto falta para que se levante el cooldown activo, o `null` si no hay
+  /// ninguno (o ya venció). Para verificar en un test la duración exacta que
+  /// calculó `_recordBlock` sin esperarla en tiempo real.
+  @visibleForTesting
+  static Duration? get blockedRemainingForTesting {
+    final until = _blockedUntil;
+    if (until == null) return null;
+    final remaining = until.difference(DateTime.now());
+    return remaining.isNegative ? null : remaining;
+  }
+
+  /// Simula que el cooldown activo ya venció, sin tocar `_consecutiveBlocks`.
+  /// `_recordBlock` no escala mientras haya un cooldown vigente (a propósito,
+  /// para que varios workers concurrentes no atropellen la escalada) — eso
+  /// hace que llamar `recordBlockForTesting()` en bucle, sin más, sólo escale
+  /// una vez. Esto deja probar la secuencia completa (20, 40, 80, ...) como si
+  /// cada bloqueo llegara después de que el anterior ya se enfrió, que es lo
+  /// que pasa en producción porque el llamador espera el cooldown completo
+  /// antes de volver a intentar.
+  @visibleForTesting
+  static void clearActiveCooldownForTesting() {
+    _blockedUntil = null;
+  }
+
+  /// Hook de test para `_getManifestWithFallback`: sustituye la llamada real a
+  /// `streamsClient.getManifest` por un fake, para poder probar el orden de la
+  /// cascada y el avance de `startIndex`/`clientIndex` sin pegarle a la red.
+  @visibleForTesting
+  Future<StreamManifest> Function(VideoId videoId, List<YoutubeApiClient> clients)?
+      manifestAttemptOverrideForTesting;
+
+  /// Envoltorio público de `_getManifestWithFallback` para tests: el método
+  /// real es privado a este archivo y un test en otro archivo no puede
+  /// llamarlo directamente aunque instancie `YoutubeService`.
+  @visibleForTesting
+  Future<({StreamManifest manifest, int clientIndex})> getManifestWithFallbackForTesting(
+    YoutubeExplode yt,
+    VideoId videoId, {
+    bool Function()? isCancelled,
+    int startIndex = 0,
+  }) =>
+      _getManifestWithFallback(
+        yt,
+        videoId,
+        isCancelled: isCancelled,
+        startIndex: startIndex,
+      );
+
   /// Cuánto se le permite esperar a una llamada INTERACTIVA (una que tiene una
   /// pantalla bloqueada detrás) antes de rendirse con un error explicativo.
   ///
   /// El cooldown compartido existe para que una tanda de descargas en segundo
-  /// plano no realimente el bloqueo de YouTube; ahí esperar los 180s completos es
-  /// lo correcto. Pero los paths de preview ("Analizar enlace", búsqueda) dejan
-  /// la UI deshabilitada mientras esperan, así que heredar ese mismo cooldown
-  /// convertía un breaker en su tramo más alto en una pantalla muerta durante
-  /// tres minutos, sin texto y sin forma de salir — indistinguible de un cuelgue.
-  /// Para una petición suelta que un humano está esperando, es mejor fallar
-  /// rápido y decir cuánto falta.
+  /// plano no realimente el bloqueo de YouTube; ahí esperar los hasta 20 min
+  /// completos es lo correcto (ver docs/investigacion_muro_antibot.md: es la
+  /// ventana real de recuperación medida). Pero los paths de preview
+  /// ("Analizar enlace", búsqueda) dejan la UI deshabilitada mientras esperan,
+  /// así que heredar ese mismo cooldown convertiría un breaker en su tramo más
+  /// alto en una pantalla muerta durante minutos, sin texto y sin forma de
+  /// salir — indistinguible de un cuelgue. Para una petición suelta que un
+  /// humano está esperando, es mejor fallar rápido y decir cuánto falta.
   static const Duration _interactiveCooldownCap = Duration(seconds: 8);
 
   /// Waits out any active global cooldown before a caller issues a new request.
   ///
   /// [isCancelled], when provided, is polled every 300ms so a cancelled
   /// download doesn't keep sleeping for the full remaining cooldown (up to
-  /// 180s) — see `_cancellableDelay` for why this matters.
+  /// 20 min) — see `_cancellableDelay` for why this matters.
   ///
   /// [maxWait] hace que la llamada falle en vez de esperar cuando lo que queda de
   /// cooldown lo excede — ver `_interactiveCooldownCap`. Se lanza en lugar de
@@ -183,7 +318,7 @@ class YoutubeService {
   ///
   /// Without this, cancelling a download (or the user resubmitting the same
   /// link right after cancelling) didn't actually stop a worker that was
-  /// mid-sleep in the shared circuit-breaker cooldown (up to 180s) or in a
+  /// mid-sleep in the shared circuit-breaker cooldown (up to 20 min) or in a
   /// retry backoff (up to 20s) — it kept sleeping for the full remaining
   /// duration before ever checking cancellation again. Meanwhile that worker
   /// still held its videoId in `DownloadProvider._activeVideoIds`, so a
@@ -219,9 +354,17 @@ class YoutubeService {
   void _recordBlock() {
     if (!circuitBreakerEnabled) return;
     if (_blockedUntil != null && _blockedUntil!.isAfter(DateTime.now())) return;
-    _consecutiveBlocks = (_consecutiveBlocks + 1).clamp(0, 6);
-    final baseSeconds = 20 * (1 << (_consecutiveBlocks - 1)); // 20, 40, 80, 160, 320, 640
-    final cappedSeconds = baseSeconds.clamp(20, 180);
+    _consecutiveBlocks = (_consecutiveBlocks + 1).clamp(0, 7);
+    // 20, 40, 80, 160, 320, 640, 1200 (el último tramo lo recorta el clamp).
+    //
+    // El techo era 180s (3 min): medido en la sesión de investigación del
+    // 2026-07-28 (ver docs/investigacion_muro_antibot.md) que la ventana real
+    // de recuperación de una IP bloqueada es de 20-40 min, no minutos. Con el
+    // techo viejo el breaker se abría de nuevo mucho antes de que YouTube
+    // hubiera dejado de bloquear, y cada intento prematuro contaba como un
+    // bloqueo más — alargando la sesión bloqueada en vez de dejarla enfriar.
+    final baseSeconds = 20 * (1 << (_consecutiveBlocks - 1));
+    final cappedSeconds = baseSeconds.clamp(20, 1200);
     _blockedUntil = DateTime.now().add(Duration(seconds: cappedSeconds));
     print('[YouTubeService] Hard block detected (consecutive: $_consecutiveBlocks) — '
         'all workers will pause for ${cappedSeconds}s');
@@ -273,15 +416,29 @@ class YoutubeService {
     final errorStr = e.toString().toLowerCase();
 
     // Un 403 al pedir los bytes NO es un bloqueo de sesión, y tratarlo como tal
-    // sale carísimo. Significa que esa URL de stream no vale para nosotros
-    // (caducó, o se emitió a otro cliente), y el remedio es pedir un manifest
-    // nuevo — que es justo lo que hace el bucle de reintentos, sin necesidad de
-    // esperar nada. Al no distinguirlo, el 403 de desajuste de User-Agent
-    // (ver _streamUserAgent) disparaba el cooldown compartido y lo escalaba
-    // 20s->40s->80s->160s a lo largo de los 5 intentos: ~15 minutos atascado en
-    // la primera canción, esperando a que se despeje un bloqueo que no existía,
-    // para volver a fallar igual porque la causa era determinista.
+    // sale carísimo. Al no distinguirlo, el 403 de esta clase disparaba el
+    // cooldown compartido y lo escalaba 20s->40s->80s->160s a lo largo de los
+    // 5 intentos: ~15 minutos atascado en la primera canción, esperando a que
+    // se despeje un bloqueo que no existía, para volver a fallar igual porque
+    // la causa era determinista.
+    //
+    // Esa causa determinista es el cliente que resolvió el manifest, no la URL
+    // en sí (ver `_streamUserAgent` y Test A/B en
+    // docs/investigacion_muro_antibot.md, 2026-07-29) — "pedir un manifest
+    // nuevo" con el mismo cliente vuelve a dar la misma URL condenada. El
+    // remedio real es escalar al siguiente cliente de `_clientFallbacks`, que
+    // es lo que hace `downloadVideoWithAudio` con `manifestStartIndex` al ver
+    // este marcador — no simplemente reintentar.
     if (errorStr.contains(streamHttpErrorMarker)) return false;
+
+    // Mismo motivo que la exclusión de arriba, pero para el corte a mitad de
+    // descarga: no se sabe todavía si es cliente-condenado o expiración real
+    // de URL (ver `MidDownloadCutException`), así que tratarlo como bloqueo de
+    // sesión sería tan presuntuoso como lo era antes para el corte al inicio.
+    // Se distingue por tipo, no por subcadena, porque el mensaje SÍ puede
+    // contener literalmente "403" (parte del diagnóstico, no un marcador) y
+    // eso pisaría el match de `errorStr.contains('403')` de más abajo.
+    if (e is MidDownloadCutException) return false;
 
     return errorStr.contains('videounavailableexception') ||
         // VideoUnplayableException es la forma que toma el bloqueo en el paso del
@@ -359,6 +516,26 @@ class YoutubeService {
   /// the earlier attempts behind them.
   static bool isCancellationError(Object e) =>
       e.toString().contains(cancelledMessage);
+
+  /// Mensaje que ve el usuario cuando una descarga se aborta por el muro anti-bot.
+  static const String botWallMessage =
+      'YouTube está pidiendo verificación anti-bot desde esta conexión. '
+      'Espera unos minutos antes de volver a intentarlo.';
+
+  /// El marcador inequívoco del muro, independiente del nombre de la excepción
+  /// que lo envuelva: llega como `VideoUnplayableException` desde el manifest y
+  /// como `VideoUnavailableException` desde el scrape de /watch.
+  ///
+  /// Se hace match SÓLO contra el texto literal, nunca contra los nombres de las
+  /// excepciones: `VideoUnavailableException` también significa "este vídeo se
+  /// borró de verdad", y abortar la cascada por eso confundiría un vídeo muerto
+  /// con un bloqueo de IP. YouTube manda el apóstrofo tipográfico (’), no el
+  /// ASCII, así que hay que cubrir los dos.
+  static bool isBotWallError(Object e) {
+    final s = e.toString().toLowerCase();
+    return s.contains("confirm you're not a bot") ||
+        s.contains('confirm you’re not a bot');
+  }
 
   /// Adds up to 30% random jitter to a backoff delay so concurrent workers that
   /// failed at nearly the same time don't retry in lockstep.
@@ -485,6 +662,18 @@ class YoutubeService {
       return true;
     }
 
+    // youtube_explode_dart 3.1.0's yt.search.search() has a reproducible library
+    // bug: NoSuchMethodError ("... has no instance method 'getT'") parsing
+    // videoRenderer.viewCountText when YouTube uses the "runs" shape instead of
+    // "simpleText" (search_page.dart:181). It's intermittent per-video (~2/3 of
+    // queries in a manual repro), not a permanent break, so retrying with a
+    // fresh manifest/search call has a real chance of landing on a video whose
+    // shape parses fine. See docs/investigacion_muro_antibot.md.
+    if (errorStr.contains('nosuchmethoderror')) {
+      print('[YouTubeService] -> NoSuchMethodError (bug conocido de search()) detected, will retry');
+      return true;
+    }
+
     // Check for chunk download failures (expired stream URL symptoms)
     if (errorStr.contains('chunk') || errorStr.contains('incompleto') ||
         errorStr.contains('incomplete') || errorStr.contains('stream')) {
@@ -546,14 +735,25 @@ class YoutubeService {
     final cached = _metadataCache[videoId.value];
 
     Object? lastError;
-    const maxRetries = 4; // Total 5 attempts (1 initial + 4 retries)
-    
+    // Avanza sólo cuando un cliente ya dio 403-en-bytes (ver el catch de más
+    // abajo) — nunca vuelve a 0 dentro de la misma llamada, para no repetir un
+    // cliente ya descartado en el siguiente intento.
+    var manifestStartIndex = 0;
+    // 3 intentos (1 inicial + 2 reintentos). Eran 5, y los dos últimos casi nunca
+    // aportaban: cuando YouTube sirve el muro lo sirve a TODOS los clientes de la
+    // sesión a la vez (medido en tool/client_sweep_probe.dart), así que insistir
+    // sólo gastaba presupuesto de IP y alargaba el fallo. Medido en
+    // test/download_smoke_test.dart: los 5 intentos llegaban al mismo error a los
+    // 147ms, 7.3s, 29.4s, 71.4s y 154.3s.
+    const maxRetries = 2;
+
     for (int attempt = 0; attempt <= maxRetries; attempt++) {
       if (isCancelled != null && isCancelled()) {
         throw Exception(cancelledMessage);
       }
       await _respectGlobalCooldown('downloadVideoWithAudio', isCancelled: isCancelled);
       final yt = YoutubeExplode();
+      int? usedClientIndex;
       try {
         late final ({String title, String artist}) parsed;
         late final Duration duration;
@@ -584,13 +784,15 @@ class YoutubeService {
         onPhase?.call('manifest');
 
         // Always fetch a fresh manifest on retries — stream URLs expire quickly.
-        StreamManifest manifest = await _getManifestWithFallback(
+        final manifestResult = await _getManifestWithFallback(
           yt,
           videoId,
           isCancelled: isCancelled,
+          startIndex: manifestStartIndex,
         );
+        usedClientIndex = manifestResult.clientIndex;
 
-        final selectedStream = _selectBestAudioStream(manifest);
+        final selectedStream = _selectBestAudioStream(manifestResult.manifest);
 
         onPhase?.call('downloading');
 
@@ -604,6 +806,7 @@ class YoutubeService {
           selectedStream,
           onProgress: onProgress,
           isCancelled: isCancelled,
+          manifestClientIndex: usedClientIndex,
         );
 
         final localThumbnailPath = await thumbnailDownloadFuture;
@@ -627,6 +830,32 @@ class YoutubeService {
         // trips the circuit breaker, or gets wrapped in an "Error descargando el
         // audio" message that lands in the user's error log.
         if (isCancellationError(e)) rethrow;
+
+        // Corte temprano por muro anti-bot: no quedan reintentos que valga la pena
+        // gastar. `_getManifestWithFallback` ya abandonó la cascada de clientes y
+        // ya disparó el circuit breaker compartido; insistir aquí sólo alargaría el
+        // fallo y añadiría peticiones al presupuesto de IP, que es exactamente lo
+        // que mantiene el bloqueo vivo. Se falla rápido y con un mensaje que
+        // explica que no es culpa del vídeo.
+        if (e is BotWallException) {
+          print('[YouTubeService] Muro anti-bot en el intento ${attempt + 1}: '
+              'se abandonan los ${maxRetries - attempt} reintentos restantes');
+          throw Exception('$botWallMessage\n\nIntentos realizados: ${attempt + 1}\n\n$e');
+        }
+
+        // 403-en-bytes (ver `_clientFallbacks` y Test A/B en
+        // docs/investigacion_muro_antibot.md, 2026-07-29): no es una URL al azar
+        // caducada, es el cliente concreto que resolvió el manifest. Pedir "un
+        // manifest nuevo" sin más siempre volvía a elegir el mismo cliente
+        // determinista y repetía el mismo 403 — gastando presupuesto de IP sin
+        // arreglar nada. Se avanza la cascada al siguiente cliente para el
+        // próximo intento en vez de reintentar con el que ya se sabe que falla.
+        if (usedClientIndex != null &&
+            e.toString().toLowerCase().contains(streamHttpErrorMarker)) {
+          manifestStartIndex = usedClientIndex + 1;
+          print('[YouTubeService] 403 en bytes con cliente #$usedClientIndex — '
+              'el próximo intento escala al cliente #$manifestStartIndex');
+        }
 
         if (_isHardBlockError(e)) _recordBlock();
 
@@ -688,46 +917,89 @@ class YoutubeService {
   /// además por [isCancelled]: antes, con 4 configuraciones probadas en serie y
   /// ninguna con techo de tiempo, un solo socket colgado bloqueaba la descarga
   /// indefinidamente y de forma silenciosa.
-  Future<StreamManifest> _getManifestWithFallback(
+  ///
+  /// [startIndex] hace que la cascada empiece más adelante que el primer
+  /// cliente de `_clientFallbacks`. Existe para el 403-en-bytes: ese fallo pasa
+  /// el manifest (no lo detecta esta función) y sólo aparece al pedir los
+  /// bytes con el cliente que lo resolvió, así que "pedir un manifest nuevo"
+  /// sin más vuelve a elegir el mismo cliente determinista y repite el mismo
+  /// 403. El resultado incluye el índice usado para que el llamador pueda
+  /// pedir que se lo salte en el siguiente intento.
+  Future<({StreamManifest manifest, int clientIndex})> _getManifestWithFallback(
     YoutubeExplode yt,
     VideoId videoId, {
     bool Function()? isCancelled,
+    int startIndex = 0,
   }) async {
-    Future<StreamManifest> attempt(List<YoutubeApiClient>? clients) {
+    Future<StreamManifest> attempt(List<YoutubeApiClient> clients) {
+      final override = manifestAttemptOverrideForTesting;
+      if (override != null) return override(videoId, clients);
       return _withTimeout(
-        clients == null
-            ? yt.videos.streamsClient.getManifest(
-                videoId,
-                requireWatchPage: false,
-              )
-            : yt.videos.streamsClient.getManifest(
-                videoId,
-                ytClients: clients,
-                requireWatchPage: false,
-              ),
+        yt.videos.streamsClient.getManifest(
+          videoId,
+          ytClients: clients,
+          requireWatchPage: false,
+        ),
         'La obtención de streams',
         _manifestTimeout,
       );
     }
 
-    // Try default first
-    try {
-      return await attempt(null);
-    } catch (e) {
-      print('[YouTubeService] Manifest (cliente por defecto) falló: $e');
-    }
-
-    // Cascade through all client combinations
+    // Se pasa SIEMPRE una lista explícita de clientes. Antes había un primer
+    // intento con `attempt(null)`, y ese `null` tenía dos costes ocultos:
+    //
+    // 1. `StreamClient.getManifest` con `ytClients == null` usa `[androidSdkless]`
+    //    y, si no obtiene ningún stream, se REINTENTA solo con
+    //    `[YoutubeApiClient.tv]` (stream_client.dart:126-127). Ese cliente declara
+    //    userAgent "Mozilla/5.0 (ChromiumStylePlatform) Cobalt/Version,gzip(gfe)",
+    //    mientras que los bytes se piden con `_streamUserAgent` (el UA de la app de
+    //    Android). YouTube liga las URLs de stream al cliente que las pidió y valida
+    //    que quien pide los bytes sea el mismo, así que un manifest resuelto por
+    //    `tv` daba 403 de forma determinista. El comentario de `_streamUserAgent`
+    //    daba por hecho que todos los caminos usaban el UA de Android: cierto para
+    //    `_clientFallbacks`, falso para este `null`. Confirmado en una corrida del
+    //    smoke test, donde el "cliente por defecto" falló con
+    //    VideoUnavailableException mientras los explícitos daban
+    //    VideoUnplayableException — la firma de haber pasado por `tv`.
+    // 2. Duplicaba `androidSdkless`, que ya está en la cascada de abajo: una
+    //    petición repetida por intento, puro gasto de presupuesto de IP.
     Object? lastError;
-    for (final clients in _clientFallbacks) {
+    // Clamp en vez de fallar: si un intento anterior ya agotó la cascada
+    // escalando por 403-en-bytes, se reintenta desde el último cliente en vez
+    // de quedar sin ninguno que probar.
+    final effectiveStart = startIndex.clamp(0, _clientFallbacks.length - 1);
+    for (var i = effectiveStart; i < _clientFallbacks.length; i++) {
+      final clients = _clientFallbacks[i];
+      final names = clients
+          .map((c) => c.payload['context']['client']['clientName'])
+          .join('+');
       if (isCancelled != null && isCancelled()) {
         throw Exception(cancelledMessage);
       }
+      // Log de CADA intento, no sólo de los que fallan — sin esto no hay forma
+      // de contar cuántas peticiones de manifest emitió una descarga (medida
+      // clave de docs/investigacion_muro_antibot.md: comparar esa cifra contra
+      // el baseline de `main` es la métrica principal, más que "cuántas
+      // completan").
+      print('[YouTubeService] Manifest intento #$i ($names)');
       try {
-        return await attempt(clients);
+        return (manifest: await attempt(clients), clientIndex: i);
       } catch (e) {
         lastError = e;
-        print('[YouTubeService] Manifest (${clients.map((c) => c.payload['context']['client']['clientName']).join('+')}) falló: $e');
+        print('[YouTubeService] Manifest ($names) falló: $e');
+
+        // Corte temprano. El muro anti-bot es de SESIÓN/IP, no de cliente ni de
+        // vídeo: `tool/client_sweep_probe.dart` mide que los 11 clientes de
+        // InnerTube fallan a la vez en cuanto la sesión está bloqueada. Seguir la
+        // cascada es gastar peticiones en algo que ya se sabe que va a fallar, y
+        // cada una empeora el bloqueo que estamos intentando esquivar. Se abandona
+        // la cascada entera, se dispara el breaker en el acto y se envuelve en un
+        // tipo propio para que `downloadVideoWithAudio` lo distinga sin volver a
+        // hacer match por subcadena.
+        if (isBotWallError(e)) {
+          _recordBlock();
+          throw BotWallException(e);
+        }
       }
     }
     throw lastError ?? Exception('No se pudieron obtener streams de audio.');
@@ -907,58 +1179,6 @@ class YoutubeService {
     }
 
     throw Exception('Error buscando videos: ${lastError.toString()}');
-  }
-
-  /// Obtiene la URL de streaming directa de alta calidad para un video
-  Future<String?> getStreamingUrl(String videoId) async {
-    final yt = YoutubeExplode();
-    try {
-      final manifest = await yt.videos.streamsClient.getManifest(videoId);
-      
-      // Preferir streams de audio de alta calidad que sean seguros
-      // Usar streams directos sin throttling
-      final audioStreams = manifest.audioOnly;
-      
-      // Buscar stream AAC primero (más compatible con just_audio)
-      final aacStreams = audioStreams
-          .where((s) => s.container.name == 'mp4')
-          .toList();
-      
-      if (aacStreams.isNotEmpty) {
-        final bestAac = aacStreams.withHighestBitrate();
-        // Construir URL con parámetros para evitar throttling
-        return _buildStreamingUrl(bestAac);
-      }
-      
-      // Fallback a Opus
-      final opusStreams = audioStreams
-          .where((s) => s.container.name == 'webm')
-          .toList();
-      
-      if (opusStreams.isNotEmpty) {
-        final bestOpus = opusStreams.withHighestBitrate();
-        return _buildStreamingUrl(bestOpus);
-      }
-      
-      // Último recurso: cualquier stream de audio
-      if (audioStreams.isNotEmpty) {
-        final bestAny = audioStreams.withHighestBitrate();
-        return _buildStreamingUrl(bestAny);
-      }
-      
-      return null;
-    } catch (e) {
-      print('Error obteniendo streaming URL: $e');
-      return null;
-    } finally {
-      yt.close();
-    }
-  }
-
-  /// Construye una URL de streaming con parámetros optimizados
-  String _buildStreamingUrl(AudioOnlyStreamInfo stream) {
-    // La URL directa del stream ya debería funcionar
-    return stream.url.toString();
   }
 
   /// Scraper propio de playlists — el primer intento de `getPlaylistVideoIds`.
@@ -1184,6 +1404,61 @@ class YoutubeService {
     throw Exception('No hay streams de audio disponibles para este video.');
   }
 
+  /// Decide qué hacer ante un status ≠ 200/206 en el bucle de chunks de
+  /// `_downloadSequential`. Con `receivedSoFar == 0` (chunk 0) no lanza — deja
+  /// que el llamador haga `break` y caiga al fallback sin Range, que ya cubre
+  /// ese caso. Con `receivedSoFar > 0` (corte a mitad de la descarga) lanza
+  /// `MidDownloadCutException` con los datos de diagnóstico: sin ellos, el
+  /// primer caso real de esto sería indiagnosticable — no sabríamos si fue
+  /// cliente-condenado o expiración real de URL (ver el docstring de la
+  /// excepción).
+  void _checkMidChunkStatus({
+    required int statusCode,
+    required int receivedSoFar,
+    required int chunkIndex,
+    required int totalBytes,
+    int? manifestClientIndex,
+  }) {
+    if (receivedSoFar == 0) return;
+
+    final names = manifestClientIndex != null &&
+            manifestClientIndex >= 0 &&
+            manifestClientIndex < _clientFallbacks.length
+        ? _clientFallbacks[manifestClientIndex]
+            .map((c) => c.payload['context']['client']['clientName'])
+            .join('+')
+        : null;
+    print('[YouTubeService] Corte a mitad de descarga: HTTP $statusCode en '
+        'el chunk $chunkIndex ($receivedSoFar/$totalBytes bytes), cliente de '
+        'manifest #$manifestClientIndex ($names)');
+    throw MidDownloadCutException(
+      statusCode: statusCode,
+      chunkIndex: chunkIndex,
+      bytesReceived: receivedSoFar,
+      totalBytes: totalBytes,
+      manifestClientIndex: manifestClientIndex,
+      manifestClientNames: names,
+    );
+  }
+
+  /// Envoltorio público de `_checkMidChunkStatus` para tests: el método real
+  /// es privado a este archivo.
+  @visibleForTesting
+  void checkMidChunkStatusForTesting({
+    required int statusCode,
+    required int receivedSoFar,
+    required int chunkIndex,
+    required int totalBytes,
+    int? manifestClientIndex,
+  }) =>
+      _checkMidChunkStatus(
+        statusCode: statusCode,
+        receivedSoFar: receivedSoFar,
+        chunkIndex: chunkIndex,
+        totalBytes: totalBytes,
+        manifestClientIndex: manifestClientIndex,
+      );
+
 
   /// Downloads audio using parallel HTTP Range requests (4 concurrent workers).
   /// Chunks are downloaded concurrently into memory and then written sequentially
@@ -1195,6 +1470,7 @@ class YoutubeService {
     AudioOnlyStreamInfo streamInfo, {
     void Function(double)? onProgress,
     bool Function()? isCancelled,
+    int? manifestClientIndex,
   }) async {
     final videoId = streamInfo.videoId.value;
     final docDir = await getApplicationDocumentsDirectory();
@@ -1220,7 +1496,14 @@ class YoutubeService {
       try { file.deleteSync(); } catch (_) {}
     }
 
-    return _downloadSequential(streamInfo, file, filePath, onProgress, isCancelled);
+    return _downloadSequential(
+      streamInfo,
+      file,
+      filePath,
+      onProgress,
+      isCancelled,
+      manifestClientIndex,
+    );
   }
 
   Future<String> _downloadSequential(
@@ -1229,6 +1512,7 @@ class YoutubeService {
     String filePath,
     void Function(double)? onProgress,
     bool Function()? isCancelled,
+    int? manifestClientIndex,
   ) async {
     final client = HttpClient();
     client.connectionTimeout = const Duration(seconds: 20);
@@ -1242,6 +1526,7 @@ class YoutubeService {
       if (totalBytes > 0) {
         // Intentar descarga por fragmentos de 5MB
         const chunkSize = 5 * 1024 * 1024;
+        var chunkIndex = 0;
         while (received < totalBytes) {
           if (isCancelled != null && isCancelled()) {
             throw Exception(cancelledMessage);
@@ -1269,9 +1554,21 @@ class YoutubeService {
           final response = await request.close().timeout(const Duration(seconds: 20));
 
           if (response.statusCode != 200 && response.statusCode != 206) {
-            // Si Range falla, salir del loop chunked para caer en la descarga directa
+            _checkMidChunkStatus(
+              statusCode: response.statusCode,
+              receivedSoFar: received,
+              chunkIndex: chunkIndex,
+              totalBytes: totalBytes,
+              manifestClientIndex: manifestClientIndex,
+            );
+            // Sólo llega acá si `receivedSoFar == 0` (chunk 0) — el método de
+            // arriba ya lanzó para el caso de corte a mitad. Se sale del loop
+            // chunked para caer en la descarga directa sin Range de más abajo,
+            // que ya cubre este caso (y, si también falla, lanza con
+            // `streamHttpErrorMarker`).
             break;
           }
+          chunkIndex++;
 
           await for (final chunk in response.timeout(
             const Duration(seconds: 60),
@@ -1366,24 +1663,26 @@ class YoutubeService {
 
   /// User-Agent para las peticiones de bytes a googlevideo.com.
   ///
-  /// TIENE que coincidir con el del cliente que pidió el manifest. YouTube emite
-  /// las URLs de stream ligadas al cliente que las solicitó y valida que quien
-  /// pide los bytes sea el mismo; si no coinciden, responde **403**.
+  /// Historial: aquí había un User-Agent de Chrome 96 de escritorio (de 2021),
+  /// y eso producía un `HttpException: HTTP 403` en download_errors.log con
+  /// metadata y manifest funcionando correctamente — el fallo estaba sólo en
+  /// la descarga de bytes. La hipótesis original era "el UA tiene que
+  /// coincidir con el cliente que pidió el manifest", y bajo esa teoría este
+  /// valor se puso al de los clientes `android`/`androidSdkless`.
   ///
-  /// Aquí había un User-Agent de Chrome 96 de escritorio (de 2021) mientras el
-  /// manifest se pedía con `YoutubeApiClient.android` — o sea, pedíamos la URL
-  /// como la app de Android de YouTube y descargábamos como un Chrome viejo de
-  /// Windows. Eso producía el `HttpException: HTTP 403` que aparecía en
-  /// download_errors.log tras agotar los 5 intentos, con metadata y manifest
-  /// funcionando correctamente: el fallo estaba sólo en la descarga de bytes.
-  ///
-  /// El valor es el `userAgent` que declaran los dos clientes de
-  /// `_clientFallbacks` (`android` y `androidSdkless`); ambos declaran
-  /// exactamente el mismo, así que una sola constante es correcta para todos los
-  /// caminos actuales. Si se añade a la cascada un cliente con otro UA, esto
-  /// tiene que pasar a derivarse del cliente que realmente resolvió el manifest.
+  /// Test A/B (docs/investigacion_muro_antibot.md, 2026-07-29) mostró que esa
+  /// teoría era incompleta: con este mismo UA (Pixel 5 / Chrome 120, el de
+  /// `main`), un manifest resuelto por `android`/`androidSdkless` seguía dando
+  /// 403 en bytes 2/2 (Test A), pero el mismo vídeo con manifest resuelto por
+  /// `[androidVr, safari]` completaba 2/2 con el UA sin cambiar (Test B). O
+  /// sea: el UA no era la variable que importaba — importa el CLIENTE que
+  /// resolvió el manifest, ver `_clientFallbacks`. Este valor queda como está
+  /// (coincide con el de `main`, y Test B confirma que funciona bien con
+  /// `androidVr`/`safari`); el fix real está en el orden de `_clientFallbacks`
+  /// y en que `downloadVideoWithAudio` escale de cliente ante un 403-en-bytes
+  /// en vez de reintentar con el mismo.
   static const String _streamUserAgent =
-      'com.google.android.youtube/20.10.38 (Linux; U; Android 11) gzip';
+      'Mozilla/5.0 (Linux; Android 11; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36';
 
   void _addHeaders(HttpClientRequest request) {
     request.headers.add('User-Agent', _streamUserAgent);

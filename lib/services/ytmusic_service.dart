@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:dart_ytmusic_api/yt_music.dart';
+import 'package:meta/meta.dart';
 import 'youtube_service.dart';
 
 /// Service wrapper for YouTube Music API (InnerTube) with fallback to youtube_explode_dart
@@ -8,6 +9,30 @@ import 'youtube_service.dart';
 class YTMusicService {
   YTMusic? _ytmusic;
   final YoutubeService _youtubeService = YoutubeService();
+
+  /// Hook de test para `searchAndDownload`: simula el bug de librería de
+  /// `yt.search.search()` (NoSuchMethodError, ver
+  /// docs/investigacion_muro_antibot.md) sin pegarle a InnerTube de verdad.
+  /// Cuando está seteado, se usa en vez de `_ytmusic!.searchSongs` y ni
+  /// siquiera se llama a `initialize()` — así el test no dispara la petición
+  /// de red real a music.youtube.com.
+  @visibleForTesting
+  Future<List<dynamic>> Function(String query)? searchSongsOverrideForTesting;
+
+  /// Hook de test para `searchAndDownload`: reemplaza el fallback a
+  /// `_youtubeService.searchAndDownload` (que golpea youtube_explode_dart de
+  /// verdad) por un fake, para confirmar que se llegó a él sin red real.
+  @visibleForTesting
+  Future<Map<String, dynamic>> Function({
+    required String title,
+    required String artist,
+    required int expectedDurationMs,
+    String? spotifyThumbnailUrl,
+    void Function(String title)? onMetadata,
+    void Function(double)? onProgress,
+    void Function(String phase)? onPhase,
+    bool Function()? isCancelled,
+  })? fallbackSearchAndDownloadOverrideForTesting;
 
   /// Techo de tiempo para cada llamada a `dart_ytmusic_api`.
   ///
@@ -251,8 +276,100 @@ class YTMusicService {
     void Function(String phase)? onPhase,
     bool Function()? isCancelled,
   }) async {
-    // Delegate to youtube_explode_dart for search and download functionality
-    return await _youtubeService.searchAndDownload(
+    // Primero InnerTube (searchSongs), igual que el resto de esta clase — con
+    // el mismo emparejamiento por duración que `YoutubeService.searchAndDownload`.
+    // Esta era la única operación de la clase que llamaba directo a
+    // `_youtubeService.searchAndDownload`, que hace su propia búsqueda con
+    // `yt.search.search()` (youtube_explode_dart 3.1.0): esa búsqueda tiene un
+    // bug de librería reproducible (NoSuchMethodError 'getT' al parsear
+    // viewCountText en formato "runs", ver docs/investigacion_muro_antibot.md),
+    // así que TODA descarga de Spotify dependía de una ruta sin fallback.
+    // InnerTube no tiene ese bug — usa el endpoint estructurado de búsqueda, no
+    // el scrape que rompe.
+    try {
+      final query = '$artist $title';
+      final List<dynamic> results;
+      if (searchSongsOverrideForTesting != null) {
+        results = await searchSongsOverrideForTesting!(query);
+      } else {
+        await initialize();
+        results = await _withTimeout(
+          _ytmusic!.searchSongs(query),
+          'La búsqueda de "$query"',
+        );
+      }
+
+      if (results.isEmpty) {
+        throw Exception('InnerTube no devolvió resultados para "$query"');
+      }
+
+      final expectedDurationSec = (expectedDurationMs / 1000).round();
+      dynamic bestMatch;
+      var bestDiff = 999999;
+      for (final song in results.take(10)) {
+        final int? d = song.duration;
+        if (d == null || d == 0) continue;
+        final diff = (d - expectedDurationSec).abs();
+        if (diff < bestDiff) {
+          bestDiff = diff;
+          bestMatch = song;
+          if (diff <= 3) break;
+        }
+      }
+      bestMatch ??= results.first;
+
+      final String videoId = bestMatch.videoId;
+      final thumbnailUrl = spotifyThumbnailUrl ?? _parseThumbnail(bestMatch);
+
+      // Ceba la caché de YoutubeService con la metadata de Spotify (misma
+      // convención que `downloadVideoWithAudio` de esta clase), así
+      // `downloadVideoWithAudio` de abajo no vuelve a golpear ninguna búsqueda.
+      YoutubeService.primeMetadataCache(
+        videoId,
+        title: title,
+        artist: artist,
+        duration: Duration(milliseconds: expectedDurationMs),
+        thumbnailUrl: thumbnailUrl,
+      );
+
+      print('[YTMusicService] searchAndDownload: match por InnerTube ($videoId) '
+          'para "$query", diff de duración ${bestDiff}s');
+
+      final result = await downloadVideoWithAudio(
+        'https://www.youtube.com/watch?v=$videoId',
+        onMetadata: onMetadata,
+        onProgress: onProgress,
+        onPhase: onPhase,
+        isCancelled: isCancelled,
+      );
+
+      result['title'] = title;
+      result['artist'] = artist;
+      result['duration'] = Duration(milliseconds: expectedDurationMs);
+
+      if (spotifyThumbnailUrl != null && spotifyThumbnailUrl.isNotEmpty) {
+        final spotifyArt = await _youtubeService.downloadThumbnail(
+          videoId,
+          spotifyThumbnailUrl,
+        );
+        if (spotifyArt.isNotEmpty) {
+          result['artPath'] = spotifyArt;
+        }
+      }
+
+      return result;
+    } catch (e) {
+      if (YoutubeService.isCancellationError(e)) rethrow;
+      print('[YTMusicService] searchAndDownload por InnerTube falló: $e');
+      print('[YTMusicService] Falling back to youtube_explode_dart search');
+    }
+
+    // Fallback: la búsqueda propia de youtube_explode_dart (yt.search.search()),
+    // con el bug de librería conocido — se conserva como último recurso en vez
+    // de fallar directamente si InnerTube no tiene el tema o está caído.
+    final fallback = fallbackSearchAndDownloadOverrideForTesting ??
+        _youtubeService.searchAndDownload;
+    return await fallback(
       title: title,
       artist: artist,
       expectedDurationMs: expectedDurationMs,

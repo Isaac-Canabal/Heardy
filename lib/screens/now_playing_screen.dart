@@ -471,7 +471,11 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                     ),
                     onTap: () {
                       Navigator.of(sheetContext).pop();
-                      _showSleepTimerPicker(context, audioHandler);
+                      // Use the screen's own stable context, not this
+                      // StreamBuilder's — it belongs to the options sheet
+                      // we're popping, and by the time the custom-minutes
+                      // dialog chains off of it later it's already disposed.
+                      _showSleepTimerPicker(this.context, audioHandler);
                     },
                   );
                 },

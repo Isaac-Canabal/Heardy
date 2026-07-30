@@ -863,7 +863,15 @@ class DownloadProvider with ChangeNotifier {
 
       _currentQueueId = queueId;
       const attemptBudget = Duration(minutes: 10);
-      const maxAttempts = 2;
+      // Un solo intento externo. El nivel interno (`downloadVideoWithAudio`) ya
+      // reintenta por su cuenta, así que este bucle no añadía reintentos
+      // cualitativamente distintos: sólo multiplicaba por 2 el volumen de
+      // peticiones contra un muro que se dispara por volumen ACUMULADO por IP
+      // (~12-24 manifests, medido en tool/pacing_probe.dart). Con 2 intentos
+      // externos una canción fallida emitía ~60 peticiones de manifest, o sea
+      // 2-5x el presupuesto entero de la IP: una sola canción mala dejaba la
+      // sesión bloqueada para todas las siguientes.
+      const maxAttempts = 1;
 
       bool success = false;
       bool cancelled = false;
@@ -1007,7 +1015,9 @@ class DownloadProvider with ChangeNotifier {
         // Eliminar de cola después de maxAttempts fallidos
         await _dbHelper.removeFromDownloadQueue(queueId);
         _errorMessage = _friendlyDownloadError(lastFailureReason ?? 'Error desconocido');
-        _statusMessage = 'Error en descarga después de $maxAttempts intentos';
+        _statusMessage = maxAttempts > 1
+            ? 'Error en descarga después de $maxAttempts intentos'
+            : 'Error en descarga';
 
         // Limpiar estado de descarga actual solo si no quedan más descargas activas
         if (_activeDownloads.length <= 1) {
@@ -1459,6 +1469,11 @@ class DownloadProvider with ChangeNotifier {
     int? attempt,
     int? maxAttempts,
   }) {
+    // El mensaje del muro ya viene redactado para el usuario desde
+    // YoutubeService; el truncado genérico de abajo lo partía por la mitad.
+    if (e.toString().contains(YoutubeService.botWallMessage)) {
+      return YoutubeService.botWallMessage;
+    }
     if (_isRateLimitError(e)) {
       final time = elapsed != null ? ' Tiempo total: ${_formatDuration(elapsed)}.' : '';
       return 'YouTube bloqueó temporalmente las descargas (límite de peticiones).$time '
