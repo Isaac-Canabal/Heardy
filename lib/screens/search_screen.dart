@@ -1,12 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../services/youtube_service.dart';
-import '../services/ytmusic_service.dart';
+import 'package:audio_service/audio_service.dart';
+import '../models/song.dart';
 import '../providers/music_provider.dart';
-import '../providers/download_provider.dart';
 import '../providers/settings_provider.dart';
+import '../services/audio_player_handler.dart';
+import '../services/database_helper.dart';
 import '../theme/app_theme.dart';
+import '../widgets/song_tile.dart';
 
+/// Local search over the whole library — recycled from the old YouTube
+/// search screen when the download layer was pruned (Stage 5). Filters
+/// client-side: a personal collection, unlike a catalog, doesn't need
+/// pagination or a network round trip.
 class SearchScreen extends StatefulWidget {
   const SearchScreen({super.key});
 
@@ -15,423 +21,141 @@ class SearchScreen extends StatefulWidget {
 }
 
 class _SearchScreenState extends State<SearchScreen> {
-  final TextEditingController _searchController = TextEditingController();
-  final YTMusicService _youtubeService = YTMusicService();
-  
-  List<YouTubeSearchResult> _searchResults = [];
-  bool _isSearching = false;
-  bool _hasSearched = false;
-  String? _errorMessage;
+  final _controller = TextEditingController();
+  List<Song> _allSongs = [];
+  String _query = '';
+  bool _loading = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
 
   @override
   void dispose() {
-    _searchController.dispose();
+    _controller.dispose();
     super.dispose();
   }
 
-  Future<void> _performSearch(String query) async {
-    if (query.trim().isEmpty) {
-      setState(() {
-        _searchResults = [];
-        _hasSearched = false;
-        _errorMessage = null;
-      });
-      return;
-    }
-
+  Future<void> _load() async {
+    final songs = await DatabaseHelper.instance.getSongs();
+    if (!mounted) return;
     setState(() {
-      _isSearching = true;
-      _hasSearched = true;
-      _errorMessage = null;
-      _searchResults = [];
+      _allSongs = songs.where((s) => !s.missing).toList();
+      _loading = false;
     });
-
-    try {
-      final settingsProvider = Provider.of<SettingsProvider>(context, listen: false);
-      final results = await _youtubeService.searchVideos(
-        query, 
-        maxResults: settingsProvider.maxSearchResults
-      );
-      
-      if (mounted) {
-        setState(() {
-          _searchResults = results;
-          _isSearching = false;
-          if (results.isEmpty) {
-            _errorMessage = 'No se encontraron resultados';
-          }
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _isSearching = false;
-          _errorMessage = 'Error en la búsqueda: ${e.toString()}';
-        });
-      }
-    }
   }
 
-  Future<void> _addToPlaylist(YouTubeSearchResult result) async {
-    final musicProvider = Provider.of<MusicProvider>(context, listen: false);
-    final downloadProvider = Provider.of<DownloadProvider>(context, listen: false);
-    
-    // Mostrar diálogo para seleccionar playlist
-    final playlists = musicProvider.playlists;
-    
-    if (playlists.isEmpty) {
-      _showSnackBar('No tienes playlists. Crea una primero.', isError: true);
-      return;
-    }
-
-    final selectedPlaylistId = await showDialog<String>(
-      context: context,
-      builder: (context) => _SelectPlaylistDialog(playlists: playlists),
-    );
-
-    if (selectedPlaylistId != null && mounted) {
-      try {
-        await downloadProvider.downloadVideo(result.url, selectedPlaylistId);
-        
-        if (downloadProvider.errorMessage != null) {
-          _showSnackBar(downloadProvider.errorMessage!, isError: true);
-          downloadProvider.clearError();
-        } else {
-          _showSnackBar('Añadiendo a descarga...', isSuccess: true);
-          await musicProvider.loadPlaylists();
-        }
-      } catch (e) {
-        _showSnackBar('Error añadiendo a playlist: $e', isError: true);
-      }
-    }
+  List<Song> _matches(int maxResults) {
+    if (_query.isEmpty) return const [];
+    final q = _query.toLowerCase();
+    final matches = _allSongs
+        .where((s) => s.title.toLowerCase().contains(q) || s.artist.toLowerCase().contains(q))
+        .toList();
+    return matches.length > maxResults ? matches.sublist(0, maxResults) : matches;
   }
 
-
-
-  void _showSnackBar(String message, {bool isError = false, bool isSuccess = false}) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: isError
-            ? Colors.redAccent.shade700
-            : isSuccess
-                ? const Color(0xFF059669)
-                : AppTheme.primary,
-        behavior: SnackBarBehavior.floating,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      ),
-    );
+  Future<void> _play(Song song, List<Song> results) async {
+    final audioHandler = context.read<AudioPlayerHandler>();
+    await context.read<MusicProvider>().playSearchResults(results, song, audioHandler);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.transparent,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        title: const Text(
-          'Buscar música',
-          style: TextStyle(
-            color: Colors.white,
-            fontSize: 22,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 0.3,
-          ),
-        ),
-      ),
-      body: SafeArea(
-        child: Column(
-          children: [
-            // Search Bar
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-              child: TextField(
-                controller: _searchController,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  hintText: 'Buscar canciones, artistas...',
-                  hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.5)),
-                  prefixIcon: const Icon(Icons.search, color: Colors.white),
-                  suffixIcon: _searchController.text.isNotEmpty
-                      ? IconButton(
-                          icon: const Icon(Icons.clear, color: Colors.white),
-                          onPressed: () {
-                            _searchController.clear();
-                            setState(() {
-                              _searchResults = [];
-                              _hasSearched = false;
-                            });
-                          },
-                        )
-                      : null,
-                  filled: true,
-                  fillColor: AppTheme.surface.withValues(alpha: 0.5),
-                  border: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(28),
-                    borderSide: BorderSide.none,
-                  ),
-                  focusedBorder: OutlineInputBorder(
-                    borderRadius: BorderRadius.circular(28),
-                    borderSide: BorderSide(color: AppTheme.primaryLight, width: 2),
-                  ),
-                ),
-                onSubmitted: (value) => _performSearch(value),
-                onChanged: (value) {
-                  setState(() {});
-                },
+    final maxResults = context.watch<SettingsProvider>().maxSearchResults;
+    final audioHandler = context.watch<AudioPlayerHandler>();
+    final results = _matches(maxResults);
+
+    return SafeArea(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(20, 12, 20, 0),
+            child: Text(
+              'Buscar',
+              style: TextStyle(
+                color: Colors.white,
+                fontSize: 28,
+                fontWeight: FontWeight.w800,
+                letterSpacing: -0.5,
               ),
             ),
-            
-            // Content
-            Expanded(
-              child: _buildContent(),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 18, 20, 8),
+            child: TextField(
+              controller: _controller,
+              onChanged: (v) => setState(() => _query = v.trim()),
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                hintText: 'Buscar en tu biblioteca',
+                prefixIcon: Icon(Icons.search_rounded, color: AppTheme.primaryLight),
+                suffixIcon: _controller.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear_rounded),
+                        onPressed: () {
+                          _controller.clear();
+                          setState(() => _query = '');
+                        },
+                      )
+                    : null,
+                contentPadding: const EdgeInsets.symmetric(vertical: 14),
+              ),
             ),
-          ],
-        ),
+          ),
+          Expanded(
+            child: _loading
+                ? const Center(child: CircularProgressIndicator())
+                : _buildContent(results, audioHandler),
+          ),
+        ],
       ),
     );
   }
 
-  Widget _buildContent() {
-    if (_isSearching) {
-      return Center(
-        child: CircularProgressIndicator(color: AppTheme.primaryLight),
-      );
+  Widget _buildContent(List<Song> results, AudioPlayerHandler audioHandler) {
+    if (_query.isEmpty) {
+      return _buildHint(Icons.search_rounded, 'Buscá tu música', 'Escribí el título o el artista');
     }
-
-    if (_errorMessage != null) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.error_outline, size: 64, color: Colors.red.withValues(alpha: 0.7)),
-            const SizedBox(height: 16),
-            Text(
-              _errorMessage!,
-              style: const TextStyle(color: Colors.white70),
-              textAlign: TextAlign.center,
-            ),
-          ],
-        ),
-      );
+    if (results.isEmpty) {
+      return _buildHint(Icons.music_note_outlined, 'Sin resultados', 'No encontramos nada con "$_query"');
     }
-
-    if (!_hasSearched) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.search_rounded, size: 80, color: Colors.white.withValues(alpha: 0.3)),
-            const SizedBox(height: 16),
-            Text(
-              'Busca tu música favorita',
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.5),
-                fontSize: 18,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Escribe el nombre de la canción o artista',
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.35),
-                fontSize: 14,
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-
-    if (_searchResults.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.music_note_outlined, size: 64, color: Colors.white.withValues(alpha: 0.3)),
-            const SizedBox(height: 16),
-            Text(
-              'No se encontraron resultados',
-              style: TextStyle(color: Colors.white.withValues(alpha: 0.5)),
-            ),
-          ],
-        ),
-      );
-    }
-
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: _searchResults.length,
-      itemBuilder: (context, index) {
-        final result = _searchResults[index];
-        return _SearchResultTile(
-          result: result,
-          onAdd: () => _addToPlaylist(result),
+    return StreamBuilder<MediaItem?>(
+      stream: audioHandler.mediaItem,
+      builder: (context, snapshot) {
+        final currentId = snapshot.data?.id;
+        return ListView.builder(
+          padding: const EdgeInsets.only(bottom: 90),
+          itemCount: results.length,
+          itemBuilder: (context, index) {
+            final song = results[index];
+            return SongTile(
+              song: song,
+              isPlaying: song.id == currentId,
+              onTap: () => _play(song, results),
+            );
+          },
         );
       },
     );
   }
-}
 
-class _SearchResultTile extends StatelessWidget {
-  final YouTubeSearchResult result;
-  final VoidCallback onAdd;
-
-  const _SearchResultTile({
-    required this.result,
-    required this.onAdd,
-  });
-
-  String _formatDuration(Duration duration) {
-    final minutes = duration.inMinutes;
-    final seconds = duration.inSeconds % 60;
-    return '$minutes:${seconds.toString().padLeft(2, '0')}';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 12),
-      elevation: 4,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-      child: Container(
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(16),
-          gradient: LinearGradient(
-            colors: [
-              AppTheme.surface.withValues(alpha: 0.9),
-              AppTheme.surfaceLight.withValues(alpha: 0.7),
-            ],
+  Widget _buildHint(IconData icon, String title, String subtitle) {
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 72, color: Colors.white.withValues(alpha: 0.3)),
+          const SizedBox(height: 16),
+          Text(
+            title,
+            style: TextStyle(color: Colors.white.withValues(alpha: 0.6), fontSize: 17, fontWeight: FontWeight.w600),
           ),
-        ),
-        child: InkWell(
-          onTap: onAdd,
-          borderRadius: BorderRadius.circular(16),
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              children: [
-                // Thumbnail
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(12),
-                  child: Image.network(
-                    result.thumbnailUrl,
-                    width: 80,
-                    height: 80,
-                    fit: BoxFit.cover,
-                    errorBuilder: (context, error, stackTrace) {
-                      return Container(
-                        width: 80,
-                        height: 80,
-                        color: AppTheme.surface,
-                        child: Icon(
-                          Icons.music_note,
-                          color: Colors.white.withValues(alpha: 0.3),
-                        ),
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(width: 12),
-                
-                // Info
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        result.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          color: Colors.white,
-                          fontSize: 16,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        result.artist,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.7),
-                          fontSize: 14,
-                        ),
-                      ),
-                      const SizedBox(height: 4),
-                      Row(
-                        children: [
-                          Icon(
-                            Icons.access_time,
-                            size: 14,
-                            color: Colors.white.withValues(alpha: 0.5),
-                          ),
-                          const SizedBox(width: 4),
-                          Text(
-                            _formatDuration(result.duration),
-                            style: TextStyle(
-                              color: Colors.white.withValues(alpha: 0.5),
-                              fontSize: 12,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-                
-                // Add to playlist button only (streaming disabled)
-                IconButton(
-                  icon: Icon(
-                    Icons.add_circle_outline,
-                    color: AppTheme.primaryLight,
-                    size: 32,
-                  ),
-                  onPressed: onAdd,
-                  tooltip: 'Añadir a playlist',
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _SelectPlaylistDialog extends StatelessWidget {
-  final List playlists;
-
-  const _SelectPlaylistDialog({required this.playlists});
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      backgroundColor: AppTheme.surface,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-      title: const Text(
-        'Seleccionar Playlist',
-        style: TextStyle(color: Colors.white),
-      ),
-      content: SizedBox(
-        width: double.maxFinite,
-        child: ListView.builder(
-          shrinkWrap: true,
-          itemCount: playlists.length,
-          itemBuilder: (context, index) {
-            final playlist = playlists[index];
-            return ListTile(
-              title: Text(
-                playlist.name,
-                style: const TextStyle(color: Colors.white),
-              ),
-              onTap: () => Navigator.pop(context, playlist.id),
-            );
-          },
-        ),
+          const SizedBox(height: 6),
+          Text(subtitle, style: TextStyle(color: Colors.white.withValues(alpha: 0.35), fontSize: 13)),
+        ],
       ),
     );
   }

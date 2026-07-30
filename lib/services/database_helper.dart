@@ -22,7 +22,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 9,
+      version: 10,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -80,21 +80,10 @@ class DatabaseHelper {
       )
     ''');
 
-    // Create download_queue table
-    await db.execute('''
-      CREATE TABLE download_queue (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        videoId TEXT NOT NULL,
-        playlistId TEXT NOT NULL,
-        addedDate TEXT NOT NULL,
-        source TEXT DEFAULT 'youtube',
-        spotifyTitle TEXT,
-        spotifyArtist TEXT,
-        spotifyDurationMs INTEGER,
-        spotifyThumbnailUrl TEXT,
-        expectedOrderIndex INTEGER
-      )
-    ''');
+    // Note: no download_queue table on a fresh install (v10+) — the download
+    // pipeline that used it was pruned in Stage 5. Upgrades from an older
+    // version still create it via the historical _onUpgrade blocks below,
+    // then drop it in the `oldVersion < 10` block, same net result.
 
     // Create play_history table for statistics
     await db.execute('''
@@ -183,6 +172,12 @@ class DatabaseHelper {
       await db.execute(
         'ALTER TABLE songs ADD COLUMN ignoredFromInbox INTEGER NOT NULL DEFAULT 0',
       );
+    }
+    if (oldVersion < 10) {
+      // The download pipeline that owned this table was pruned in Stage 5 —
+      // see CLAUDE.md. Safe to drop outright: it only ever held in-flight
+      // download jobs, nothing a user would expect to survive an update.
+      await db.execute('DROP TABLE IF EXISTS download_queue');
     }
   }
 
@@ -326,6 +321,31 @@ class DatabaseHelper {
     await db.update(
       'songs',
       {'ignoredFromInbox': 1},
+      where: 'id IN (${List.filled(songIds.length, '?').join(',')})',
+      whereArgs: songIds,
+    );
+  }
+
+  /// Songs previously dismissed via [ignoreSongsFromInbox] — the "Ignoradas"
+  /// filter, so a dismiss is reversible instead of a dead end.
+  Future<List<Song>> getIgnoredSongs() async {
+    final db = await database;
+    final maps = await db.rawQuery('''
+      SELECT s.* FROM songs s
+      LEFT JOIN playlist_songs ps ON s.id = ps.songId
+      WHERE ps.songId IS NULL AND s.missing = 0 AND s.ignoredFromInbox = 1
+      ORDER BY s.downloadDate DESC
+    ''');
+    return maps.map((map) => Song.fromMap(map)).toList();
+  }
+
+  /// Moves songs back from "Ignoradas" into the regular inbox.
+  Future<void> unignoreSongsFromInbox(List<String> songIds) async {
+    if (songIds.isEmpty) return;
+    final db = await database;
+    await db.update(
+      'songs',
+      {'ignoredFromInbox': 0},
       where: 'id IN (${List.filled(songIds.length, '?').join(',')})',
       whereArgs: songIds,
     );
@@ -590,89 +610,6 @@ class DatabaseHelper {
     });
   }
 
-  // --- DOWNLOAD QUEUE CRUD ---
-
-  Future<int> addToDownloadQueue(
-    String videoId,
-    String playlistId, {
-    int? expectedOrderIndex,
-  }) async {
-    final db = await database;
-    
-    // Check if already in queue to prevent duplicate downloads in the queue
-    final existing = await db.query(
-      'download_queue',
-      where: 'videoId = ? AND playlistId = ?',
-      whereArgs: [videoId, playlistId],
-    );
-    if (existing.isNotEmpty) return 0;
-
-    return await db.insert(
-      'download_queue',
-      {
-        'videoId': videoId,
-        'playlistId': playlistId,
-        'addedDate': DateTime.now().toIso8601String(),
-        'source': 'youtube',
-        'expectedOrderIndex': expectedOrderIndex,
-      },
-    );
-  }
-
-  Future<int> addSpotifyToDownloadQueue({
-    required String spotifyTrackId,
-    required String playlistId,
-    required String title,
-    required String artist,
-    required int durationMs,
-    String? thumbnailUrl,
-    int? expectedOrderIndex,
-  }) async {
-    final db = await database;
-
-    // Check if already in queue to prevent duplicate downloads in the queue
-    final existing = await db.query(
-      'download_queue',
-      where: 'videoId = ? AND playlistId = ?',
-      whereArgs: [spotifyTrackId, playlistId],
-    );
-    if (existing.isNotEmpty) return 0;
-
-    return await db.insert(
-      'download_queue',
-      {
-        'videoId': spotifyTrackId,
-        'playlistId': playlistId,
-        'addedDate': DateTime.now().toIso8601String(),
-        'source': 'spotify',
-        'spotifyTitle': title,
-        'spotifyArtist': artist,
-        'spotifyDurationMs': durationMs,
-        'spotifyThumbnailUrl': thumbnailUrl,
-        'expectedOrderIndex': expectedOrderIndex,
-      },
-    );
-  }
-
-  Future<List<Map<String, dynamic>>> getDownloadQueue() async {
-    final db = await database;
-    return await db.query('download_queue', orderBy: 'id ASC');
-  }
-
-  Future<int> removeFromDownloadQueue(int queueId) async {
-    final db = await database;
-    return await db.delete(
-      'download_queue',
-      where: 'id = ?',
-      whereArgs: [queueId],
-    );
-  }
-
-  Future<int> clearDownloadQueue() async {
-    final db = await database;
-    return await db.delete('download_queue');
-  }
-
   Future close() async {
     final db = await database;
     db.close();
@@ -821,13 +758,7 @@ class DatabaseHelper {
     return result.first;
   }
 
-  // Clear queue items for a specific playlist
-  Future<int> clearQueueForPlaylist(String playlistId) async {
-    final db = await database;
-    return await db.delete('download_queue', where: 'playlistId = ?', whereArgs: [playlistId]);
-  }
-
-  // Delete all songs belonging to a playlist (files + DB rows) and clear its download queue
+  // Delete all songs belonging to a playlist (files + DB rows).
   Future<void> deleteAllSongsForPlaylist(String playlistId) async {
     final db = await database;
     await db.transaction((txn) async {
@@ -835,7 +766,11 @@ class DatabaseHelper {
       final songMaps = await txn.rawQuery('SELECT songId FROM playlist_songs WHERE playlistId = ?', [playlistId]);
       final songIds = songMaps.map((e) => e['songId'] as String).toList();
 
-      // Delete physical files for each song
+      // Delete physical files for each song. Deliberately song.filePath, not
+      // playablePath: this may only ever delete a file Heardy itself owns
+      // (a legacy download in app-private storage, empty for imported
+      // songs) — the app must never delete the user's own file in their
+      // SAF-picked folder (D3, one-way sync).
       for (final id in songIds) {
         final song = await getSongById(id);
         if (song != null) {
@@ -848,9 +783,6 @@ class DatabaseHelper {
       if (songIds.isNotEmpty) {
         await txn.delete('songs', where: 'id IN (${List.filled(songIds.length, '?').join(',')})', whereArgs: songIds);
       }
-
-      // Clear any pending download queue for this playlist
-      await txn.delete('download_queue', where: 'playlistId = ?', whereArgs: [playlistId]);
     });
   }
 }

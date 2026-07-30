@@ -23,10 +23,14 @@ class InboxScreen extends StatefulWidget {
 class _InboxScreenState extends State<InboxScreen> {
   final _storageService = StorageService();
   List<Song> _songs = [];
+  List<Song> _ignoredSongs = [];
   final Set<String> _selectedIds = {};
   bool _loading = true;
   bool _scanning = false;
+  bool _showIgnored = false;
   String? _libraryRootUri;
+
+  List<Song> get _activeSongs => _showIgnored ? _ignoredSongs : _songs;
 
   @override
   void initState() {
@@ -38,12 +42,21 @@ class _InboxScreenState extends State<InboxScreen> {
     setState(() => _loading = true);
     final rootUri = await _storageService.getLibraryRootUri();
     final songs = await DatabaseHelper.instance.getInboxSongs();
+    final ignored = await DatabaseHelper.instance.getIgnoredSongs();
     if (!mounted) return;
     setState(() {
       _libraryRootUri = rootUri;
       _songs = songs;
-      _selectedIds.removeWhere((id) => !songs.any((s) => s.id == id));
+      _ignoredSongs = ignored;
+      _selectedIds.removeWhere((id) => !_activeSongs.any((s) => s.id == id));
       _loading = false;
+    });
+  }
+
+  void _switchTab(bool showIgnored) {
+    setState(() {
+      _showIgnored = showIgnored;
+      _selectedIds.clear();
     });
   }
 
@@ -99,12 +112,12 @@ class _InboxScreenState extends State<InboxScreen> {
 
   void _toggleSelectAll() {
     setState(() {
-      if (_selectedIds.length == _songs.length) {
+      if (_selectedIds.length == _activeSongs.length) {
         _selectedIds.clear();
       } else {
         _selectedIds
           ..clear()
-          ..addAll(_songs.map((s) => s.id));
+          ..addAll(_activeSongs.map((s) => s.id));
       }
     });
   }
@@ -119,6 +132,19 @@ class _InboxScreenState extends State<InboxScreen> {
     await context.read<MusicProvider>().refreshInboxCount();
     if (!mounted) return;
     _showSnack('${ids.length} ${ids.length == 1 ? "canción ignorada" : "canciones ignoradas"}');
+  }
+
+  /// Reverses [_ignoreSelected] — a dismiss must never be a dead end.
+  Future<void> _restoreSelected() async {
+    final ids = _selectedIds.toList();
+    await DatabaseHelper.instance.unignoreSongsFromInbox(ids);
+    if (!mounted) return;
+    setState(() => _selectedIds.clear());
+    await _load();
+    if (!mounted) return;
+    await context.read<MusicProvider>().refreshInboxCount();
+    if (!mounted) return;
+    _showSnack('${ids.length} ${ids.length == 1 ? "canción restaurada" : "canciones restauradas"} a la bandeja');
   }
 
   Future<void> _assignSelected() async {
@@ -180,9 +206,9 @@ class _InboxScreenState extends State<InboxScreen> {
                           letterSpacing: -0.5,
                         ),
                       ),
-                      if (_songs.isNotEmpty)
+                      if (_activeSongs.isNotEmpty)
                         Text(
-                          'Archivos sueltos sin playlist',
+                          _showIgnored ? 'Ignoradas — se pueden restaurar' : 'Archivos sueltos sin playlist',
                           style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
                         ),
                     ],
@@ -196,7 +222,26 @@ class _InboxScreenState extends State<InboxScreen> {
               ],
             ),
           ),
-          if (_songs.isNotEmpty)
+          if (_libraryRootUri != null && !_loading)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
+              child: Row(
+                children: [
+                  ChoiceChip(
+                    label: Text('Bandeja (${_songs.length})'),
+                    selected: !_showIgnored,
+                    onSelected: (_) => _switchTab(false),
+                  ),
+                  const SizedBox(width: 8),
+                  ChoiceChip(
+                    label: Text('Ignoradas (${_ignoredSongs.length})'),
+                    selected: _showIgnored,
+                    onSelected: (_) => _switchTab(true),
+                  ),
+                ],
+              ),
+            ),
+          if (_activeSongs.isNotEmpty)
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
               child: Row(
@@ -204,16 +249,16 @@ class _InboxScreenState extends State<InboxScreen> {
                   TextButton.icon(
                     onPressed: _toggleSelectAll,
                     icon: Icon(
-                      _selectedIds.length == _songs.length
+                      _selectedIds.length == _activeSongs.length
                           ? Icons.check_box_rounded
                           : Icons.check_box_outline_blank_rounded,
                       size: 18,
                     ),
-                    label: Text(_selectedIds.length == _songs.length ? 'Ninguna' : 'Seleccionar todo'),
+                    label: Text(_selectedIds.length == _activeSongs.length ? 'Ninguna' : 'Seleccionar todo'),
                   ),
                   const Spacer(),
                   Text(
-                    '${_songs.length} sin asignar',
+                    _showIgnored ? '${_activeSongs.length} ignoradas' : '${_activeSongs.length} sin asignar',
                     style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12),
                   ),
                 ],
@@ -224,13 +269,13 @@ class _InboxScreenState extends State<InboxScreen> {
                 ? const Center(child: CircularProgressIndicator())
                 : _libraryRootUri == null
                     ? _buildNoFolderState()
-                    : _songs.isEmpty
-                        ? _buildEmptyState()
+                    : _activeSongs.isEmpty
+                        ? (_showIgnored ? _buildNoIgnoredState() : _buildEmptyState())
                         : ListView.builder(
                             padding: EdgeInsets.fromLTRB(16, 8, 16, hasSelection ? 100 : 90),
-                            itemCount: _songs.length,
+                            itemCount: _activeSongs.length,
                             itemBuilder: (context, index) {
-                              final song = _songs[index];
+                              final song = _activeSongs[index];
                               final selected = _selectedIds.contains(song.id);
                               return _InboxSongRow(
                                 song: song,
@@ -255,38 +300,53 @@ class _InboxScreenState extends State<InboxScreen> {
               ),
               child: SafeArea(
                 top: false,
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                child: _showIgnored
+                    ? SizedBox(
+                        width: double.infinity,
+                        child: ElevatedButton.icon(
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppTheme.primary,
+                            foregroundColor: Colors.white,
+                            padding: const EdgeInsets.symmetric(vertical: 14),
+                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                          ),
+                          icon: const Icon(Icons.restore_rounded, size: 18),
+                          label: Text('Restaurar a la bandeja (${_selectedIds.length})'),
+                          onPressed: _restoreSelected,
                         ),
-                        icon: const Icon(Icons.visibility_off_rounded, size: 18),
-                        label: Text('Ignorar (${_selectedIds.length})'),
-                        onPressed: _ignoreSelected,
+                      )
+                    : Row(
+                        children: [
+                          Expanded(
+                            child: OutlinedButton.icon(
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: Colors.white,
+                                side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                              icon: const Icon(Icons.visibility_off_rounded, size: 18),
+                              label: Text('Ignorar (${_selectedIds.length})'),
+                              onPressed: _ignoreSelected,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          Expanded(
+                            flex: 2,
+                            child: ElevatedButton.icon(
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: AppTheme.primary,
+                                foregroundColor: Colors.white,
+                                padding: const EdgeInsets.symmetric(vertical: 14),
+                                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              ),
+                              icon: const Icon(Icons.playlist_add_rounded, size: 18),
+                              label: Text('Asignar a… (${_selectedIds.length})'),
+                              onPressed: _assignSelected,
+                            ),
+                          ),
+                        ],
                       ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      flex: 2,
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppTheme.primary,
-                          foregroundColor: Colors.white,
-                          padding: const EdgeInsets.symmetric(vertical: 14),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                        ),
-                        icon: const Icon(Icons.playlist_add_rounded, size: 18),
-                        label: Text('Asignar a… (${_selectedIds.length})'),
-                        onPressed: _assignSelected,
-                      ),
-                    ),
-                  ],
-                ),
               ),
             ),
         ],
@@ -347,6 +407,31 @@ class _InboxScreenState extends State<InboxScreen> {
             const SizedBox(height: 8),
             Text(
               'Metés archivos en la carpeta desde fuera de la app y tocás recargar acá arriba.',
+              style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNoIgnoredState() {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.visibility_off_rounded, size: 56, color: Colors.white.withValues(alpha: 0.3)),
+            const SizedBox(height: 16),
+            const Text(
+              'No ignoraste ninguna canción',
+              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Las que descartés desde la bandeja aparecen acá, y podés traerlas de vuelta cuando quieras.',
               style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
               textAlign: TextAlign.center,
             ),

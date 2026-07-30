@@ -9,7 +9,6 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'services/database_helper.dart';
 import 'services/audio_player_handler.dart';
 import 'providers/music_provider.dart';
-import 'providers/download_provider.dart';
 import 'providers/settings_provider.dart';
 import 'screens/main_shell_screen.dart';
 import 'screens/playlist_detail_screen.dart';
@@ -30,7 +29,10 @@ void main() async {
   const InitializationSettings initializationSettings = InitializationSettings(
     android: initializationSettingsAndroid,
   );
-  await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+  // A fresh instance is enough: flutter_local_notifications initializes the
+  // plugin platform-wide, so any other instance (e.g. AudioPlayerHandler's
+  // own for playback-error notifications) shares this same initialization.
+  await FlutterLocalNotificationsPlugin().initialize(initializationSettings);
 
   final AudioPlayerHandler audioHandler = await AudioService.init(
     builder: () => AudioPlayerHandler(),
@@ -58,14 +60,6 @@ void main() async {
         Provider<AudioPlayerHandler>.value(value: audioHandler),
         ChangeNotifierProvider(create: (_) => SettingsProvider()),
         ChangeNotifierProvider.value(value: musicProvider),
-        ChangeNotifierProxyProvider2<MusicProvider, AudioPlayerHandler, DownloadProvider>(
-          create: (_) => DownloadProvider()..initQueue(),
-          update: (_, musicProvider, audioHandler, downloadProvider) {
-            downloadProvider!.musicProvider = musicProvider;
-            downloadProvider.audioHandler = audioHandler;
-            return downloadProvider;
-          },
-        ),
       ],
       child: const HeardyApp(),
     ),

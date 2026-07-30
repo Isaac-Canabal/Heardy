@@ -377,6 +377,14 @@ void main() {
       await LibraryScanService().scan(root.uri);
       final afterRescan = await db.getInboxSongs();
       expect(afterRescan.any((s) => s.id == songA.id), false, reason: 'an ignored song must not reappear on rescan');
+      expect((await db.getIgnoredSongs()).any((s) => s.id == songA.id), true,
+          reason: 'an ignored song must be visible in the "Ignoradas" list');
+
+      // Ignoring must be reversible — a dismiss is not a dead end.
+      await db.unignoreSongsFromInbox([songA.id]);
+      expect((await db.getIgnoredSongs()).any((s) => s.id == songA.id), false);
+      expect((await db.getInboxSongs()).any((s) => s.id == songA.id), true,
+          reason: 'restoring an ignored song must put it back in the regular inbox');
 
       // Batch-assign B to a brand new playlist ("crear nueva" path).
       await db.insertPlaylist(Playlist(id: 'pl-new', name: 'NuevaPlaylist', creationDate: DateTime.now()));

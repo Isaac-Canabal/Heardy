@@ -1,14 +1,10 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import '../providers/download_provider.dart';
 import '../providers/music_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/database_helper.dart';
 import '../theme/app_theme.dart';
-import '../services/audio_player_handler.dart';
-import '../services/repair_service.dart';
-import '../services/log_service.dart';
 import '../services/storage_service.dart';
 
 class SettingsScreen extends StatelessWidget {
@@ -318,185 +314,6 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 28),
-          _SectionTitle('Mantenimiento'),
-          const SizedBox(height: 10),
-          Container(
-            decoration: AppTheme.glassCard(),
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Icon(
-                      Icons.build_rounded,
-                      color: AppTheme.primaryLight,
-                      size: 20,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      'Reparar reproductor',
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.7),
-                        fontSize: 13,
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Usa esto si el audio deja de reproducirse. Reinicia el estado del reproductor sin perder tus canciones.',
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.45),
-                    fontSize: 12,
-                    height: 1.4,
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.primary.withValues(alpha: 0.3),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    icon: const Icon(Icons.refresh_rounded, size: 18),
-                    label: const Text('Reparar', style: TextStyle(fontWeight: FontWeight.w600)),
-                    onPressed: () async {
-                      final confirm = await showDialog<bool>(
-                        context: context,
-                        builder: (ctx) => AlertDialog(
-                          backgroundColor: AppTheme.surface,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                          title: const Text('Reparar Reproductor', style: TextStyle(color: Colors.white)),
-                          content: const Text(
-                            '¿Deseas realizar una reparación completa? Esto incluirá:\n\n• Verificar archivos corruptos\n• Limpiar archivos temporales\n• Verificar base de datos\n• Reiniciar el reproductor\n\nLa reproducción actual se detendrá.',
-                            style: TextStyle(color: Colors.white70),
-                          ),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(ctx, false),
-                              child: Text('Cancelar', style: TextStyle(color: Colors.white.withAlpha(128))),
-                            ),
-                            TextButton(
-                              onPressed: () => Navigator.pop(ctx, true),
-                              child: Text('Reparar', style: TextStyle(color: AppTheme.primaryLight, fontWeight: FontWeight.bold)),
-                            ),
-                          ],
-                        ),
-                      );
-                      if (confirm == true && context.mounted) {
-                        // Mostrar diálogo de progreso
-                        showDialog(
-                          context: context,
-                          barrierDismissible: false,
-                          builder: (ctx) => AlertDialog(
-                            backgroundColor: AppTheme.surface,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                            content: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                CircularProgressIndicator(color: AppTheme.primaryLight),
-                                SizedBox(height: 16),
-                                Text('Reparando...', style: TextStyle(color: Colors.white)),
-                                SizedBox(height: 8),
-                                Text('Esto puede tomar unos segundos', style: TextStyle(color: Colors.white54, fontSize: 12)),
-                              ],
-                            ),
-                          ),
-                        );
-                        
-                        final audioHandler = Provider.of<AudioPlayerHandler>(context, listen: false);
-                        final result = await RepairService.performFullRepair(
-                          audioHandler: audioHandler,
-                          musicProvider: musicProvider,
-                        );
-                        
-                        if (context.mounted) {
-                          Navigator.pop(context); // Cerrar diálogo de progreso
-                          
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(result.getUserMessage()),
-                              backgroundColor: result.hasErrors 
-                                  ? Colors.red.withValues(alpha: 0.8)
-                                  : result.hasWarnings
-                                      ? Colors.orange.withValues(alpha: 0.8)
-                                      : AppTheme.surface,
-                              behavior: SnackBarBehavior.floating,
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                              duration: const Duration(seconds: 4),
-                            ),
-                          );
-                        }
-                      }
-                    },
-                  ),
-                ),
-                const SizedBox(height: 12),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: Colors.red.withValues(alpha: 0.15),
-                      foregroundColor: Colors.white,
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      padding: const EdgeInsets.symmetric(vertical: 12),
-                    ),
-                    icon: const Icon(Icons.bug_report_rounded, size: 18, color: Colors.redAccent),
-                    label: const Text('Ver Log de Errores', style: TextStyle(fontWeight: FontWeight.w600)),
-                    onPressed: () async {
-                      final logs = await LogService.readLogs();
-                      if (context.mounted) {
-                        showDialog(
-                          context: context,
-                          builder: (ctx) => AlertDialog(
-                            backgroundColor: AppTheme.surface,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                            title: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                              children: [
-                                const Text('Log de Errores', style: TextStyle(color: Colors.white)),
-                                IconButton(
-                                  icon: const Icon(Icons.delete_sweep_rounded, color: Colors.redAccent),
-                                  onPressed: () async {
-                                    await LogService.clearLogs();
-                                    if (ctx.mounted) Navigator.pop(ctx);
-                                  },
-                                ),
-                              ],
-                            ),
-                            content: SizedBox(
-                              width: double.maxFinite,
-                              child: SingleChildScrollView(
-                                child: SelectableText(
-                                  logs,
-                                  style: const TextStyle(color: Colors.white70, fontSize: 11, fontFamily: 'monospace'),
-                                ),
-                              ),
-                            ),
-                            actions: [
-                              TextButton(
-                                onPressed: () => Navigator.pop(ctx),
-                                child: const Text('Cerrar', style: TextStyle(color: Colors.white)),
-                              ),
-                            ],
-                          ),
-                        );
-                      }
-                    },
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 28),
           _SectionTitle('Búsqueda'),
           const SizedBox(height: 10),
           Container(
@@ -565,83 +382,6 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 28),
-          _SectionTitle('Descargas'),
-          const SizedBox(height: 10),
-          Container(
-            decoration: AppTheme.glassCard(),
-            padding: const EdgeInsets.all(16),
-            child: Consumer<DownloadProvider>(
-              builder: (context, downloads, _) => Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.timer_outlined,
-                        color: AppTheme.primaryLight,
-                        size: 20,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Pausa entre canciones',
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.7),
-                          fontSize: 13,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Text(
-                    'YouTube bloquea las descargas cuando recibe muchas '
-                    'peticiones seguidas. Esperar unos segundos entre canciones '
-                    'lo evita: más lento, pero fallan menos. 0 desactiva la '
-                    'pausa.',
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.45),
-                      fontSize: 12,
-                      height: 1.4,
-                    ),
-                  ),
-                  const SizedBox(height: 12),
-                  Row(
-                    children: [
-                      IconButton(
-                        icon: const Icon(Icons.remove, size: 20),
-                        color: AppTheme.primaryLight,
-                        onPressed: downloads.interDownloadDelaySeconds > 0
-                            ? () => downloads.setInterDownloadDelay(
-                                downloads.interDownloadDelaySeconds - 1)
-                            : null,
-                      ),
-                      Expanded(
-                        child: Text(
-                          downloads.interDownloadDelaySeconds == 0
-                              ? 'Sin pausa'
-                              : '${downloads.interDownloadDelaySeconds} s',
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 20,
-                            fontWeight: FontWeight.w700,
-                          ),
-                        ),
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.add, size: 20),
-                        color: AppTheme.primaryLight,
-                        onPressed: downloads.interDownloadDelaySeconds < 30
-                            ? () => downloads.setInterDownloadDelay(
-                                downloads.interDownloadDelaySeconds + 1)
-                            : null,
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 28),
           _SectionTitle('Acerca de'),
           const SizedBox(height: 10),
           Container(
@@ -660,7 +400,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Reproductor y descargador offline de música desde YouTube.',
+                  'Reproductor de tu biblioteca musical, 100% offline.',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.45),
                     fontSize: 13,

@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:audio_service/audio_service.dart';
 import '../providers/music_provider.dart';
-import '../providers/download_provider.dart';
 import '../services/audio_player_handler.dart';
 import '../models/song.dart';
 import '../widgets/song_tile.dart';
@@ -140,26 +139,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 ),
               ),
             ],
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Recargar Playlist',
-            onPressed: () async {
-              if (playlist.originalUrl == null || playlist.originalUrl!.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: const Text('No hay URL asociada a esta lista.'),
-                    backgroundColor: Colors.redAccent.shade700,
-                  ),
-                );
-                return;
-              }
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Buscando nuevas canciones...')),
-              );
-              final downloadProvider = Provider.of<DownloadProvider>(context, listen: false);
-              await downloadProvider.downloadPlaylist(playlist.originalUrl!, playlist.id);
-            },
           ),
           IconButton(
             icon: Icon(_isReordering ? Icons.done : Icons.edit_outlined),

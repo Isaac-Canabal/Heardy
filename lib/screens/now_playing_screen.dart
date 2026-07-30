@@ -6,7 +6,6 @@ import 'package:audio_service/audio_service.dart';
 import 'package:palette_generator/palette_generator.dart';
 import '../services/audio_player_handler.dart';
 import '../services/lyrics_service.dart';
-import '../services/audio_analysis_service.dart';
 import '../theme/app_theme.dart';
 
 class NowPlayingScreen extends StatefulWidget {
@@ -254,11 +253,9 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                       final position = posSnapshot.data ?? Duration.zero;
                       final duration = mediaItem.duration ?? Duration.zero;
 
-                      return WaveformSeekBar(
+                      return SeekBar(
                         position: position,
                         duration: duration,
-                        songId: mediaItem.id,
-                        filePath: mediaItem.extras?['filePath'] as String?,
                         onChangeEnd: (newPosition) {
                           audioHandler.seek(newPosition);
                         },
@@ -1043,117 +1040,31 @@ class _QueueBottomSheetState extends State<QueueBottomSheet> {
   }
 }
 
-// --- STATEFUL SEEK BAR ---
-class WaveformSeekBar extends StatefulWidget {
+// --- SEEK BAR ---
+// Collapsed from a WaveformSeekBar (D7, Stage 5 prune): AudioAnalysisService
+// never did real waveform extraction (it derived fake bar heights from
+// filePath.hashCode, falling back to a raw Random() on failure — see
+// CLAUDE.md), and it depended on `File(path)`, which can't read a SAF
+// content:// uri anyway. Deleted rather than fixed — a decorative feature
+// that was never doing what it looked like it did.
+class SeekBar extends StatefulWidget {
   final Duration position;
   final Duration duration;
   final ValueChanged<Duration> onChangeEnd;
-  final String? songId;
-  final String? filePath;
 
-  const WaveformSeekBar({
+  const SeekBar({
     super.key,
     required this.position,
     required this.duration,
     required this.onChangeEnd,
-    this.songId,
-    this.filePath,
   });
 
   @override
-  State<WaveformSeekBar> createState() => _WaveformSeekBarState();
+  State<SeekBar> createState() => _SeekBarState();
 }
 
-class _WaveformSeekBarState extends State<WaveformSeekBar> {
+class _SeekBarState extends State<SeekBar> {
   double? _dragValue;
-  List<double> _barHeights = [];
-  static const int barCount = 50;
-  static const double barWidth = 4.0;
-  static const double barSpacing = 3.0;
-  static const double minHeight = 8.0;
-  static const double maxHeight = 36.0;
-
-  @override
-  void initState() {
-    super.initState();
-    // Inicializar con alturas temporales mientras carga el análisis real
-    _initializeTempHeights();
-    _generateWaveform();
-  }
-
-  void _initializeTempHeights() {
-    _barHeights = List.generate(barCount, (index) {
-      return minHeight + ((index % 3) / 3) * (maxHeight - minHeight);
-    });
-  }
-
-  @override
-  void didUpdateWidget(covariant WaveformSeekBar oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.songId != widget.songId || oldWidget.filePath != widget.filePath) {
-      _generateWaveform();
-    }
-  }
-
-  Future<void> _generateWaveform() async {
-    _barHeights = [];
-    
-    // Si tenemos ruta del archivo, usar análisis real
-    if (widget.filePath != null && widget.filePath!.isNotEmpty) {
-      try {
-        final amplitudes = await AudioAnalysisService.extractWaveformData(
-          widget.filePath!,
-          barCount: barCount,
-        );
-        
-        if (mounted) {
-          setState(() {
-            _barHeights = _mapAmplitudesToHeights(amplitudes);
-          });
-        }
-        return;
-      } catch (e) {
-        print('Error en análisis de audio real, usando fallback: $e');
-      }
-    }
-    
-    // Fallback: usar songId como seed para generar una waveform única pero consistente
-    final seed = widget.songId?.hashCode ?? DateTime.now().millisecondsSinceEpoch;
-    
-    for (int i = 0; i < barCount; i++) {
-      // Generar altura basada en el seed y posición para consistencia
-      final baseSeed = seed + i * 31;
-      final isHighPeak = (baseSeed % 7) < 3; // Patrón más variado
-      final baseHeight = isHighPeak ? maxHeight : minHeight;
-      
-      // Variación más dinámica basada en el seed
-      final variation = ((baseSeed * 17) % 12).toDouble();
-      final peakFactor = (i % 5 == 0) ? 6.0 : 0.0; // Picos ocasionales
-      
-      final height = baseHeight - variation + peakFactor;
-      _barHeights.add(height.clamp(minHeight, maxHeight));
-    }
-    
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
-  /// Mapea amplitudes (0.0-1.0) a alturas de barras (minHeight-maxHeight)
-  List<double> _mapAmplitudesToHeights(List<double> amplitudes) {
-    return amplitudes.map((amplitude) {
-      // Expandir el rango para más variación visual extrema
-      // Usar curva cúbica para aún más diferenciación entre valores
-      final expandedAmplitude = amplitude * amplitude * amplitude; // Curva cúbica
-      
-      // Añadir un poco de aleatoriedad para más variación visual
-      final randomFactor = (DateTime.now().millisecondsSinceEpoch % 100) / 1000.0;
-      final adjustedAmplitude = (expandedAmplitude + randomFactor).clamp(0.0, 1.0);
-      
-      final height = minHeight + (adjustedAmplitude * (maxHeight - minHeight));
-      return height.clamp(minHeight, maxHeight);
-    }).toList();
-  }
 
   String _formatDuration(Duration d) {
     final minutes = d.inMinutes;
@@ -1161,97 +1072,35 @@ class _WaveformSeekBarState extends State<WaveformSeekBar> {
     return '$minutes:${seconds.toString().padLeft(2, '0')}';
   }
 
-  void _handlePanUpdate(DragUpdateDetails details, RenderBox box) {
-    final localPosition = box.globalToLocal(details.globalPosition);
-    final percentage = (localPosition.dx / box.size.width).clamp(0.0, 1.0);
-    setState(() {
-      _dragValue = percentage * widget.duration.inMilliseconds;
-    });
-  }
-
-  void _handlePanEnd(DragEndDetails details) {
-    if (_dragValue != null) {
-      widget.onChangeEnd(Duration(milliseconds: _dragValue!.toInt()));
-      setState(() {
-        _dragValue = null;
-      });
-    }
-  }
-
-  void _handleTap(TapUpDetails details, RenderBox box) {
-    final localPosition = box.globalToLocal(details.globalPosition);
-    final percentage = (localPosition.dx / box.size.width).clamp(0.0, 1.0);
-    final newValue = percentage * widget.duration.inMilliseconds;
-    widget.onChangeEnd(Duration(milliseconds: newValue.toInt()));
-  }
-
   @override
   Widget build(BuildContext context) {
-    final value = _dragValue ?? widget.position.inMilliseconds.toDouble();
-    final max = widget.duration.inMilliseconds.toDouble();
-    final progress = max > 0 ? (value / max).clamp(0.0, 1.0) : 0.0;
-    final activeBars = (progress * barCount).floor();
+    final maxMs = widget.duration.inMilliseconds.toDouble();
+    final hasDuration = maxMs > 0;
+    final value = (_dragValue ?? widget.position.inMilliseconds.toDouble())
+        .clamp(0.0, hasDuration ? maxMs : 1.0);
 
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              return GestureDetector(
-                onPanStart: (_) {},
-                onPanUpdate: (details) {
-                  final box = context.findRenderObject() as RenderBox;
-                  _handlePanUpdate(details, box);
-                },
-                onPanEnd: _handlePanEnd,
-                onTapUp: (details) {
-                  final box = context.findRenderObject() as RenderBox;
-                  _handleTap(details, box);
-                },
-                behavior: HitTestBehavior.opaque,
-                child: Container(
-                  height: maxHeight + 8,
-                  alignment: Alignment.center,
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    physics: const NeverScrollableScrollPhysics(),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: List.generate(barCount, (index) {
-                        final isActive = index < activeBars;
-                        final isLastActive = index == activeBars - 1;
-                        
-                        // Calcular opacidad para la última barra activa
-                        final opacity = isLastActive 
-                            ? (progress * barCount) - activeBars
-                            : 1.0;
-
-                        // Usar altura del análisis o fallback si está vacío
-                        final height = _barHeights.isNotEmpty && index < _barHeights.length
-                            ? _barHeights[index]
-                            : minHeight;
-
-                        return Container(
-                          width: barWidth,
-                          height: height,
-                          margin: EdgeInsets.only(
-                            right: index < barCount - 1 ? barSpacing : 0,
-                          ),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(barWidth / 2),
-                            color: isActive
-                                ? const Color(0xFF8C9EFF).withValues(alpha: opacity.clamp(0.3, 1.0))
-                                : Colors.white10,
-                          ),
-                        );
-                      }),
-                    ),
-                  ),
-                ),
-              );
-            },
+        SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            trackHeight: 4,
+            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+            overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+            activeTrackColor: const Color(0xFF8C9EFF),
+            inactiveTrackColor: Colors.white10,
+            thumbColor: const Color(0xFF8C9EFF),
+          ),
+          child: Slider(
+            min: 0,
+            max: hasDuration ? maxMs : 1,
+            value: hasDuration ? value : 0,
+            onChanged: hasDuration ? (v) => setState(() => _dragValue = v) : null,
+            onChangeEnd: hasDuration
+                ? (v) {
+                    widget.onChangeEnd(Duration(milliseconds: v.toInt()));
+                    setState(() => _dragValue = null);
+                  }
+                : null,
           ),
         ),
         Padding(
@@ -1259,32 +1108,14 @@ class _WaveformSeekBarState extends State<WaveformSeekBar> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                _formatDuration(widget.position),
-                style: const TextStyle(color: Colors.white54, fontSize: 12),
-              ),
-              Text(
-                _formatDuration(widget.duration),
-                style: const TextStyle(color: Colors.white54, fontSize: 12),
-              ),
+              Text(_formatDuration(widget.position), style: const TextStyle(color: Colors.white54, fontSize: 12)),
+              Text(_formatDuration(widget.duration), style: const TextStyle(color: Colors.white54, fontSize: 12)),
             ],
           ),
         ),
       ],
     );
   }
-}
-
-// SeekBar original para backwards compatibility si es necesario
-class SeekBar extends WaveformSeekBar {
-  const SeekBar({
-    super.key,
-    required super.position,
-    required super.duration,
-    required super.onChangeEnd,
-    super.songId,
-    super.filePath,
-  });
 }
 
 // --- SMART ALBUM ART (DYNAMIC ASPECT CROP) ---
@@ -1306,12 +1137,7 @@ class SmartAlbumArt extends StatefulWidget {
 
 class _SmartAlbumArtState extends State<SmartAlbumArt> {
   // Consistent policy with song_tile/home_screen/mini_player: always a centered
-  // square crop via BoxFit.cover. No per-image aspect-ratio branching — that
-  // used to assume every ~4:3 thumbnail was a 16:9 video letterboxed into a 4:3
-  // canvas, which over-cropped thumbnails that didn't match that shape (e.g.
-  // square album art YouTube pillarboxes into its own canvas). The real fix is
-  // upstream: youtube_service now sources the native 16:9 mqdefault.jpg instead
-  // of the 4:3 hqdefault.jpg, so there's no letterboxed source left to correct for.
+  // square crop via BoxFit.cover. No per-image aspect-ratio branching needed.
   late bool _hasError = _isMissing(widget.artPath);
 
   static bool _isMissing(String path) => path.isEmpty || !File(path).existsSync();

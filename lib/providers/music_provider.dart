@@ -304,6 +304,18 @@ class MusicProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  /// Plays a tapped result from local search, queuing the rest of the
+  /// current result set so next/previous stay within it — not tied to any
+  /// playlist, so it doesn't touch `_currentPlaylistId`/`_currentPlaylistSongs`.
+  Future<void> playSearchResults(
+    List<Song> results,
+    Song target,
+    AudioPlayerHandler audioHandler,
+  ) async {
+    if (results.isEmpty) return;
+    await _playSongList(audioHandler, results, target, 'Búsqueda');
+  }
+
   Future<void> _playSongList(
     AudioPlayerHandler audioHandler,
     List<Song> songs,
