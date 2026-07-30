@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
@@ -20,6 +21,138 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   bool _hasRecordedCurrentTrack = false;
 
   AudioPlayer get player => _player;
+
+  // --- SLEEP TIMER ---
+  // In-memory only, by design: a sleep timer that survives a full app kill
+  // and fires the next time the app is opened would be a bug, not a feature.
+  static const Duration _sleepFadeDuration = Duration(seconds: 6);
+  Timer? _sleepFireTimer;
+  Timer? _sleepFadeTicker;
+  Timer? _sleepTickTimer;
+  DateTime? _sleepEndTime;
+  bool _sleepFading = false;
+  bool _pausingFromSleepFade = false;
+  final StreamController<Duration?> _sleepTimerController =
+      StreamController<Duration?>.broadcast();
+
+  /// Emits the remaining time on every tick, and `null` when no timer is active.
+  Stream<Duration?> get sleepTimerStream => _sleepTimerController.stream;
+
+  /// Synchronous snapshot, for `initialData` on a StreamBuilder.
+  Duration? get sleepTimerRemainingNow {
+    if (_sleepEndTime == null) return null;
+    final remaining = _sleepEndTime!.difference(DateTime.now());
+    return remaining.isNegative ? Duration.zero : remaining;
+  }
+
+  bool get isSleepTimerActive => _sleepEndTime != null;
+
+  void startSleepTimer(Duration duration) {
+    _cleanupSleepTimerOnly();
+    _sleepEndTime = DateTime.now().add(duration);
+    final fadeStart = duration - _sleepFadeDuration;
+    _sleepFireTimer = Timer(
+      fadeStart.isNegative ? Duration.zero : fadeStart,
+      _beginSleepFade,
+    );
+    _sleepTickTimer = Timer.periodic(
+      const Duration(seconds: 1),
+      (_) => _emitSleepRemaining(),
+    );
+    _emitSleepRemaining();
+  }
+
+  /// User-initiated cancel. If a fade-out is mid-flight, restores volume and
+  /// keeps the song playing (case: cancel during fade-out).
+  Future<void> cancelSleepTimer() async {
+    if (_sleepEndTime == null) return;
+    if (_sleepFading) {
+      await _abortSleepFadeAndCleanup();
+    } else {
+      _cleanupSleepTimerOnly();
+    }
+  }
+
+  void _emitSleepRemaining() {
+    _sleepTimerController.add(sleepTimerRemainingNow);
+  }
+
+  Future<void> _beginSleepFade() async {
+    if (_sleepEndTime == null) return; // cancelled before firing
+    if (!_player.playing) {
+      // Timer fired but the user had already paused manually: nothing to fade,
+      // just clear the (now pointless) timer state.
+      _cleanupSleepTimerOnly();
+      return;
+    }
+
+    _sleepFading = true;
+    const steps = 30;
+    final stepDuration = Duration(
+      milliseconds: _sleepFadeDuration.inMilliseconds ~/ steps,
+    );
+    var stepsLeft = steps;
+
+    _sleepFadeTicker = Timer.periodic(stepDuration, (timer) async {
+      stepsLeft--;
+      try {
+        await _player.setVolume((stepsLeft / steps).clamp(0.0, 1.0));
+      } catch (e) {
+        print('Error ajustando volumen durante fade-out: $e');
+      }
+      if (stepsLeft <= 0) {
+        timer.cancel();
+        await _finishSleepFade();
+      }
+    });
+  }
+
+  /// Natural end of the fade-out: pauses playback, then always restores
+  /// volume to 1.0 in a `finally` — if `pause()` throws, the app must not be
+  /// left silently muted.
+  Future<void> _finishSleepFade() async {
+    _pausingFromSleepFade = true;
+    try {
+      await pause();
+    } finally {
+      _pausingFromSleepFade = false;
+      try {
+        await _player.setVolume(1.0);
+      } catch (e) {
+        print('Error restaurando volumen tras el fade-out: $e');
+      } finally {
+        _cleanupSleepTimerOnly();
+      }
+    }
+  }
+
+  /// Aborts an in-progress fade (manual pause or explicit cancel mid fade-out)
+  /// and restores volume in a `finally` so a half-finished fade can never
+  /// leave the app muted.
+  Future<void> _abortSleepFadeAndCleanup() async {
+    _sleepFadeTicker?.cancel();
+    _sleepFadeTicker = null;
+    _sleepFading = false;
+    try {
+      await _player.setVolume(1.0);
+    } catch (e) {
+      print('Error restaurando volumen al abortar fade-out: $e');
+    } finally {
+      _cleanupSleepTimerOnly();
+    }
+  }
+
+  void _cleanupSleepTimerOnly() {
+    _sleepFireTimer?.cancel();
+    _sleepFadeTicker?.cancel();
+    _sleepTickTimer?.cancel();
+    _sleepFireTimer = null;
+    _sleepFadeTicker = null;
+    _sleepTickTimer = null;
+    _sleepEndTime = null;
+    _sleepFading = false;
+    _sleepTimerController.add(null);
+  }
 
   AudioPlayerHandler() {
     _initAudioSession();
@@ -151,7 +284,15 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   Future<void> play() => _player.play();
 
   @override
-  Future<void> pause() => _player.pause();
+  Future<void> pause() async {
+    if (_sleepFading && !_pausingFromSleepFade) {
+      // Manual pause mid fade-out: abort the fade and restore volume so the
+      // app isn't left silently muted, but let the pause the user asked for
+      // go through normally.
+      await _abortSleepFadeAndCleanup();
+    }
+    await _player.pause();
+  }
 
   @override
   Future<void> stop() async {
@@ -457,8 +598,25 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     } catch (e) {
       print("Error stopping player on task remove: $e");
     }
+    // Igual que fullRepair(): sin esto, si el proceso sobrevive al swipe (caso de
+    // arriba), `queue`/`mediaItem` quedan apuntando a una fuente que el player ya
+    // liberó — la UI muestra la última canción como si nada, pero play() actúa
+    // sobre un reproductor sin fuente cargada. hasLoadedSource (ver abajo) detecta
+    // y corrige esto igual si el proceso muere del todo y este callback ni corre.
+    _playlistSource = null;
+    queue.add([]);
+    mediaItem.add(null);
     await super.onTaskRemoved();
   }
+
+  /// True si hay una fuente realmente cargada en el player, no solo metadata en
+  /// `queue`/`mediaItem`. Lo usa `MusicProvider.restorePlaybackState` para saber
+  /// si hace falta restaurar algo, en vez de un guard de "ya corrí una vez".
+  bool get hasLoadedSource =>
+      _playlistSource != null &&
+      queue.value.isNotEmpty &&
+      mediaItem.value != null &&
+      _player.processingState != ProcessingState.idle;
 
   /// Resets the player state if it gets corrupted. Call this if playback stops working.
   Future<void> resetPlayerState() async {

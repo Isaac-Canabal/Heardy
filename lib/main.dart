@@ -71,8 +71,11 @@ void main() async {
     ),
   );
 
-  // Restaurar estado de reproduccion UNA sola vez despues de que todo este inicializado
-  Future.delayed(const Duration(milliseconds: 800), () {
+  // Restaurar estado de reproducción una vez que el primer frame ya se dibujó —
+  // condición real (el widget tree y sus Providers ya existen), no un delay
+  // arbitrario adivinado. `restorePlaybackState` es idempotente por estado
+  // real (ver MusicProvider), así que no depende de correr en un momento exacto.
+  WidgetsBinding.instance.addPostFrameCallback((_) {
     musicProvider.restorePlaybackState(audioHandler);
   });
 }

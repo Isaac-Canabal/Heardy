@@ -22,13 +22,39 @@ class MusicProvider with ChangeNotifier {
     loadPlaylists();
   }
 
-  bool _playbackRestored = false;
+  bool _isRestoringPlayback = false;
 
-  /// Intenta restaurar el estado de reproducción guardado
+  /// Intenta restaurar el estado de reproducción guardado.
+  ///
+  /// Idempotente por estado real, no por un flag de "ya corrí una vez": si
+  /// `audioHandler` ya tiene una fuente cargada no hace nada, así que es seguro
+  /// llamarla más de una vez (p. ej. tras un timing distinto en un arranque lento)
+  /// sin pisar una reproducción ya en curso.
   Future<void> restorePlaybackState(AudioPlayerHandler audioHandler) async {
-    if (_playbackRestored) return;
-    _playbackRestored = true;
+    if (_isRestoringPlayback) return;
+    if (audioHandler.hasLoadedSource) {
+      print('El reproductor ya tiene una fuente cargada, no hace falta restaurar');
+      return;
+    }
+
+    _isRestoringPlayback = true;
     try {
+      // Estado sucio: queue/mediaItem ya describen una canción (sobrevivieron en
+      // memoria a un proceso que Android mató sin pasar por onTaskRemoved) pero
+      // el player no tiene nada cargado. Reconstruir directo desde lo que ya hay
+      // en memoria — no hace falta tocar SharedPreferences/SQLite para esto.
+      final staleQueue = audioHandler.queue.value;
+      final staleMediaItem = audioHandler.mediaItem.value;
+      if (staleQueue.isNotEmpty && staleMediaItem != null) {
+        print('Estado sucio detectado (queue/mediaItem sin fuente cargada), reconstruyendo...');
+        await audioHandler.restorePlaylist(
+          staleQueue,
+          staleMediaItem.id,
+          audioHandler.player.position,
+        );
+        return;
+      }
+
       print('Verificando estado de reproducción guardado...');
       final savedState = await PlaybackStateService.restoreState();
       if (savedState == null) {
@@ -139,6 +165,8 @@ class MusicProvider with ChangeNotifier {
     } catch (e) {
       print('Error restaurando estado de reproducción: $e');
       await PlaybackStateService.clearState();
+    } finally {
+      _isRestoringPlayback = false;
     }
   }
 

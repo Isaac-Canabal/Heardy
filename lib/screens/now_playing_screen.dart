@@ -86,6 +86,48 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
           style: TextStyle(color: Colors.white70, fontSize: 14, letterSpacing: 1.1),
         ),
         centerTitle: true,
+        actions: [
+          StreamBuilder<PlaybackState>(
+            stream: audioHandler.playbackState,
+            builder: (context, stateSnapshot) {
+              final state = stateSnapshot.data;
+              final isShuffleActive = state?.shuffleMode == AudioServiceShuffleMode.all;
+              final isRepeatActive =
+                  (state?.repeatMode ?? AudioServiceRepeatMode.none) != AudioServiceRepeatMode.none;
+
+              return StreamBuilder<Duration?>(
+                stream: audioHandler.sleepTimerStream,
+                initialData: audioHandler.sleepTimerRemainingNow,
+                builder: (context, sleepSnapshot) {
+                  final isActive = isShuffleActive || isRepeatActive || sleepSnapshot.data != null;
+
+                  return IconButton(
+                    icon: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        const Icon(Icons.more_vert, color: Colors.white),
+                        if (isActive)
+                          Positioned(
+                            right: -1,
+                            top: -1,
+                            child: Container(
+                              width: 8,
+                              height: 8,
+                              decoration: const BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Color(0xFF8C9EFF),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    onPressed: () => _showOptionsBottomSheet(context, audioHandler),
+                  );
+                },
+              );
+            },
+          ),
+        ],
       ),
       body: StreamBuilder<MediaItem?>(
         stream: audioHandler.mediaItem,
@@ -229,38 +271,36 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                     builder: (context, stateSnapshot) {
                       final state = stateSnapshot.data;
                       final playing = state?.playing ?? false;
-                      final isShuffle = state?.shuffleMode == AudioServiceShuffleMode.all;
-                      final repeatMode = state?.repeatMode ?? AudioServiceRepeatMode.none;
 
                       return Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16.0),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                           children: [
-                            IconButton(
-                              icon: Icon(
-                                Icons.shuffle,
-                                color: isShuffle ? const Color(0xFF8C9EFF) : Colors.white38,
-                                size: 24,
-                              ),
-                              onPressed: () {
-                                audioHandler.setShuffleMode(
-                                  isShuffle
-                                      ? AudioServiceShuffleMode.none
-                                      : AudioServiceShuffleMode.all,
-                                );
-                              },
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.replay_5, color: Colors.white70, size: 26),
-                              tooltip: 'Retroceder 5 s',
-                              onPressed: () => audioHandler.seekRelative(
-                                const Duration(seconds: -5),
+                            // Every control sits in a 68-tall box (matching the play/pause
+                            // circle) so the Row centers all five on the exact same line —
+                            // IconButton's own minimum tap target height varies with iconSize
+                            // (26 vs 36), which otherwise throws off the optical center.
+                            SizedBox(
+                              height: 68,
+                              child: Center(
+                                child: IconButton(
+                                  icon: const Icon(Icons.replay_5, color: Colors.white70, size: 26),
+                                  tooltip: 'Retroceder 5 s',
+                                  onPressed: () => audioHandler.seekRelative(
+                                    const Duration(seconds: -5),
+                                  ),
+                                ),
                               ),
                             ),
-                            IconButton(
-                              icon: const Icon(Icons.skip_previous, color: Colors.white, size: 36),
-                              onPressed: () => audioHandler.skipToPrevious(),
+                            SizedBox(
+                              height: 68,
+                              child: Center(
+                                child: IconButton(
+                                  icon: const Icon(Icons.skip_previous, color: Colors.white, size: 36),
+                                  onPressed: () => audioHandler.skipToPrevious(),
+                                ),
+                              ),
                             ),
                             Container(
                               width: 68,
@@ -284,18 +324,27 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                                 },
                               ),
                             ),
-                            IconButton(
-                              icon: const Icon(Icons.skip_next, color: Colors.white, size: 36),
-                              onPressed: () => audioHandler.skipToNext(),
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.forward_5, color: Colors.white70, size: 26),
-                              tooltip: 'Adelantar 5 s',
-                              onPressed: () => audioHandler.seekRelative(
-                                const Duration(seconds: 5),
+                            SizedBox(
+                              height: 68,
+                              child: Center(
+                                child: IconButton(
+                                  icon: const Icon(Icons.skip_next, color: Colors.white, size: 36),
+                                  onPressed: () => audioHandler.skipToNext(),
+                                ),
                               ),
                             ),
-                            _buildRepeatButton(audioHandler, repeatMode),
+                            SizedBox(
+                              height: 68,
+                              child: Center(
+                                child: IconButton(
+                                  icon: const Icon(Icons.forward_5, color: Colors.white70, size: 26),
+                                  tooltip: 'Adelantar 5 s',
+                                  onPressed: () => audioHandler.seekRelative(
+                                    const Duration(seconds: 5),
+                                  ),
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                       );
@@ -311,28 +360,234 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
     );
   }
 
-  Widget _buildRepeatButton(AudioPlayerHandler audioHandler, AudioServiceRepeatMode mode) {
-    IconData icon = Icons.repeat;
-    Color color = Colors.white38;
-
-    if (mode == AudioServiceRepeatMode.one) {
-      icon = Icons.repeat_one;
-      color = const Color(0xFF8C9EFF);
-    } else if (mode == AudioServiceRepeatMode.all) {
-      icon = Icons.repeat;
-      color = const Color(0xFF8C9EFF);
+  String _repeatModeLabel(AudioServiceRepeatMode mode) {
+    switch (mode) {
+      case AudioServiceRepeatMode.one:
+        return 'Una canción';
+      case AudioServiceRepeatMode.all:
+        return 'Todas';
+      default:
+        return 'Desactivado';
     }
+  }
 
-    return IconButton(
-      icon: Icon(icon, color: color, size: 24),
-      onPressed: () {
-        if (mode == AudioServiceRepeatMode.none) {
-          audioHandler.setRepeatMode(AudioServiceRepeatMode.all);
-        } else if (mode == AudioServiceRepeatMode.all) {
-          audioHandler.setRepeatMode(AudioServiceRepeatMode.one);
-        } else {
-          audioHandler.setRepeatMode(AudioServiceRepeatMode.none);
-        }
+  String _formatRemaining(Duration d) {
+    final minutes = d.inMinutes;
+    final seconds = d.inSeconds % 60;
+    return '$minutes:${seconds.toString().padLeft(2, '0')}';
+  }
+
+  void _showOptionsBottomSheet(BuildContext context, AudioPlayerHandler audioHandler) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              StreamBuilder<PlaybackState>(
+                stream: audioHandler.playbackState,
+                builder: (context, snapshot) {
+                  final state = snapshot.data;
+                  final isShuffle = state?.shuffleMode == AudioServiceShuffleMode.all;
+                  final repeatMode = state?.repeatMode ?? AudioServiceRepeatMode.none;
+                  final isRepeatActive = repeatMode != AudioServiceRepeatMode.none;
+
+                  return Column(
+                    children: [
+                      ListTile(
+                        leading: Icon(
+                          Icons.shuffle,
+                          color: isShuffle ? const Color(0xFF8C9EFF) : Colors.white54,
+                        ),
+                        title: const Text('Aleatorio', style: TextStyle(color: Colors.white)),
+                        trailing: Text(
+                          isShuffle ? 'Activado' : 'Desactivado',
+                          style: TextStyle(
+                            color: isShuffle ? const Color(0xFF8C9EFF) : Colors.white38,
+                          ),
+                        ),
+                        onTap: () {
+                          audioHandler.setShuffleMode(
+                            isShuffle ? AudioServiceShuffleMode.none : AudioServiceShuffleMode.all,
+                          );
+                        },
+                      ),
+                      ListTile(
+                        leading: Icon(
+                          repeatMode == AudioServiceRepeatMode.one ? Icons.repeat_one : Icons.repeat,
+                          color: isRepeatActive ? const Color(0xFF8C9EFF) : Colors.white54,
+                        ),
+                        title: const Text('Repetir', style: TextStyle(color: Colors.white)),
+                        trailing: Text(
+                          _repeatModeLabel(repeatMode),
+                          style: TextStyle(
+                            color: isRepeatActive ? const Color(0xFF8C9EFF) : Colors.white38,
+                          ),
+                        ),
+                        onTap: () {
+                          final next = switch (repeatMode) {
+                            AudioServiceRepeatMode.none => AudioServiceRepeatMode.all,
+                            AudioServiceRepeatMode.all => AudioServiceRepeatMode.one,
+                            _ => AudioServiceRepeatMode.none,
+                          };
+                          audioHandler.setRepeatMode(next);
+                        },
+                      ),
+                    ],
+                  );
+                },
+              ),
+              const Divider(color: Colors.white24, height: 1),
+              StreamBuilder<Duration?>(
+                stream: audioHandler.sleepTimerStream,
+                initialData: audioHandler.sleepTimerRemainingNow,
+                builder: (context, snapshot) {
+                  final remaining = snapshot.data;
+                  if (remaining != null) {
+                    return ListTile(
+                      leading: const Icon(Icons.bedtime, color: Color(0xFF8C9EFF)),
+                      title: const Text('Temporizador de pausa', style: TextStyle(color: Colors.white)),
+                      subtitle: Text(
+                        'Quedan ${_formatRemaining(remaining)}',
+                        style: const TextStyle(color: Colors.white54),
+                      ),
+                      trailing: TextButton(
+                        onPressed: () => audioHandler.cancelSleepTimer(),
+                        child: const Text('Cancelar'),
+                      ),
+                    );
+                  }
+                  return ListTile(
+                    leading: const Icon(Icons.bedtime_outlined, color: Colors.white54),
+                    title: const Text('Temporizador de pausa', style: TextStyle(color: Colors.white)),
+                    subtitle: const Text(
+                      'Pausa la reproducción automáticamente',
+                      style: TextStyle(color: Colors.white38),
+                    ),
+                    onTap: () {
+                      Navigator.of(sheetContext).pop();
+                      _showSleepTimerPicker(context, audioHandler);
+                    },
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showSleepTimerPicker(BuildContext context, AudioPlayerHandler audioHandler) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Temporizador de pausa',
+                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ...[15, 30, 45, 60].map((minutes) {
+                      return ActionChip(
+                        label: Text('$minutes min', style: const TextStyle(color: Colors.white)),
+                        backgroundColor: Colors.white.withValues(alpha: 0.08),
+                        onPressed: () {
+                          audioHandler.startSleepTimer(Duration(minutes: minutes));
+                          Navigator.of(sheetContext).pop();
+                        },
+                      );
+                    }),
+                    // Peer chip, not a buried link below the presets — same visual
+                    // weight so a custom duration is just as discoverable.
+                    ActionChip(
+                      avatar: const Icon(Icons.edit_outlined, size: 16, color: Color(0xFF8C9EFF)),
+                      label: const Text('Personalizado', style: TextStyle(color: Color(0xFF8C9EFF))),
+                      backgroundColor: const Color(0xFF8C9EFF).withValues(alpha: 0.12),
+                      onPressed: () async {
+                        Navigator.of(sheetContext).pop();
+                        final customMinutes = await _promptCustomMinutes(context);
+                        if (customMinutes != null) {
+                          audioHandler.startSleepTimer(Duration(minutes: customMinutes));
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<int?> _promptCustomMinutes(BuildContext context) {
+    final controller = TextEditingController();
+    const minMinutes = 1;
+    const maxMinutes = 720; // 12 h — generous upper bound against fat-finger input
+    return showDialog<int>(
+      context: context,
+      builder: (dialogContext) {
+        String? errorText;
+        return StatefulBuilder(
+          builder: (dialogContext, setState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1A1A1A),
+              title: const Text('Minutos', style: TextStyle(color: Colors.white)),
+              content: TextField(
+                controller: controller,
+                keyboardType: TextInputType.number,
+                autofocus: true,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: 'Entre $minMinutes y $maxMinutes',
+                  hintStyle: const TextStyle(color: Colors.white38),
+                  errorText: errorText,
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancelar'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    final value = int.tryParse(controller.text.trim());
+                    if (value == null || value < minMinutes || value > maxMinutes) {
+                      setState(() {
+                        errorText = 'Ingresá un número entre $minMinutes y $maxMinutes';
+                      });
+                      return;
+                    }
+                    Navigator.of(dialogContext).pop(value);
+                  },
+                  child: const Text('Aceptar'),
+                ),
+              ],
+            );
+          },
+        );
       },
     );
   }
@@ -1043,140 +1298,39 @@ class SmartAlbumArt extends StatefulWidget {
 }
 
 class _SmartAlbumArtState extends State<SmartAlbumArt> {
-  double? _imageAspectRatio;
-  bool _hasError = false;
-  ImageStream? _imageStream;
-  ImageStreamListener? _imageListener;
+  // Consistent policy with song_tile/home_screen/mini_player: always a centered
+  // square crop via BoxFit.cover. No per-image aspect-ratio branching — that
+  // used to assume every ~4:3 thumbnail was a 16:9 video letterboxed into a 4:3
+  // canvas, which over-cropped thumbnails that didn't match that shape (e.g.
+  // square album art YouTube pillarboxes into its own canvas). The real fix is
+  // upstream: youtube_service now sources the native 16:9 mqdefault.jpg instead
+  // of the 4:3 hqdefault.jpg, so there's no letterboxed source left to correct for.
+  late bool _hasError = _isMissing(widget.artPath);
 
-  @override
-  void initState() {
-    super.initState();
-    _resolveImageSize();
-  }
+  static bool _isMissing(String path) => path.isEmpty || !File(path).existsSync();
 
   @override
   void didUpdateWidget(covariant SmartAlbumArt oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.artPath != widget.artPath) {
-      _resolveImageSize();
-    }
-  }
-
-  void _resolveImageSize() {
-    if (widget.artPath.isEmpty) {
       setState(() {
-        _imageAspectRatio = null;
-        _hasError = true;
+        _hasError = _isMissing(widget.artPath);
       });
-      return;
     }
-
-    final file = File(widget.artPath);
-    if (!file.existsSync()) {
-      setState(() {
-        _imageAspectRatio = null;
-        _hasError = true;
-      });
-      return;
-    }
-
-    // El listener anterior se retira antes de resolver otra imagen. Sin esto,
-    // `_resolveImageSize()` —que se llama desde `initState` Y desde
-    // `didUpdateWidget`, o sea en cada cambio de carátula— añadía un
-    // `ImageStreamListener` más y no quitaba ninguno nunca. El `ImageStream`
-    // retiene la closure, y la closure retiene este `State`, así que el objeto no
-    // se podía liberar: la memoria crecía a cada canción. No llegaba a petar
-    // porque los callbacks comprueban `mounted`, pero la fuga era real.
-    _detachImageListener();
-
-    final image = FileImage(file);
-    final stream = image.resolve(ImageConfiguration.empty);
-    _imageStream = stream;
-    _imageListener = ImageStreamListener(
-        (ImageInfo info, bool synchronousCall) {
-          if (mounted) {
-            setState(() {
-              _imageAspectRatio = info.image.width / info.image.height;
-              _hasError = false;
-            });
-          }
-        },
-        onError: (exception, stackTrace) {
-          if (mounted) {
-            setState(() {
-              _imageAspectRatio = null;
-              _hasError = true;
-            });
-          }
-        },
-    );
-    stream.addListener(_imageListener!);
-  }
-
-  void _detachImageListener() {
-    final stream = _imageStream;
-    final listener = _imageListener;
-    if (stream != null && listener != null) {
-      stream.removeListener(listener);
-    }
-    _imageStream = null;
-    _imageListener = null;
-  }
-
-  @override
-  void dispose() {
-    // Este State no tenía `dispose()` en absoluto.
-    _detachImageListener();
-    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_hasError || widget.artPath.isEmpty) {
+    if (_hasError) {
       return _buildPlaceholder();
     }
 
-    final file = File(widget.artPath);
-
-    if (_imageAspectRatio == null) {
-      return Image.file(
-        file,
-        fit: BoxFit.cover,
-        width: widget.size,
-        height: widget.size,
-      );
-    }
-
-    // 1. If the image is letterboxed 4:3 (~1.33)
-    // We crop 12.5% from top/bottom and 21.875% from sides to isolate the 1:1 square.
-    if ((_imageAspectRatio! - 1.333).abs() < 0.05) {
-      return SizedBox(
-        width: widget.size,
-        height: widget.size,
-        child: ClipRect(
-          child: OverflowBox(
-            alignment: Alignment.center,
-            minWidth: widget.size * 1.7778,
-            maxWidth: widget.size * 1.7778,
-            minHeight: widget.size * 1.3333,
-            maxHeight: widget.size * 1.3333,
-            child: Image.file(
-              file,
-              fit: BoxFit.fill,
-              width: widget.size * 1.7778,
-              height: widget.size * 1.3333,
-            ),
-          ),
-        ),
-      );
-    }
-
-    // 2. Otherwise (including native 16:9), BoxFit.cover on a square automatically clips side bars perfectly
     return Image.file(
-      file,
+      File(widget.artPath),
       fit: BoxFit.cover,
       width: widget.size,
       height: widget.size,
+      errorBuilder: (_, __, ___) => _buildPlaceholder(),
     );
   }
 

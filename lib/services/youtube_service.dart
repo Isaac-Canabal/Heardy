@@ -1443,13 +1443,12 @@ class YoutubeService {
   }
 
   String _resolveThumbnailUrl(Video video, VideoId videoId) {
-    if (video.thumbnails.highResUrl.isNotEmpty) {
-      return video.thumbnails.highResUrl;
-    }
-    if (video.thumbnails.mediumResUrl.isNotEmpty) {
-      return video.thumbnails.mediumResUrl;
-    }
-    return 'https://img.youtube.com/vi/${videoId.value}/hqdefault.jpg';
+    // mqdefault.jpg (mediumResUrl) is native 16:9 and always available.
+    // highResUrl (hqdefault.jpg) is a 4:3 canvas — for videos whose uploaded
+    // thumbnail is itself square album art, YouTube pillarboxes it into that
+    // 4:3 canvas, which a downstream square crop can't fully remove (BoxFit.cover
+    // only trims sides, never the padding baked into the pixels). 16:9 avoids that.
+    return video.thumbnails.mediumResUrl;
   }
 
   Future<String> downloadThumbnail(String videoId, String url) async {
