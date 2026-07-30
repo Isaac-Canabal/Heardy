@@ -9,6 +9,7 @@ import 'package:uuid/uuid.dart';
 import '../models/playlist.dart';
 import '../models/song.dart';
 import 'database_helper.dart';
+import 'metadata_service.dart';
 
 /// Scans the SAF-backed library folder into SQLite. See CLAUDE.md D2/D3 for
 /// the reconciliation rules this implements — do not re-derive them here.
@@ -51,6 +52,7 @@ class LibraryScanService {
   final SafUtil _safUtil = SafUtil();
   final SafStream _safStream = SafStream();
   final DatabaseHelper _db = DatabaseHelper.instance;
+  final MetadataService _metadataService = MetadataService();
 
   Future<LibraryScanResult> scan(String libraryRootUri) async {
     await _db.markAllImportedSongsMissing();
@@ -69,7 +71,7 @@ class LibraryScanService {
         final children = await _safUtil.list(entry.uri);
         for (final file in children) {
           if (file.isDir) continue; // nested subfolders aren't supported
-          final outcome = await _reconcileFile(file, playlistId: playlistId);
+          final outcome = await _reconcileFile(file, playlistId: playlistId, album: entry.name);
           switch (outcome) {
             case _FileOutcome.inserted:
               inserted++;
@@ -86,7 +88,7 @@ class LibraryScanService {
       } else {
         // Loose file directly in the library root: imported with no
         // playlist, so it lands in the inbox (D6).
-        final outcome = await _reconcileFile(entry, playlistId: null);
+        final outcome = await _reconcileFile(entry, playlistId: null, album: null);
         switch (outcome) {
           case _FileOutcome.inserted:
             inserted++;
@@ -125,6 +127,7 @@ class LibraryScanService {
   Future<_FileOutcome> _reconcileFile(
     SafDocumentFile file, {
     required String? playlistId,
+    required String? album,
   }) async {
     final ext = _extensionOf(file.name);
     if (!_audioExtensions.contains(ext)) return _FileOutcome.unsupported;
@@ -144,7 +147,17 @@ class LibraryScanService {
         return _FileOutcome.unchanged;
       }
 
+      // Content changed under the same uri (typically a tag edit) — re-read
+      // both the audio hash and the tags, since this is the one moment a
+      // refresh is actually warranted (D5: cache once, but a real edit is
+      // not "once" yet).
       final hash = await _hashAudioPayload(file, ext);
+      final meta = await _metadataService.extract(
+        uri: file.uri,
+        fileName: file.name,
+        songId: existingByUri.id,
+        folderAlbum: album,
+      );
       await _db.touchSongFound(
         existingByUri.id,
         uri: file.uri,
@@ -152,13 +165,20 @@ class LibraryScanService {
         modifiedAt: file.lastModified,
         fileHash: hash.hash,
         hashKind: hash.kind,
+        title: meta.title,
+        artist: meta.artist,
+        album: meta.album,
+        duration: meta.durationSeconds,
+        artPath: meta.artPath.isNotEmpty ? meta.artPath : null,
       );
       return _FileOutcome.updated;
     }
 
     // Matcher 2: unknown URI, but the audio payload matches an existing
     // row (D2) — a move or rename. Playlist membership is left untouched;
-    // per D3 the folder only assigns a playlist on first insert.
+    // per D3 the folder only assigns a playlist on first insert. Tags
+    // aren't re-read: the audio payload — and therefore, ordinarily, its
+    // tags — is unchanged from what's already cached.
     final hash = await _hashAudioPayload(file, ext);
     final existingByHash = await _db.getSongByHash(hash.hash);
     if (existingByHash != null) {
@@ -173,16 +193,21 @@ class LibraryScanService {
       return _FileOutcome.moved;
     }
 
-    // Genuinely new song. Title/artist here are a placeholder — real tag
-    // reading is Stage 2 (D5); this stage only needs a stable id and a
-    // non-empty title.
+    // Genuinely new song: read tags once now, cache the result in songs,
+    // and never touch the file for metadata again (D5).
+    final meta = await _metadataService.extract(
+      uri: file.uri,
+      fileName: file.name,
+      songId: hash.hash,
+      folderAlbum: album,
+    );
     final song = Song(
       id: hash.hash,
-      title: _titleFromFilename(file.name),
-      artist: 'Desconocido',
-      duration: 0,
+      title: meta.title,
+      artist: meta.artist,
+      duration: meta.durationSeconds,
       filePath: '',
-      artPath: '',
+      artPath: meta.artPath,
       format: ext,
       downloadDate: DateTime.now(),
       uri: file.uri,
@@ -190,6 +215,7 @@ class LibraryScanService {
       hashKind: hash.kind,
       fileSize: file.length,
       modifiedAt: file.lastModified,
+      album: meta.album,
     );
     await _db.insertSong(song);
 
@@ -204,11 +230,6 @@ class LibraryScanService {
   String _extensionOf(String name) {
     final dot = name.lastIndexOf('.');
     return dot == -1 ? '' : name.substring(dot + 1).toLowerCase();
-  }
-
-  String _titleFromFilename(String name) {
-    final dot = name.lastIndexOf('.');
-    return dot == -1 ? name : name.substring(0, dot);
   }
 
   /// Hashes the audio payload of [file], skipping tag blocks so ID3/APE

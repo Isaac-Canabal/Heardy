@@ -183,19 +183,19 @@ class MiniPlayer extends StatelessWidget {
           width: 44,
           height: 44,
           fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _buildPlaceholder(),
+          errorBuilder: (_, __, ___) => _buildPlaceholder(item.title),
         );
       }
     }
-    return _buildPlaceholder();
+    return _buildPlaceholder(item.title);
   }
 
-  Widget _buildPlaceholder() {
+  Widget _buildPlaceholder(String title) {
     return Container(
       width: 44,
       height: 44,
       decoration: BoxDecoration(
-        gradient: AppTheme.primaryGradient,
+        gradient: AppTheme.gradientForTitle(title),
         borderRadius: BorderRadius.circular(8),
       ),
       child: const Icon(Icons.music_note_rounded, color: Colors.white70),

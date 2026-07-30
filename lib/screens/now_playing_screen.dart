@@ -7,6 +7,7 @@ import 'package:palette_generator/palette_generator.dart';
 import '../services/audio_player_handler.dart';
 import '../services/lyrics_service.dart';
 import '../services/audio_analysis_service.dart';
+import '../theme/app_theme.dart';
 
 class NowPlayingScreen extends StatefulWidget {
   const NowPlayingScreen({super.key});
@@ -598,7 +599,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
 
   Widget _buildAlbumArt(MediaItem item) {
     final artPath = item.extras?['artPath'] as String? ?? '';
-    return SmartAlbumArt(artPath: artPath, size: 300);
+    return SmartAlbumArt(artPath: artPath, title: item.title, size: 300);
   }
 
   void _showLyricsBottomSheet(BuildContext context, AudioPlayerHandler audioHandler, MediaItem mediaItem) {
@@ -1038,7 +1039,7 @@ class _QueueBottomSheetState extends State<QueueBottomSheet> {
 
   Widget _buildThumbnail(MediaItem item) {
     final artPath = item.extras?['artPath'] as String? ?? '';
-    return SmartAlbumArt(artPath: artPath, size: 48);
+    return SmartAlbumArt(artPath: artPath, title: item.title, size: 48);
   }
 }
 
@@ -1289,11 +1290,13 @@ class SeekBar extends WaveformSeekBar {
 // --- SMART ALBUM ART (DYNAMIC ASPECT CROP) ---
 class SmartAlbumArt extends StatefulWidget {
   final String artPath;
+  final String title;
   final double size;
 
   const SmartAlbumArt({
     super.key,
     required this.artPath,
+    required this.title,
     required this.size,
   });
 
@@ -1342,7 +1345,7 @@ class _SmartAlbumArtState extends State<SmartAlbumArt> {
     return Container(
       width: widget.size,
       height: widget.size,
-      color: const Color(0xFF1A237E),
+      decoration: BoxDecoration(gradient: AppTheme.gradientForTitle(widget.title)),
       child: Icon(
         Icons.music_note,
         color: Colors.white70,

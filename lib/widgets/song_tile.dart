@@ -150,7 +150,7 @@ class SongTile extends StatelessWidget {
       width: 50,
       height: 50,
       decoration: BoxDecoration(
-        gradient: AppTheme.primaryGradient,
+        gradient: AppTheme.gradientForTitle(song.title),
         borderRadius: BorderRadius.circular(10),
       ),
       child: const Icon(Icons.music_note_rounded, color: Colors.white70),

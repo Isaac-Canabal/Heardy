@@ -249,6 +249,11 @@ class DatabaseHelper {
     required int modifiedAt,
     String? fileHash,
     String? hashKind,
+    String? title,
+    String? artist,
+    String? album,
+    int? duration,
+    String? artPath,
   }) async {
     final db = await database;
     final values = <String, dynamic>{
@@ -259,6 +264,11 @@ class DatabaseHelper {
     };
     if (fileHash != null) values['fileHash'] = fileHash;
     if (hashKind != null) values['hashKind'] = hashKind;
+    if (title != null) values['title'] = title;
+    if (artist != null) values['artist'] = artist;
+    if (album != null) values['album'] = album;
+    if (duration != null) values['duration'] = duration;
+    if (artPath != null) values['artPath'] = artPath;
     await db.update('songs', values, where: 'id = ?', whereArgs: [songId]);
   }
 

@@ -31,6 +31,7 @@ dependencies:
   saf_util: ^3.1.0
   saf_stream: ^4.0.1
   crypto: ^3.0.7
+  audio_metadata_reader: ^1.7.1
 
 dev_dependencies:
   flutter_test:

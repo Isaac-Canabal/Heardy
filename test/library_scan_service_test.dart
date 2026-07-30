@@ -1,11 +1,16 @@
 // Exercises LibraryScanService's reconciliation against a fake in-memory SAF
 // backend, no Android device needed. Uses sqflite_common_ffi so
-// DatabaseHelper's real SQLite schema/queries run as-is on desktop — see
-// CLAUDE.md D2/D3 for the rules this verifies.
+// DatabaseHelper's real SQLite schema/queries run as-is on desktop, and a
+// fake PathProviderPlatform (same pattern as download_smoke_test.dart) so
+// MetadataService's temp-copy-and-read step works without a device. See
+// CLAUDE.md D2/D3/D5 for the rules this verifies.
+import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:audio_metadata_reader/audio_metadata_reader.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart';
+import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:saf_stream/saf_stream_platform_interface.dart';
 import 'package:saf_util/saf_util_platform_interface.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
@@ -31,7 +36,12 @@ class _FakeFile {
 class _FakeSafBackend {
   final Map<String, _FakeDir> dirs = {};
   final Map<String, _FakeFile> files = {};
-  int _counter = 0;
+  // Static, not per-instance: several tests in this file each create their
+  // own backend but share the one real sqflite_common_ffi database, so uris
+  // must stay unique across backends too, or a fresh test's file can collide
+  // with a leftover row from an earlier test and get reconciled as an update
+  // to someone else's song instead of an insert.
+  static int _counter = 0;
 
   String _newUri() => 'fake://node${_counter++}';
 
@@ -84,6 +94,28 @@ class _FakeSafStream extends SafStreamPlatform {
     final end = count == null ? file.bytes.length : (s + count).clamp(0, file.bytes.length);
     return Uint8List.sublistView(file.bytes, s.clamp(0, file.bytes.length), end);
   }
+
+  @override
+  Future<void> copyToLocalFile(String srcUri, String destPath) async {
+    final file = backend.files[srcUri];
+    if (file == null) throw StateError('no such fake file: $srcUri');
+    await File(destPath).writeAsBytes(file.bytes);
+  }
+}
+
+/// Same pattern as test/download_smoke_test.dart: MetadataService's only
+/// plugin dependency is path_provider (for its temp copy and the extracted
+/// thumbnails/ folder), so redirecting both to one sandbox dir is enough to
+/// run it under `flutter test` with no device.
+class _TempPathProvider extends PathProviderPlatform {
+  _TempPathProvider(this.root);
+  final String root;
+
+  @override
+  Future<String?> getApplicationDocumentsPath() async => root;
+
+  @override
+  Future<String?> getTemporaryPath() async => root;
 }
 
 Uint8List _id3v2Header(int tagBodySize) {
@@ -93,7 +125,9 @@ Uint8List _id3v2Header(int tagBodySize) {
     0x03, 0x00, // version 2.3.0
     0x00, // flags: no footer
     (size >> 21) & 0x7F, (size >> 14) & 0x7F, (size >> 7) & 0x7F, size & 0x7F, // syncsafe size
-    ...List.filled(tagBodySize, 0xAA), // dummy tag body (e.g. embedded cover art)
+    ...List.filled(tagBodySize, 0x00), // padding — the spec's "no more frames" sentinel,
+    // safe for both our own header-size skip and a real ID3v2 reader (MetadataService
+    // now reads every new file's tags too, as of Stage 2).
   ]);
 }
 
@@ -110,11 +144,17 @@ Uint8List _buildMp3(Uint8List audioPayload, {required int tagBodySize}) {
 }
 
 void main() {
+  late Directory fixtureDir;
+
   setUpAll(() async {
     sqfliteFfiInit();
     databaseFactory = databaseFactoryFfi;
     final dbPath = join(await databaseFactory.getDatabasesPath(), 'heardy.db');
     await databaseFactory.deleteDatabase(dbPath);
+
+    final sandbox = Directory.systemTemp.createTempSync('heardy_scan_test_');
+    PathProviderPlatform.instance = _TempPathProvider(sandbox.path);
+    fixtureDir = Directory.systemTemp.createTempSync('heardy_fixtures_');
   });
 
   test('rename and tag-edit both preserve song identity and playlist membership; missing files are tombstoned, not deleted', () async {
@@ -206,5 +246,100 @@ void main() {
     expect(result.unchanged, greaterThanOrEqualTo(1));
     reloaded = await db.getSongById(originalId);
     expect(reloaded!.missing, false);
+  });
+
+  group('metadata extraction (Stage 2, D5)', () {
+    test('full tags: uses tag title/artist/album and extracts the embedded cover', () async {
+      final backend = _FakeSafBackend();
+      final root = backend.addDir(null, 'Heardy');
+      final playlistDir = backend.addDir(root, 'Favoritas');
+      SafUtilPlatform.instance = _FakeSafUtil(backend);
+      SafStreamPlatform.instance = _FakeSafStream(backend);
+
+      final audioPayload = Uint8List.fromList(List.generate(3000, (i) => (i * 13 + 7) % 256));
+      final src = File('${fixtureDir.path}/full_tags_src.mp3');
+      src.writeAsBytesSync(_buildMp3(audioPayload, tagBodySize: 0));
+      final coverBytes = Uint8List.fromList(List.generate(300, (i) => i % 256));
+      updateMetadata(src, (m) {
+        m.setTitle('Total Eclipse of the Heart');
+        m.setArtist('Bonnie Tyler');
+        m.setAlbum('Faster Than the Speed of Night');
+        m.setPictures([Picture(coverBytes, 'image/jpeg', PictureType.coverFront)]);
+      });
+
+      backend.addFile(playlistDir, '01 - cancion cruda.mp3', src.readAsBytesSync(), 1000);
+
+      await LibraryScanService().scan(root.uri);
+
+      final playlist = (await DatabaseHelper.instance.getPlaylists()).firstWhere((p) => p.name == 'Favoritas');
+      final songs = await DatabaseHelper.instance.getSongsForPlaylist(playlist.id);
+      expect(songs.length, 1);
+      final song = songs.first;
+
+      expect(song.title, 'Total Eclipse of the Heart');
+      expect(song.artist, 'Bonnie Tyler');
+      expect(song.album, 'Faster Than the Speed of Night');
+      expect(song.artPath, isNotEmpty);
+      expect(File(song.artPath).existsSync(), true, reason: 'the embedded cover must be extracted to a real file');
+      expect(File(song.artPath).readAsBytesSync(), coverBytes);
+    });
+
+    test('no tags: falls back to parsing "Artist - Título" from the filename, junk stripped', () async {
+      final backend = _FakeSafBackend();
+      final root = backend.addDir(null, 'Heardy');
+      final playlistDir = backend.addDir(root, 'SinTags');
+      SafUtilPlatform.instance = _FakeSafUtil(backend);
+      SafStreamPlatform.instance = _FakeSafStream(backend);
+
+      final audioPayload = Uint8List.fromList(List.generate(3000, (i) => (i * 19 + 3) % 256));
+      final bytes = _buildMp3(audioPayload, tagBodySize: 0); // empty ID3v2 shell, no frames at all
+
+      backend.addFile(
+        playlistDir,
+        '03 - Bonnie Tyler - Total Eclipse of the Heart [Official Video]_320kbps.mp3',
+        bytes,
+        1000,
+      );
+
+      await LibraryScanService().scan(root.uri);
+
+      final playlist = (await DatabaseHelper.instance.getPlaylists()).firstWhere((p) => p.name == 'SinTags');
+      final songs = await DatabaseHelper.instance.getSongsForPlaylist(playlist.id);
+      final song = songs.first;
+
+      expect(song.title, 'Total Eclipse of the Heart', reason: 'leading track number and bracket/bitrate junk must be stripped');
+      expect(song.artist, 'Bonnie Tyler', reason: 'the "Artist - Title" filename pattern must be recognized');
+      expect(song.album, 'SinTags', reason: 'with no album tag, the containing folder name is used');
+      expect(song.artPath, isEmpty);
+    });
+
+    test('partial tags: tag title wins, missing artist tag falls back to "Desconocido"', () async {
+      final backend = _FakeSafBackend();
+      final root = backend.addDir(null, 'Heardy');
+      final playlistDir = backend.addDir(root, 'Parciales');
+      SafUtilPlatform.instance = _FakeSafUtil(backend);
+      SafStreamPlatform.instance = _FakeSafStream(backend);
+
+      final audioPayload = Uint8List.fromList(List.generate(3000, (i) => (i * 29 + 5) % 256));
+      final src = File('${fixtureDir.path}/partial_tags_src.mp3');
+      src.writeAsBytesSync(_buildMp3(audioPayload, tagBodySize: 0));
+      updateMetadata(src, (m) {
+        m.setTitle('Solo Título En Los Tags');
+        // No artist tag set on purpose, and the filename below has no
+        // "Artist - Title" pattern either, so it must fall to "Desconocido".
+      });
+
+      backend.addFile(playlistDir, 'pista suelta.mp3', src.readAsBytesSync(), 1000);
+
+      await LibraryScanService().scan(root.uri);
+
+      final playlist = (await DatabaseHelper.instance.getPlaylists()).firstWhere((p) => p.name == 'Parciales');
+      final songs = await DatabaseHelper.instance.getSongsForPlaylist(playlist.id);
+      final song = songs.first;
+
+      expect(song.title, 'Solo Título En Los Tags', reason: 'the present tag field must be used as-is');
+      expect(song.artist, 'Desconocido', reason: 'a missing tag field falls back independently, not all-or-nothing');
+      expect(song.album, 'Parciales');
+    });
   });
 }
