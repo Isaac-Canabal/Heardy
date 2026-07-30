@@ -337,7 +337,7 @@ class DownloadProvider with ChangeNotifier {
             duration: Duration(seconds: existingSong.duration),
             artUri: existingSong.artPath.isNotEmpty ? Uri.file(existingSong.artPath) : null,
             extras: {
-              'filePath': existingSong.filePath,
+              'filePath': existingSong.playablePath,
               'artPath': existingSong.artPath,
             },
           );
@@ -467,7 +467,7 @@ class DownloadProvider with ChangeNotifier {
               duration: Duration(seconds: song.duration),
               artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
               extras: {
-                'filePath': song.filePath,
+                'filePath': song.playablePath,
                 'artPath': song.artPath,
               },
             ));
@@ -570,7 +570,7 @@ class DownloadProvider with ChangeNotifier {
             duration: Duration(seconds: existingSong.duration),
             artUri: existingSong.artPath.isNotEmpty ? Uri.file(existingSong.artPath) : null,
             extras: {
-              'filePath': existingSong.filePath,
+              'filePath': existingSong.playablePath,
               'artPath': existingSong.artPath,
             },
           );
@@ -689,7 +689,7 @@ class DownloadProvider with ChangeNotifier {
               duration: Duration(seconds: song.duration),
               artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
               extras: {
-                'filePath': song.filePath,
+                'filePath': song.playablePath,
                 'artPath': song.artPath,
               },
             ));
@@ -1209,7 +1209,7 @@ class DownloadProvider with ChangeNotifier {
             duration: Duration(seconds: song.duration),
             artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
             extras: {
-              'filePath': song.filePath,
+              'filePath': song.playablePath,
               'artPath': song.artPath,
             },
           );
@@ -1380,7 +1380,7 @@ class DownloadProvider with ChangeNotifier {
             duration: Duration(seconds: song.duration),
             artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
             extras: {
-              'filePath': song.filePath,
+              'filePath': song.playablePath,
               'artPath': song.artPath,
             },
           );

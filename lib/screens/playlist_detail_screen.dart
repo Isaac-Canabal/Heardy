@@ -421,7 +421,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         duration: Duration(seconds: song.duration),
         artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
         extras: {
-          'filePath': song.filePath,
+          'filePath': song.playablePath,
           'artPath': song.artPath,
         },
       );

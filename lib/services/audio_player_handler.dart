@@ -5,12 +5,14 @@ import 'package:just_audio/just_audio.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter/services.dart';
 import 'package:audio_session/audio_session.dart';
+import 'package:saf_util/saf_util.dart';
 import 'database_helper.dart';
 import 'playback_state_service.dart';
 
 final FlutterLocalNotificationsPlugin _errorNotification = FlutterLocalNotificationsPlugin();
 class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   final AudioPlayer _player = AudioPlayer();
+  final SafUtil _safUtil = SafUtil();
 
   // Store the last emitted PlaybackEvent so we can rebuild state on shuffle/loop changes
   PlaybackEvent _lastEvent = PlaybackEvent();
@@ -377,15 +379,53 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     // loopModeStream listener will update playbackState
   }
 
+  bool _isSafUri(String pathOrUri) => pathOrUri.contains('://');
+
+  /// True if [pathOrUri] can actually be handed to just_audio right now.
+  /// Legacy downloads are plain filesystem paths (`File.existsSync`, cheap
+  /// and synchronous). SAF-imported songs are `content://` uris — those
+  /// can't be checked with `File`, so this asks the SAF provider directly
+  /// via a metadata-only query (`SafUtil.exists`, no bytes read). If the
+  /// user has revoked the folder permission (or unmounted the volume, or
+  /// the provider is otherwise gone), that query throws rather than
+  /// returning false — caught here and treated the same as "not playable",
+  /// so a revoked permission skips the song instead of crashing playback.
+  Future<bool> _isPlayable(String pathOrUri) async {
+    if (pathOrUri.isEmpty) return false;
+    if (_isSafUri(pathOrUri)) {
+      try {
+        return await _safUtil.exists(pathOrUri, false);
+      } catch (e) {
+        print('Uri SAF no verificable (¿permiso revocado?) $pathOrUri: $e');
+        return false;
+      }
+    }
+    return File(pathOrUri).existsSync();
+  }
+
+  Uri _sourceUriFor(String pathOrUri) =>
+      _isSafUri(pathOrUri) ? Uri.parse(pathOrUri) : Uri.file(pathOrUri);
+
+  /// Runs [_isPlayable] over every item in parallel — these are local
+  /// existence checks (filesystem or SAF), not network calls, so there's no
+  /// concurrency concern like the download engine's circuit breaker.
+  Future<List<MediaItem>> _filterPlayable(List<MediaItem> items) async {
+    final flags = await Future.wait(items.map(
+      (item) => _isPlayable(item.extras?['filePath'] as String? ?? ''),
+    ));
+    return [
+      for (var i = 0; i < items.length; i++)
+        if (flags[i]) items[i],
+    ];
+  }
+
   ConcatenatingAudioSource? _playlistSource;
 
   /// Sets the queue, initial index, and starts playing.
   Future<void> playPlaylist(List<MediaItem> items, String targetMediaId) async {
-    // Filter out items without valid local files to prevent loading failures
-    final validItems = items.where((item) {
-      final path = item.extras?['filePath'] as String? ?? '';
-      return path.isNotEmpty && File(path).existsSync();
-    }).toList();
+    // Filter out items whose file/uri isn't actually reachable right now,
+    // to prevent loading failures (works for both legacy paths and SAF uris).
+    final validItems = await _filterPlayable(items);
 
     if (validItems.isEmpty) return;
 
@@ -421,11 +461,11 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
 
     final sources = validItems.map((item) {
       final path = item.extras?['filePath'] as String? ?? '';
-      return AudioSource.uri(Uri.file(path), tag: item);
+      return AudioSource.uri(_sourceUriFor(path), tag: item);
     }).toList();
 
     _playlistSource = ConcatenatingAudioSource(children: sources);
-    
+
     // Pass initial index to avoid the need to seek immediately after setAudioSource
     await _player.setAudioSource(
       _playlistSource!,
@@ -445,10 +485,7 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     String targetMediaId,
     Duration position,
   ) async {
-    final validItems = items.where((item) {
-      final path = item.extras?['filePath'] as String? ?? '';
-      return path.isNotEmpty && File(path).existsSync();
-    }).toList();
+    final validItems = await _filterPlayable(items);
 
     if (validItems.isEmpty) return;
 
@@ -459,7 +496,7 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
 
     final sources = validItems.map((item) {
       final path = item.extras?['filePath'] as String? ?? '';
-      return AudioSource.uri(Uri.file(path), tag: item);
+      return AudioSource.uri(_sourceUriFor(path), tag: item);
     }).toList();
 
     _playlistSource = ConcatenatingAudioSource(children: sources);
@@ -483,10 +520,9 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
         print('Error: path vacío para mediaItem ${mediaItem.id}');
         return;
       }
-      
-      final file = File(path);
-      if (!file.existsSync()) {
-        print('Error: archivo no existe para mediaItem ${mediaItem.id}: $path');
+
+      if (!await _isPlayable(path)) {
+        print('Error: archivo/uri no disponible para mediaItem ${mediaItem.id}: $path');
         return;
       }
 
@@ -497,7 +533,7 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
 
       if (_playlistSource != null) {
         try {
-          await _playlistSource!.add(AudioSource.uri(Uri.file(path), tag: mediaItem));
+          await _playlistSource!.add(AudioSource.uri(_sourceUriFor(path), tag: mediaItem));
         } on PlatformException catch (e) {
           print('Error PlatformException en addQueueItem: ${e.message}');
           print('Detalles: ${e.details}');
@@ -513,10 +549,7 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   @override
   Future<void> addQueueItems(List<MediaItem> mediaItems) async {
     try {
-      final validItems = mediaItems.where((item) {
-        final path = item.extras?['filePath'] as String? ?? '';
-        return path.isNotEmpty && File(path).existsSync();
-      }).toList();
+      final validItems = await _filterPlayable(mediaItems);
 
       if (validItems.isEmpty) return;
 
@@ -532,7 +565,7 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
         try {
           final sources = newItems.map((item) {
             final path = item.extras!['filePath'] as String;
-            return AudioSource.uri(Uri.file(path), tag: item);
+            return AudioSource.uri(_sourceUriFor(path), tag: item);
           }).toList();
           await _playlistSource!.addAll(sources);
         } on PlatformException catch (e) {
@@ -744,7 +777,7 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     }
 
     final filePath = _trackingMediaItem!.extras?['filePath'] as String?;
-    if (filePath == null || filePath.isEmpty || !File(filePath).existsSync()) {
+    if (filePath == null || filePath.isEmpty || !await _isPlayable(filePath)) {
       return;
     }
 

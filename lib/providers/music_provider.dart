@@ -111,7 +111,7 @@ class MusicProvider with ChangeNotifier {
         duration: Duration(seconds: song.duration),
         artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
         extras: {
-          'filePath': song.filePath,   // ← crítico para que just_audio cargue el audio
+          'filePath': song.playablePath,   // ← crítico para que just_audio cargue el audio (uri SAF o ruta legacy)
           'artPath': song.artPath,
           'playlist_id': playlistId,
         },
@@ -306,7 +306,7 @@ class MusicProvider with ChangeNotifier {
             duration: Duration(seconds: song.duration),
             artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
             extras: {
-              'filePath': song.filePath,
+              'filePath': song.playablePath,
               'artPath': song.artPath,
             },
           ),
@@ -396,7 +396,7 @@ class MusicProvider with ChangeNotifier {
               duration: Duration(seconds: song.duration),
               artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
               extras: {
-                'filePath': song.filePath,
+                'filePath': song.playablePath,
                 'artPath': song.artPath,
               },
             ),
