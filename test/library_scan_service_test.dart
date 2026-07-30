@@ -15,6 +15,7 @@ import 'package:saf_stream/saf_stream_platform_interface.dart';
 import 'package:saf_util/saf_util_platform_interface.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
+import 'package:heardy/models/playlist.dart';
 import 'package:heardy/services/database_helper.dart';
 import 'package:heardy/services/library_scan_service.dart';
 
@@ -340,6 +341,90 @@ void main() {
       expect(song.title, 'Solo Título En Los Tags', reason: 'the present tag field must be used as-is');
       expect(song.artist, 'Desconocido', reason: 'a missing tag field falls back independently, not all-or-nothing');
       expect(song.album, 'Parciales');
+    });
+  });
+
+  group('inbox (Stage 4, D6)', () {
+    test('a loose root file lands in the inbox; ignoring and batch-assigning both remove it', () async {
+      final backend = _FakeSafBackend();
+      final root = backend.addDir(null, 'Heardy');
+      SafUtilPlatform.instance = _FakeSafUtil(backend);
+      SafStreamPlatform.instance = _FakeSafStream(backend);
+
+      final payloadA = Uint8List.fromList(List.generate(2000, (i) => (i * 7 + 1) % 256));
+      final payloadB = Uint8List.fromList(List.generate(2000, (i) => (i * 11 + 2) % 256));
+      backend.addFile(root, 'suelta_a.mp3', _buildMp3(payloadA, tagBodySize: 0), 100);
+      backend.addFile(root, 'suelta_b.mp3', _buildMp3(payloadB, tagBodySize: 0), 100);
+
+      await LibraryScanService().scan(root.uri);
+
+      final db = DatabaseHelper.instance;
+      final before = await db.getInboxSongs();
+      final loose = before.where((s) => s.title == 'suelta_a' || s.title == 'suelta_b').toList();
+      expect(loose.length, 2, reason: 'files dropped directly in the root have no playlist and must show up in the inbox');
+
+      final songA = loose.firstWhere((s) => s.title == 'suelta_a');
+      final songB = loose.firstWhere((s) => s.title == 'suelta_b');
+
+      // Ignore A: hidden from the inbox from now on, but the row (and file) stay untouched.
+      await db.ignoreSongsFromInbox([songA.id]);
+      final afterIgnore = await db.getInboxSongs();
+      expect(afterIgnore.any((s) => s.id == songA.id), false);
+      expect(await db.getSongById(songA.id), isNotNull, reason: 'ignoring must not delete the song');
+
+      // A second scan must NOT bring the ignored song back — the scanner never
+      // touches ignoredFromInbox, only the user does.
+      await LibraryScanService().scan(root.uri);
+      final afterRescan = await db.getInboxSongs();
+      expect(afterRescan.any((s) => s.id == songA.id), false, reason: 'an ignored song must not reappear on rescan');
+
+      // Batch-assign B to a brand new playlist ("crear nueva" path).
+      await db.insertPlaylist(Playlist(id: 'pl-new', name: 'NuevaPlaylist', creationDate: DateTime.now()));
+      await db.assignSongsToPlaylists([songB.id], ['pl-new']);
+      final afterAssign = await db.getInboxSongs();
+      expect(afterAssign.any((s) => s.id == songB.id), false, reason: 'an assigned song must leave the inbox');
+      final playlistSongs = await db.getSongsForPlaylist('pl-new');
+      expect(playlistSongs.map((s) => s.id), contains(songB.id));
+    });
+
+    test('an in-app playlist assignment survives a later physical move to a different folder (D3)', () async {
+      final backend = _FakeSafBackend();
+      final root = backend.addDir(null, 'Heardy');
+      SafUtilPlatform.instance = _FakeSafUtil(backend);
+      SafStreamPlatform.instance = _FakeSafStream(backend);
+
+      final payload = Uint8List.fromList(List.generate(2000, (i) => (i * 13 + 9) % 256));
+      final looseFile = backend.addFile(root, 'huerfana.mp3', _buildMp3(payload, tagBodySize: 0), 100);
+
+      await LibraryScanService().scan(root.uri);
+
+      final db = DatabaseHelper.instance;
+      final song = (await db.getInboxSongs()).firstWhere((s) => s.title == 'huerfana');
+
+      await db.insertPlaylist(Playlist(id: 'pl-elegida', name: 'ElegidaPorElUsuario', creationDate: DateTime.now()));
+      await db.assignSongsToPlaylists([song.id], ['pl-elegida']);
+
+      // The user now moves the physical file into a DIFFERENT folder, which
+      // also happens to be a playlist folder — SAF assigns it a new document
+      // uri, same bytes.
+      final otraCarpeta = backend.addDir(root, 'OtraCarpeta');
+      backend.unlink(root, looseFile.uri);
+      backend.addFile(otraCarpeta, 'huerfana.mp3', looseFile.bytes, 100);
+
+      await LibraryScanService().scan(root.uri);
+
+      // The app never writes to disk (only the fake test harness moved the
+      // file above, simulating the user doing it via the file explorer) —
+      // and the in-app assignment must win: still only in the playlist the
+      // user picked, never auto-added to "OtraCarpeta" just because the file
+      // now physically sits there.
+      final elegida = await db.getSongsForPlaylist('pl-elegida');
+      expect(elegida.map((s) => s.id), contains(song.id), reason: "the user's own assignment must survive the move");
+
+      final otraCarpetaPlaylist = (await db.getPlaylists()).firstWhere((p) => p.name == 'OtraCarpeta');
+      final otraCarpetaSongs = await db.getSongsForPlaylist(otraCarpetaPlaylist.id);
+      expect(otraCarpetaSongs.map((s) => s.id), isNot(contains(song.id)),
+          reason: 'a move must never re-assign playlist membership — only a first import does that (D3)');
     });
   });
 }

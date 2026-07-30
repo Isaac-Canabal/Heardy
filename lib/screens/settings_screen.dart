@@ -10,7 +10,6 @@ import '../services/audio_player_handler.dart';
 import '../services/repair_service.dart';
 import '../services/log_service.dart';
 import '../services/storage_service.dart';
-import '../services/library_scan_service.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -68,66 +67,6 @@ class SettingsScreen extends StatelessWidget {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('No se pudo elegir la carpeta: $e'),
-          backgroundColor: Colors.red.withValues(alpha: 0.8),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-    }
-  }
-
-  Future<void> _scanLibrary(BuildContext context, MusicProvider musicProvider) async {
-    final storageService = StorageService();
-    final rootUri = await storageService.getLibraryRootUri();
-    if (!context.mounted) return;
-    if (rootUri == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Primero elegí una carpeta.'),
-          behavior: SnackBarBehavior.floating,
-        ),
-      );
-      return;
-    }
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => AlertDialog(
-        backgroundColor: AppTheme.surface,
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CircularProgressIndicator(color: AppTheme.primaryLight),
-            const SizedBox(height: 16),
-            const Text('Escaneando...', style: TextStyle(color: Colors.white)),
-          ],
-        ),
-      ),
-    );
-
-    try {
-      final result = await LibraryScanService().scan(rootUri);
-      await musicProvider.loadPlaylists();
-      if (!context.mounted) return;
-      Navigator.pop(context); // close progress dialog
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Nuevas: ${result.inserted} · Movidas/renombradas: ${result.moved} · '
-            'Actualizadas: ${result.updated} · Sin cambios: ${result.unchanged}'
-            '${result.missing > 0 ? ' · Faltantes: ${result.missing}' : ''}',
-          ),
-          behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 5),
-        ),
-      );
-    } catch (e) {
-      if (!context.mounted) return;
-      Navigator.pop(context);
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Error al escanear: $e'),
           backgroundColor: Colors.red.withValues(alpha: 0.8),
           behavior: SnackBarBehavior.floating,
         ),
@@ -351,7 +290,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Elegí una carpeta y Heardy creará "Heardy/" dentro, con una subcarpeta por playlist. Metés archivos .mp3/.mp4 ahí desde el explorador y después escaneás para incorporarlos.',
+                  'Elegí una carpeta y Heardy creará "Heardy/" dentro, con una subcarpeta por playlist. Metés archivos .mp3/.mp4 ahí desde el explorador — recargar y asignar lo suelto se hace desde la pestaña Bandeja.',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.45),
                     fontSize: 12,
@@ -359,40 +298,21 @@ class SettingsScreen extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 12),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton.icon(
-                        style: OutlinedButton.styleFrom(
-                          foregroundColor: Colors.white,
-                          side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                        icon: const Icon(Icons.folder_rounded, size: 18),
-                        label: const Text('Elegir carpeta', style: TextStyle(fontWeight: FontWeight.w600)),
-                        onPressed: () => _pickLibraryFolder(context),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
                       ),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: ElevatedButton.icon(
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppTheme.primary.withValues(alpha: 0.3),
-                          foregroundColor: Colors.white,
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          padding: const EdgeInsets.symmetric(vertical: 12),
-                        ),
-                        icon: const Icon(Icons.sync_rounded, size: 18),
-                        label: const Text('Escanear', style: TextStyle(fontWeight: FontWeight.w600)),
-                        onPressed: () => _scanLibrary(context, musicProvider),
-                      ),
-                    ),
-                  ],
+                    icon: const Icon(Icons.folder_rounded, size: 18),
+                    label: const Text('Elegir carpeta', style: TextStyle(fontWeight: FontWeight.w600)),
+                    onPressed: () => _pickLibraryFolder(context),
+                  ),
                 ),
               ],
             ),

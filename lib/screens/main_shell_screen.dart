@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../providers/music_provider.dart';
 import '../providers/settings_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/mini_player.dart';
 import 'home_screen.dart';
-import 'add_from_youtube_screen.dart';
+import 'inbox_screen.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
 
@@ -22,6 +23,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
   Widget build(BuildContext context) {
     // Suscribirse a SettingsProvider para redibujar instantáneamente cuando cambie el tema
     Provider.of<SettingsProvider>(context);
+    final inboxCount = context.watch<MusicProvider>().inboxCount;
 
     return Scaffold(
       body: Container(
@@ -32,7 +34,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
               index: _index,
               children: const [
                 HomeScreen(),
-                AddFromYouTubeScreen(embedInShell: true),
+                InboxScreen(),
                 SearchScreen(),
                 SettingsScreen(),
               ],
@@ -50,16 +52,24 @@ class _MainShellScreenState extends State<MainShellScreen> {
         selectedIndex: _index,
         onDestinationSelected: (i) => setState(() => _index = i),
         height: 68,
-        destinations: const [
+        destinations: [
           NavigationDestination(
             icon: Icon(Icons.library_music_outlined),
             selectedIcon: Icon(Icons.library_music_rounded),
             label: 'Mis playlists',
           ),
           NavigationDestination(
-            icon: Icon(Icons.download_outlined),
-            selectedIcon: Icon(Icons.download_rounded),
-            label: 'Descargas',
+            icon: Badge(
+              isLabelVisible: inboxCount > 0,
+              label: Text('$inboxCount'),
+              child: const Icon(Icons.inbox_outlined),
+            ),
+            selectedIcon: Badge(
+              isLabelVisible: inboxCount > 0,
+              label: Text('$inboxCount'),
+              child: const Icon(Icons.inbox_rounded),
+            ),
+            label: 'Bandeja',
           ),
           NavigationDestination(
             icon: Icon(Icons.search_outlined),

@@ -13,13 +13,27 @@ class MusicProvider with ChangeNotifier {
   List<Playlist> _playlists = [];
   List<Song> _currentPlaylistSongs = [];
   String? _currentPlaylistId;
+  int _inboxCount = 0;
 
   List<Playlist> get playlists => _playlists;
   List<Song> get currentPlaylistSongs => _currentPlaylistSongs;
   String? get currentPlaylistId => _currentPlaylistId;
+  int get inboxCount => _inboxCount;
 
   MusicProvider() {
     loadPlaylists();
+    refreshInboxCount();
+  }
+
+  /// Recomputes the inbox badge count. Call after a scan and after any
+  /// batch-assign/ignore action so the bottom-nav badge stays live.
+  Future<void> refreshInboxCount() async {
+    try {
+      _inboxCount = await _dbHelper.getInboxSongCount();
+      notifyListeners();
+    } catch (e) {
+      print("Error refreshing inbox count: $e");
+    }
   }
 
   bool _isRestoringPlayback = false;

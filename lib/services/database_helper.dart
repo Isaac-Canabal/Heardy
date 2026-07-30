@@ -22,7 +22,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 8,
+      version: 9,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -52,7 +52,8 @@ class DatabaseHelper {
         fileSize INTEGER,
         modifiedAt INTEGER,
         album TEXT,
-        missing INTEGER NOT NULL DEFAULT 0
+        missing INTEGER NOT NULL DEFAULT 0,
+        ignoredFromInbox INTEGER NOT NULL DEFAULT 0
       )
     ''');
 
@@ -175,6 +176,14 @@ class DatabaseHelper {
         'ALTER TABLE songs ADD COLUMN missing INTEGER NOT NULL DEFAULT 0',
       );
     }
+    if (oldVersion < 9) {
+      // Inbox (D6): lets the user dismiss a stray/unwanted imported file
+      // from the assignment screen without it reappearing on every scan.
+      // Never touched by the scanner itself — only by an explicit user action.
+      await db.execute(
+        'ALTER TABLE songs ADD COLUMN ignoredFromInbox INTEGER NOT NULL DEFAULT 0',
+      );
+    }
   }
 
   // --- SONGS CRUD ---
@@ -278,6 +287,74 @@ class DatabaseHelper {
       'SELECT COUNT(*) as c FROM songs WHERE uri IS NOT NULL AND missing = 1',
     );
     return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  // --- INBOX (D6): songs imported loose in the library root, with no
+  // playlist assigned yet. A missing or explicitly-ignored song never shows
+  // up here — there's nothing useful to do with a file that's gone, and an
+  // ignored one was already handled by the user.
+
+  static const _inboxWhere =
+      'ps.songId IS NULL AND s.missing = 0 AND s.ignoredFromInbox = 0';
+
+  Future<List<Song>> getInboxSongs() async {
+    final db = await database;
+    final maps = await db.rawQuery('''
+      SELECT s.* FROM songs s
+      LEFT JOIN playlist_songs ps ON s.id = ps.songId
+      WHERE $_inboxWhere
+      ORDER BY s.downloadDate DESC
+    ''');
+    return maps.map((map) => Song.fromMap(map)).toList();
+  }
+
+  Future<int> getInboxSongCount() async {
+    final db = await database;
+    final result = await db.rawQuery('''
+      SELECT COUNT(*) as c FROM songs s
+      LEFT JOIN playlist_songs ps ON s.id = ps.songId
+      WHERE $_inboxWhere
+    ''');
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  /// Hides songs from the inbox permanently — the scanner never sets or
+  /// clears this flag, so once ignored a song stays ignored across rescans.
+  Future<void> ignoreSongsFromInbox(List<String> songIds) async {
+    if (songIds.isEmpty) return;
+    final db = await database;
+    await db.update(
+      'songs',
+      {'ignoredFromInbox': 1},
+      where: 'id IN (${List.filled(songIds.length, '?').join(',')})',
+      whereArgs: songIds,
+    );
+  }
+
+  /// Assigns every song in [songIds] to every playlist in [playlistIds],
+  /// each appended after that playlist's current last track. Used by the
+  /// inbox's batch-assign sheet, where a selection can go to more than one
+  /// playlist at once.
+  Future<void> assignSongsToPlaylists(List<String> songIds, List<String> playlistIds) async {
+    if (songIds.isEmpty || playlistIds.isEmpty) return;
+    final db = await database;
+    await db.transaction((txn) async {
+      for (final playlistId in playlistIds) {
+        final maxOrderResult = await txn.rawQuery(
+          'SELECT MAX(orderIndex) as maxOrder FROM playlist_songs WHERE playlistId = ?',
+          [playlistId],
+        );
+        var nextOrder = (maxOrderResult.first['maxOrder'] as int?) ?? -1;
+        for (final songId in songIds) {
+          nextOrder += 1;
+          await txn.insert(
+            'playlist_songs',
+            {'playlistId': playlistId, 'songId': songId, 'orderIndex': nextOrder},
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+      }
+    });
   }
 
   Future<void> deleteSong(String songId) async {
