@@ -6,6 +6,102 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Heardy is a Flutter (Android-only) app that downloads music from YouTube/YouTube Music/Spotify and plays it back fully offline. No backend — everything (audio files, thumbnails, lyrics, metadata) lives on-device in SQLite + the filesystem. README.md (Spanish) has the full feature list and dependency rationale.
 
+> **As of 2026-07-30 this description is being retired.** Heardy is pivoting from *downloader* to *local-library player*: the user supplies their own `.mp3`/`.mp4` files and Heardy indexes, organizes and plays them. Read "Pivot to local library" immediately below before touching anything — the decisions there are settled and are not to be re-litigated mid-implementation.
+
+## Pivot to local library (decided 2026-07-30 — settled, do not re-open)
+
+Everything in this section was decided after investigation and measurement. Implement it as written. If a decision turns out to be wrong *in practice*, say so explicitly with the evidence and ask — do not silently pick a different design.
+
+### Where the previous work lives
+
+The entire YouTube/Spotify download layer (~5,500 lines) plus the anti-bot wall investigation is preserved at the annotated git tag **`youtube-downloader-final`** (commit `3e25daf`). This includes `docs/investigacion_muro_antibot.md`, the six `test/` files and five `tool/` probes. Nothing there is lost by deleting it from the working tree; recover any piece with `git checkout youtube-downloader-final -- <path>`. Everything below the "Download pipeline" heading in this file describes code that the pivot deletes and is kept only until Stage 5 lands.
+
+### D1 — Storage access: Storage Access Framework, one persisted tree URI
+
+`minSdkVersion` resolves to **24** (Flutter 3.44's `FlutterExtension.kt` default, `minSdkVersion flutter.minSdkVersion` in `android/app/build.gradle`) and `targetSdk` is **36**. Scoped storage is therefore mandatory and `requestLegacyExternalStorage` is not available (it stopped working at target 30).
+
+The user picks a folder once via `ACTION_OPEN_DOCUMENT_TREE`; the app calls `takePersistableUriPermission` and stores the tree URI in `SharedPreferences`. Heardy creates/uses a `Heardy/` folder inside it, with one subfolder per playlist.
+
+Rejected alternatives, with reasons — **do not revisit**:
+- `MANAGE_EXTERNAL_STORAGE`: Play Store's declaration form only accepts file managers, antivirus and a short list of other categories. Media players are explicitly *not* eligible. This would block publication.
+- MediaStore + `READ_MEDIA_AUDIO`: does not index `.mp4` as audio, so covering video containers would also require `READ_MEDIA_VIDEO` — and on Android 14+ that permission is subject to the partial-access selector ("allow access to selected videos"), so the user could grant 3 of 30 files without understanding why the rest never appear. Unacceptable for a library scanner.
+
+Consequences that all downstream code must respect:
+- **`dart:io File` no longer addresses user media.** Audio is addressed by `content://` URIs. `just_audio`/ExoPlayer plays `content://` natively — pass the URI straight to `AudioSource.uri`.
+- Directory enumeration is a `DocumentsContract` cursor query, not `Directory.list()`. Query children in **one batched call per folder** with a projection (`DOCUMENT_ID`, `DISPLAY_NAME`, `SIZE`, `LAST_MODIFIED`, `MIME_TYPE`); a per-child round trip is an IPC each and is far too slow for hundreds of files.
+- Intended packages: `saf_util` (tree picking, persisted permission, batched child listing) + `saf_stream` (read/write streams). Validate them at `flutter pub add` time; if they don't cover a case, write a small platform channel rather than falling back to a permission-heavy approach.
+
+### D2 — File identity: hash the audio payload, not the file
+
+A naive `(size + first 64 KB + last 64 KB)` hash breaks on ID3 tag edits, because ID3v2 lives at the *start* of the file and changes both offsets and total size. Editing tags on hand-managed files is a normal thing for this user to do, and a false "new file" verdict would drop the song into the inbox and lose its playlist membership — exactly what the tombstone rule exists to prevent.
+
+**Identity = hash of the audio payload only, at content offsets:**
+- MP3: skip the ID3v2 block (10-byte header, syncsafe size field, +10 more if the footer flag is set) and any trailing ID3v1 (last 128 bytes if they start with `TAG`) or APEv2 block.
+- MP4/M4A: hash the `mdat` atom payload (metadata lives in `moov/udta/meta/ilst`, which may sit before *or* after `mdat`).
+- Hash = MD5 of `(payload length + first 64 KB of payload + last 64 KB of payload)`.
+- Store a `hashKind` column (`mp3-audio` / `mp4-mdat` / `raw-file`) so a later parser fix can selectively invalidate. `raw-file` is the fallback when parsing fails — hash the whole file.
+
+**Plus URI continuity as a second matcher.** Reconciliation order during a scan, per file found on disk:
+1. URI already in DB and `(size, mtime)` unchanged → skip, no hashing. This is the common case and keeps rescans cheap.
+2. URI in DB but `(size, mtime)` changed → **same song row.** Re-hash, update, keep playlist membership. Tags were edited in place.
+3. URI unknown → hash → hash matches an existing row → **move or rename.** Update the URI, keep playlist membership.
+4. No match → genuinely new song → insert with no `playlist_songs` rows, i.e. it lands in the inbox.
+
+And per DB row *not* found on disk: set `missing = 1`. **Never auto-delete.** A row revived by hash in a later scan comes back with its playlists intact. Only an explicit user action deletes a song row.
+
+The two matchers cover different failures: URI continuity catches tag edits in place, payload hashing catches moves and renames. Only re-encoding *and* moving a file in the same interval looks like a new song, which is the correct verdict anyway.
+
+### D3 — Playlists live in SQLite; folders are an import mechanism only
+
+The subfolder name determines a song's playlist **only on first insert**. After that `playlist_songs` is the sole truth. This preserves multi-playlist membership without duplicating bytes, and keeps `orderIndex`/reordering and all of `PlaylistDetailScreen` working unchanged.
+
+**Sync is one-way: disk → DB.** Moving a song between playlists inside the app must never move or rewrite the file on disk — these are the user's own files and Heardy is not entitled to reorganize them. An explicit "export playlist to folder" action is acceptable later; implicit writes are not.
+
+### D4 — `.mp4`: play the audio track directly, never transcode
+
+ExoPlayer demuxes the container and plays the AAC track with no video output. Extracting to `.mp3` would need `ffmpeg_kit_flutter`, which was **retired in January 2025**, would add 30–60 MB to the APK, and would lose quality to a re-encode. The only case to handle is an `.mp4` with no audio track: mark it invalid during the scan and keep it out of the library.
+
+### D5 — Metadata: `audio_metadata_reader`, with a filename fallback
+
+Pure Dart, no native dependency, reads ID3v1/v2 plus MP4/M4A atoms plus embedded artwork. Because SAF hands out streams rather than paths, copy each file to the cache **once at import**, read the tags, persist them in `songs`, delete the temp copy, and never touch the file for metadata again.
+
+No tags → parse the filename (`Artista - Título`, stripping leading track numbers and junk like `[Official Video]` / `(Lyrics)` / `_320kbps`), album = folder name, artist = "Desconocido", artwork = a gradient generated from the title hash (reuse `palette_generator` / `AppTheme`). **Manual tag editing is in scope, not a nice-to-have** — with hand-imported files, missing or wrong tags are the common case rather than the edge.
+
+### D6 — Inbox for unassigned files: batch screen, never a per-song dialog
+
+No new table required — the inbox is `songs LEFT JOIN playlist_songs ... WHERE playlistId IS NULL`. A list with multi-select, "select all", and a fixed bottom bar "Asignar a…" opening a sheet with the existing playlists plus "crear nueva", able to assign to several playlists in one action. Badge with the pending count on the bottom nav. Importing 30 files at once must cost the user one interaction, not 30.
+
+### D7 — Waveform seek bar: deleted, not ported
+
+Measured, not assumed: **`audio_waveforms` is declared in `pubspec.yaml` but never imported anywhere in `lib/`.** `AudioAnalysisService` (322 lines) does not extract a waveform at all — it reads the whole file with `readAsBytes()` and derives pseudo-amplitudes from byte patterns seeded by `filePath.hashCode`, falling back to `Random()` when that fails. The bars have never corresponded to the audio.
+
+So: delete `audio_analysis_service.dart`, drop the `audio_waveforms` dependency, and collapse `WaveformSeekBar` (`now_playing_screen.dart:1046`) into the plain `SeekBar` that already extends it (`:1278`). This also removes the only component that would have needed a temp file copy under SAF just to render. Do not port a decorative feature into the new architecture.
+
+### D8 — `flutter_background_service` and `wakelock_plus` both go
+
+Verified by grep, not assumed:
+- `flutter_background_service` is **imported nowhere in `lib/`** — it appears only in the auto-generated `GeneratedPluginRegistrant.java`. It is dead weight today and contributes nothing to playback.
+- `wakelock_plus` is used **only in `download_provider.dart`** (12 call sites, all bracketing downloads). It leaves with the download layer.
+
+`audio_service` alone covers background playback and lock-screen/notification controls: it owns the foreground service declared in `AndroidManifest.xml` with `android:foregroundServiceType="mediaPlayback"`, and the MediaSession that drives the lock screen. Keep the `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK` and `WAKE_LOCK` manifest permissions — `audio_service` needs them. **Stage 6 must confirm this on a real device** (background playback, screen off, lock-screen controls, notification actions) before the removal is considered settled.
+
+### D9 — Schema v8: additive, no risky data migration
+
+Add to `songs`: `uri TEXT`, `fileHash TEXT`, `hashKind TEXT`, `fileSize INTEGER`, `modifiedAt INTEGER`, `album TEXT`, `missing INTEGER NOT NULL DEFAULT 0`. Keep `filePath` — legacy downloaded songs in app-private storage keep working. Playback resolves `uri ?? filePath`, so both generations coexist and no user data is rewritten.
+
+New imported songs use `fileHash` as their `id`; legacy rows keep their YouTube video id. `songs`, `playlists`, `playlist_songs` and `play_history` are otherwise unchanged. `download_queue` is dropped in **v9, at Stage 5**, not before — the download code still reads it until then.
+
+### Implementation stages — every stage ends with a compiling, runnable app
+
+Non-negotiable: no stage may leave the project unable to build or the app unable to play music. Run `flutter analyze` at the end of each.
+
+1. **SAF access + scan into SQLite.** New `storage_service.dart` (tree picking, persisted permission, batched listing) and `library_scan_service.dart` (reconciliation per D2, payload hashing). Schema v8 per D9. Entry point is a temporary "Escanear carpeta" button in Settings. The old download UI stays fully in place and functional.
+2. **Metadata.** `audio_metadata_reader` wired into the scan, filename fallback, generated artwork, tags persisted. Manual tag editing UI.
+3. **Playback on URIs.** `AudioPlayerHandler`, `MusicProvider` and every `MediaItem` construction site move to `uri ?? filePath`. The `File(path).existsSync()` queue filter is replaced by the `missing` flag. Downloads still work — they still write `filePath`.
+4. **Inbox + batch assignment** per D6. The new tab replaces `AddFromYouTubeScreen` in the bottom nav; the download code still compiles, it is just no longer reachable from the UI.
+5. **Prune.** Delete `youtube_service`, `ytmusic_service`, `spotify_service`, `download_provider`, `add_from_youtube_screen`, `download_progress_card`, `log_service`, `error_provider`, `audio_analysis_service`, most of `repair_service`, and the download-era `test/`+`tool/` files. Remove `youtube_explode_dart`, `dart_ytmusic_api`, `flutter_background_service`, `wakelock_plus`, `audio_waveforms` from `pubspec.yaml`. Schema v9 drops `download_queue`. Repoint `search_screen` at the local library. `flutter clean` afterwards — stale plugin registration is the usual failure here.
+6. **Device verification and docs.** Confirm D8 on hardware. Rewrite this file's Architecture sections and README.md to describe the local-library app; delete the download-era sections, which by then describe code that no longer exists.
+
 ## Commands
 
 ```bash
@@ -116,7 +212,7 @@ Fetches synced `.lrc` lyrics from LRCLIB (public, keyless) and caches to `<app d
 
 ### Android specifics
 
-Background playback: `audio_service` + `flutter_background_service` + `wakelock_plus` (held during active downloads, bracketed in `DownloadProvider`) + a foreground notification channel (`com.heardy.app.audio`). Downloads use a separate channel (`com.heardy.app.downloads`). `min_sdk_android: 21`.
+Background playback: `audio_service` + `flutter_background_service` + `wakelock_plus` (held during active downloads, bracketed in `DownloadProvider`) + a foreground notification channel (`com.heardy.app.audio`). Downloads use a separate channel (`com.heardy.app.downloads`). The `min_sdk_android: 21` in `pubspec.yaml` is only `flutter_launcher_icons`' setting — the **actual** `minSdkVersion` is 24 and `targetSdk` is 36 (see D1). `flutter_background_service` and `wakelock_plus` are listed here but contribute nothing to playback — see D8.
 
 ## Download resilience: safeguards to preserve
 
