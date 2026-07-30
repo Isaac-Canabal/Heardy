@@ -28,7 +28,6 @@ class _InboxScreenState extends State<InboxScreen> {
   bool _loading = true;
   bool _scanning = false;
   bool _showIgnored = false;
-  String? _libraryRootUri;
 
   List<Song> get _activeSongs => _showIgnored ? _ignoredSongs : _songs;
 
@@ -40,12 +39,10 @@ class _InboxScreenState extends State<InboxScreen> {
 
   Future<void> _load() async {
     setState(() => _loading = true);
-    final rootUri = await _storageService.getLibraryRootUri();
     final songs = await DatabaseHelper.instance.getInboxSongs();
     final ignored = await DatabaseHelper.instance.getIgnoredSongs();
     if (!mounted) return;
     setState(() {
-      _libraryRootUri = rootUri;
       _songs = songs;
       _ignoredSongs = ignored;
       _selectedIds.removeWhere((id) => !_activeSongs.any((s) => s.id == id));
@@ -64,7 +61,7 @@ class _InboxScreenState extends State<InboxScreen> {
     try {
       final rootUri = await _storageService.pickLibraryRoot();
       if (!mounted || rootUri == null) return;
-      setState(() => _libraryRootUri = rootUri);
+      context.read<MusicProvider>().setLibraryRootUri(rootUri);
     } catch (e) {
       if (!mounted) return;
       _showSnack('No se pudo elegir la carpeta: $e', isError: true);
@@ -72,7 +69,7 @@ class _InboxScreenState extends State<InboxScreen> {
   }
 
   Future<void> _scan() async {
-    final rootUri = _libraryRootUri;
+    final rootUri = context.read<MusicProvider>().libraryRootUri;
     if (rootUri == null) {
       await _pickFolder();
       return;
@@ -90,6 +87,26 @@ class _InboxScreenState extends State<InboxScreen> {
         'Nuevas: ${result.inserted} · Movidas: ${result.moved} · '
         'Actualizadas: ${result.updated} · Sin cambios: ${result.unchanged}'
         '${result.missing > 0 ? ' · Faltantes: ${result.missing}' : ''}',
+      );
+    } on LibraryRootUnavailableException {
+      // The scanner already tombstoned every previously-imported song
+      // (same mechanism as a normal missing file) before this was thrown —
+      // just forget the dead root so the picker becomes the obvious next
+      // step, instead of every future scan repeating this same failure.
+      await _storageService.clearLibraryRootUri();
+      if (!mounted) return;
+      context.read<MusicProvider>().setLibraryRootUri(null);
+      await context.read<MusicProvider>().refreshInboxCount();
+      await _load();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('La carpeta de tu biblioteca ya no está disponible. Elegí una de nuevo.'),
+          backgroundColor: Colors.red.withValues(alpha: 0.8),
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 6),
+          action: SnackBarAction(label: 'Elegir carpeta', onPressed: _pickFolder),
+        ),
       );
     } catch (e) {
       if (!mounted) return;
@@ -184,6 +201,7 @@ class _InboxScreenState extends State<InboxScreen> {
   @override
   Widget build(BuildContext context) {
     final hasSelection = _selectedIds.isNotEmpty;
+    final libraryRootUri = context.watch<MusicProvider>().libraryRootUri;
 
     return SafeArea(
       child: Column(
@@ -222,7 +240,7 @@ class _InboxScreenState extends State<InboxScreen> {
               ],
             ),
           ),
-          if (_libraryRootUri != null && !_loading)
+          if (libraryRootUri != null && !_loading)
             Padding(
               padding: const EdgeInsets.fromLTRB(20, 14, 20, 0),
               child: Row(
@@ -267,7 +285,7 @@ class _InboxScreenState extends State<InboxScreen> {
           Expanded(
             child: _loading
                 ? const Center(child: CircularProgressIndicator())
-                : _libraryRootUri == null
+                : libraryRootUri == null
                     ? _buildNoFolderState()
                     : _activeSongs.isEmpty
                         ? (_showIgnored ? _buildNoIgnoredState() : _buildEmptyState())

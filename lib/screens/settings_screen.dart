@@ -52,9 +52,13 @@ class SettingsScreen extends StatelessWidget {
       final rootUri = await storageService.pickLibraryRoot();
       if (!context.mounted) return;
       if (rootUri == null) return; // user cancelled the picker
+      // Notify MusicProvider immediately so Bandeja (kept alive by the
+      // bottom nav's IndexedStack) reflects the pick without the user
+      // having to navigate away and back.
+      context.read<MusicProvider>().setLibraryRootUri(rootUri);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Carpeta "Heardy" lista. Ahora podés escanear.'),
+          content: Text('Carpeta "Heardy" lista. Andá a Bandeja para escanearla.'),
           behavior: SnackBarBehavior.floating,
         ),
       );

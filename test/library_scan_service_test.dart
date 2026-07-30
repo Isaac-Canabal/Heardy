@@ -13,11 +13,13 @@ import 'package:path/path.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
 import 'package:saf_stream/saf_stream_platform_interface.dart';
 import 'package:saf_util/saf_util_platform_interface.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 
 import 'package:heardy/models/playlist.dart';
 import 'package:heardy/services/database_helper.dart';
 import 'package:heardy/services/library_scan_service.dart';
+import 'package:heardy/services/storage_service.dart';
 
 class _FakeDir {
   final String uri;
@@ -37,6 +39,7 @@ class _FakeFile {
 class _FakeSafBackend {
   final Map<String, _FakeDir> dirs = {};
   final Map<String, _FakeFile> files = {};
+  final Set<String> deletedUris = {};
   // Static, not per-instance: several tests in this file each create their
   // own backend but share the one real sqflite_common_ffi database, so uris
   // must stay unique across backends too, or a fresh test's file can collide
@@ -62,14 +65,35 @@ class _FakeSafBackend {
 
   void unlink(_FakeDir parent, String uri) => parent.childUris.remove(uri);
   void relink(_FakeDir parent, String uri) => parent.childUris.add(uri);
+
+  /// Simulates the folder being deleted (or its volume unmounted, or its
+  /// permission revoked) from outside the app: any further `list()` on this
+  /// uri throws, like a real SAF provider would on a stale document uri.
+  void markDeleted(String uri) => deletedUris.add(uri);
 }
 
 class _FakeSafUtil extends SafUtilPlatform {
   final _FakeSafBackend backend;
   _FakeSafUtil(this.backend);
 
+  /// Set before calling code that triggers `pickDirectory` (there's no real
+  /// system picker under `flutter test`), to simulate what the user chose.
+  SafDocumentFile? nextPick;
+
+  @override
+  Future<SafDocumentFile?> pickDirectory({
+    String? initialUri,
+    bool? writePermission,
+    bool? persistablePermission,
+  }) async {
+    return nextPick;
+  }
+
   @override
   Future<List<SafDocumentFile>> list(String uri) async {
+    if (backend.deletedUris.contains(uri)) {
+      throw StateError('fake FileNotFoundException: $uri no longer exists');
+    }
     final dir = backend.dirs[uri];
     if (dir == null) return [];
     return dir.childUris.map((childUri) {
@@ -80,6 +104,49 @@ class _FakeSafUtil extends SafUtilPlatform {
       final f = backend.files[childUri]!;
       return SafDocumentFile(uri: f.uri, name: f.name, isDir: false, length: f.bytes.length, lastModified: f.mtime);
     }).toList();
+  }
+
+  @override
+  Future<bool> exists(String uri, bool isDir) async {
+    if (backend.deletedUris.contains(uri)) return false;
+    return backend.dirs.containsKey(uri) || backend.files.containsKey(uri);
+  }
+
+  @override
+  Future<SafDocumentFile?> child(String uri, List<String> names) async {
+    if (names.isEmpty) return null;
+    final dir = backend.dirs[uri];
+    if (dir == null) return null;
+    for (final childUri in dir.childUris) {
+      final d = backend.dirs[childUri];
+      if (d != null && d.name == names.first) {
+        return SafDocumentFile(uri: d.uri, name: d.name, isDir: true, length: 0, lastModified: 0);
+      }
+      final f = backend.files[childUri];
+      if (f != null && f.name == names.first) {
+        return SafDocumentFile(uri: f.uri, name: f.name, isDir: false, length: f.bytes.length, lastModified: f.mtime);
+      }
+    }
+    return null;
+  }
+
+  @override
+  Future<SafDocumentFile> mkdirp(String uri, List<String> names) async {
+    var parentUri = uri;
+    SafDocumentFile? created;
+    for (final name in names) {
+      final existing = await child(parentUri, [name]);
+      if (existing != null) {
+        parentUri = existing.uri;
+        created = existing;
+        continue;
+      }
+      final parentDir = backend.dirs[parentUri]!;
+      final newDir = backend.addDir(parentDir, name);
+      parentUri = newDir.uri;
+      created = SafDocumentFile(uri: newDir.uri, name: newDir.name, isDir: true, length: 0, lastModified: 0);
+    }
+    return created!;
   }
 }
 
@@ -101,6 +168,29 @@ class _FakeSafStream extends SafStreamPlatform {
     final file = backend.files[srcUri];
     if (file == null) throw StateError('no such fake file: $srcUri');
     await File(destPath).writeAsBytes(file.bytes);
+  }
+
+  @override
+  Future<SafNewFile> writeFileBytes(
+    String treeUri,
+    String fileName,
+    String mime,
+    Uint8List data, {
+    bool? overwrite,
+    bool? append,
+  }) async {
+    final dir = backend.dirs[treeUri];
+    if (dir == null) throw StateError('no such fake dir: $treeUri');
+    final existing = dir.childUris
+        .map((u) => backend.files[u])
+        .where((f) => f != null && f.name == fileName)
+        .firstOrNull;
+    if (existing != null) {
+      existing.bytes = data;
+      return SafNewFile(Uri.parse(existing.uri), existing.name);
+    }
+    final file = backend.addFile(dir, fileName, data, 0);
+    return SafNewFile(Uri.parse(file.uri), file.name);
   }
 }
 
@@ -433,6 +523,109 @@ void main() {
       final otraCarpetaSongs = await db.getSongsForPlaylist(otraCarpetaPlaylist.id);
       expect(otraCarpetaSongs.map((s) => s.id), isNot(contains(song.id)),
           reason: 'a move must never re-assign playlist membership — only a first import does that (D3)');
+    });
+  });
+
+  group('library root lifecycle (bug fixes 2026-07-31)', () {
+    test('picking the already-initialized Heardy folder itself does not nest another Heardy inside it', () async {
+      SharedPreferences.setMockInitialValues({});
+      final backend = _FakeSafBackend();
+      final fakeUtil = _FakeSafUtil(backend);
+      SafUtilPlatform.instance = fakeUtil;
+      SafStreamPlatform.instance = _FakeSafStream(backend);
+      final storage = StorageService();
+
+      final parent = backend.addDir(null, 'Music');
+      fakeUtil.nextPick = SafDocumentFile(uri: parent.uri, name: parent.name, isDir: true, length: 0, lastModified: 0);
+      final firstRoot = await storage.pickLibraryRoot();
+      expect(firstRoot, isNotNull);
+
+      // User re-runs the picker, navigates INTO the Heardy folder just
+      // created, and selects it directly as the "new" root.
+      final heardyDir = backend.dirs[firstRoot]!;
+      fakeUtil.nextPick = SafDocumentFile(uri: heardyDir.uri, name: heardyDir.name, isDir: true, length: 0, lastModified: 0);
+      final secondRoot = await storage.pickLibraryRoot();
+
+      expect(secondRoot, firstRoot, reason: 'picking the Heardy folder itself must resolve to itself, not create Heardy/Heardy');
+      final nestedHeardyCount = heardyDir.childUris.where((u) => backend.dirs[u]?.name == 'Heardy').length;
+      expect(nestedHeardyCount, 0, reason: 'no nested Heardy/ should exist inside the root');
+    });
+
+    test('picking the same parent folder twice does not create two Heardy folders', () async {
+      SharedPreferences.setMockInitialValues({});
+      final backend = _FakeSafBackend();
+      final fakeUtil = _FakeSafUtil(backend);
+      SafUtilPlatform.instance = fakeUtil;
+      SafStreamPlatform.instance = _FakeSafStream(backend);
+      final storage = StorageService();
+
+      final parent = backend.addDir(null, 'Music2');
+      fakeUtil.nextPick = SafDocumentFile(uri: parent.uri, name: parent.name, isDir: true, length: 0, lastModified: 0);
+      final first = await storage.pickLibraryRoot();
+
+      // Re-pick the exact same parent again.
+      fakeUtil.nextPick = SafDocumentFile(uri: parent.uri, name: parent.name, isDir: true, length: 0, lastModified: 0);
+      final second = await storage.pickLibraryRoot();
+
+      expect(second, first, reason: 're-picking the same parent must reuse the existing Heardy/, not create a second one');
+      final heardyCount = backend.dirs[parent.uri]!.childUris.where((u) => backend.dirs[u]?.name == 'Heardy').length;
+      expect(heardyCount, 1);
+    });
+
+    test('a Heardy-named folder without the marker is recognized by name and gets the marker retroactively', () async {
+      SharedPreferences.setMockInitialValues({});
+      final backend = _FakeSafBackend();
+      final fakeUtil = _FakeSafUtil(backend);
+      SafUtilPlatform.instance = fakeUtil;
+      SafStreamPlatform.instance = _FakeSafStream(backend);
+      final storage = StorageService();
+
+      // A root from before the marker existed: just named "Heardy", no marker file.
+      final preExisting = backend.addDir(null, 'Heardy');
+      fakeUtil.nextPick =
+          SafDocumentFile(uri: preExisting.uri, name: preExisting.name, isDir: true, length: 0, lastModified: 0);
+
+      final root = await storage.pickLibraryRoot();
+
+      expect(root, preExisting.uri, reason: 'a folder literally named Heardy must be used as-is');
+      final nestedCount = preExisting.childUris.where((u) => backend.dirs[u]?.name == 'Heardy').length;
+      expect(nestedCount, 0);
+      final marker =
+          preExisting.childUris.map((u) => backend.files[u]).where((f) => f?.name == '.heardy_root').firstOrNull;
+      expect(marker, isNotNull, reason: 'the marker must be retrofitted so a future pick recognizes this folder directly');
+    });
+
+    test('scan throws LibraryRootUnavailableException and tombstones existing songs when the root is deleted', () async {
+      final backend = _FakeSafBackend();
+      final root = backend.addDir(null, 'Heardy');
+      final playlistDir = backend.addDir(root, 'PlaylistDeCarpetaBorrada');
+      SafUtilPlatform.instance = _FakeSafUtil(backend);
+      SafStreamPlatform.instance = _FakeSafStream(backend);
+
+      final payload = Uint8List.fromList(List.generate(2000, (i) => (i * 3 + 1) % 256));
+      backend.addFile(playlistDir, 'cancion.mp3', _buildMp3(payload, tagBodySize: 0), 100);
+
+      final service = LibraryScanService();
+      await service.scan(root.uri);
+
+      final db = DatabaseHelper.instance;
+      final playlist = (await db.getPlaylists()).firstWhere((p) => p.name == 'PlaylistDeCarpetaBorrada');
+      final before = await db.getSongsForPlaylist(playlist.id);
+      expect(before.length, 1);
+      expect(before.first.missing, false);
+      final songId = before.first.id;
+
+      // Simulate the root folder being deleted from the file explorer.
+      backend.markDeleted(root.uri);
+
+      await expectLater(() => service.scan(root.uri), throwsA(isA<LibraryRootUnavailableException>()));
+
+      final after = await db.getSongById(songId);
+      expect(after, isNotNull, reason: 'songs must survive a deleted root — tombstoned, not removed');
+      expect(after!.missing, true,
+          reason: 'a deleted root must tombstone every previously-imported song, same mechanism as any other missing file');
+      final stillInPlaylist = await db.getSongsForPlaylist(playlist.id);
+      expect(stillInPlaylist.map((s) => s.id), contains(songId), reason: 'playlist membership must survive too');
     });
   });
 }

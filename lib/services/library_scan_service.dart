@@ -31,6 +31,18 @@ class LibraryScanResult {
   });
 }
 
+/// Thrown when the library root itself can't be listed — deleted from the
+/// file explorer, its volume unmounted, or its permission revoked. The
+/// caller should offer re-picking a folder rather than showing a raw
+/// platform error.
+class LibraryRootUnavailableException implements Exception {
+  final String message;
+  const LibraryRootUnavailableException([this.message = 'La carpeta de la biblioteca ya no está disponible']);
+
+  @override
+  String toString() => message;
+}
+
 enum _FileOutcome { inserted, moved, updated, unchanged, unsupported }
 
 class _ByteRange {
@@ -55,6 +67,9 @@ class LibraryScanService {
   final MetadataService _metadataService = MetadataService();
 
   Future<LibraryScanResult> scan(String libraryRootUri) async {
+    // Tombstone first: if the root itself turns out to be gone (below),
+    // every previously-imported song is already correctly marked missing
+    // by the time we find out — nothing left to un-tombstone it.
     await _db.markAllImportedSongsMissing();
 
     var inserted = 0, moved = 0, updated = 0, unchanged = 0, unsupported = 0;
@@ -64,7 +79,14 @@ class LibraryScanService {
       playlistIdByName[playlist.name] = playlist.id;
     }
 
-    final rootChildren = await _safUtil.list(libraryRootUri);
+    List<SafDocumentFile> rootChildren;
+    try {
+      rootChildren = await _safUtil.list(libraryRootUri);
+    } catch (e) {
+      throw LibraryRootUnavailableException(
+        'No se pudo acceder a la carpeta de la biblioteca: $e',
+      );
+    }
     for (final entry in rootChildren) {
       if (entry.isDir) {
         final playlistId = await _resolvePlaylistId(entry.name, playlistIdByName);

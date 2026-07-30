@@ -6,23 +6,33 @@ import '../models/song.dart';
 import '../services/database_helper.dart';
 import '../services/audio_player_handler.dart';
 import '../services/playback_state_service.dart';
+import '../services/storage_service.dart';
 
 class MusicProvider with ChangeNotifier {
   final DatabaseHelper _dbHelper = DatabaseHelper.instance;
+  final StorageService _storageService = StorageService();
 
   List<Playlist> _playlists = [];
   List<Song> _currentPlaylistSongs = [];
   String? _currentPlaylistId;
   int _inboxCount = 0;
+  String? _libraryRootUri;
 
   List<Playlist> get playlists => _playlists;
   List<Song> get currentPlaylistSongs => _currentPlaylistSongs;
   String? get currentPlaylistId => _currentPlaylistId;
   int get inboxCount => _inboxCount;
+  // Single source of truth for "is a library folder picked, and which one" —
+  // read this everywhere instead of each screen tracking its own copy.
+  // Settings/inbox_screen used to each load it independently, so picking a
+  // folder in one never showed up in the other without navigating away and
+  // back (IndexedStack keeps both alive, neither reloads on tab switch).
+  String? get libraryRootUri => _libraryRootUri;
 
   MusicProvider() {
     loadPlaylists();
     refreshInboxCount();
+    refreshLibraryRootUri();
   }
 
   /// Recomputes the inbox badge count. Call after a scan and after any
@@ -34,6 +44,26 @@ class MusicProvider with ChangeNotifier {
     } catch (e) {
       print("Error refreshing inbox count: $e");
     }
+  }
+
+  /// Re-reads the persisted root — only needed at startup. Once loaded,
+  /// mutate it via [setLibraryRootUri] instead of round-tripping through
+  /// storage again.
+  Future<void> refreshLibraryRootUri() async {
+    try {
+      _libraryRootUri = await _storageService.getLibraryRootUri();
+      notifyListeners();
+    } catch (e) {
+      print("Error refreshing library root uri: $e");
+    }
+  }
+
+  /// Call right after picking a folder (or after clearing it because a scan
+  /// found it gone) — updates every screen watching this provider
+  /// immediately, no navigation required.
+  void setLibraryRootUri(String? uri) {
+    _libraryRootUri = uri;
+    notifyListeners();
   }
 
   bool _isRestoringPlayback = false;
