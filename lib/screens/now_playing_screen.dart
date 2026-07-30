@@ -6,7 +6,7 @@ import 'package:audio_service/audio_service.dart';
 import 'package:palette_generator/palette_generator.dart';
 import '../services/audio_player_handler.dart';
 import '../services/lyrics_service.dart';
-import '../services/audio_analysis_service.dart';
+import '../theme/app_theme.dart';
 
 class NowPlayingScreen extends StatefulWidget {
   const NowPlayingScreen({super.key});
@@ -86,6 +86,48 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
           style: TextStyle(color: Colors.white70, fontSize: 14, letterSpacing: 1.1),
         ),
         centerTitle: true,
+        actions: [
+          StreamBuilder<PlaybackState>(
+            stream: audioHandler.playbackState,
+            builder: (context, stateSnapshot) {
+              final state = stateSnapshot.data;
+              final isShuffleActive = state?.shuffleMode == AudioServiceShuffleMode.all;
+              final isRepeatActive =
+                  (state?.repeatMode ?? AudioServiceRepeatMode.none) != AudioServiceRepeatMode.none;
+
+              return StreamBuilder<Duration?>(
+                stream: audioHandler.sleepTimerStream,
+                initialData: audioHandler.sleepTimerRemainingNow,
+                builder: (context, sleepSnapshot) {
+                  final isActive = isShuffleActive || isRepeatActive || sleepSnapshot.data != null;
+
+                  return IconButton(
+                    icon: Stack(
+                      clipBehavior: Clip.none,
+                      children: [
+                        const Icon(Icons.more_vert, color: Colors.white),
+                        if (isActive)
+                          Positioned(
+                            right: -1,
+                            top: -1,
+                            child: Container(
+                              width: 8,
+                              height: 8,
+                              decoration: const BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: Color(0xFF8C9EFF),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                    onPressed: () => _showOptionsBottomSheet(context, audioHandler),
+                  );
+                },
+              );
+            },
+          ),
+        ],
       ),
       body: StreamBuilder<MediaItem?>(
         stream: audioHandler.mediaItem,
@@ -211,11 +253,9 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                       final position = posSnapshot.data ?? Duration.zero;
                       final duration = mediaItem.duration ?? Duration.zero;
 
-                      return WaveformSeekBar(
+                      return SeekBar(
                         position: position,
                         duration: duration,
-                        songId: mediaItem.id,
-                        filePath: mediaItem.extras?['filePath'] as String?,
                         onChangeEnd: (newPosition) {
                           audioHandler.seek(newPosition);
                         },
@@ -229,31 +269,36 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                     builder: (context, stateSnapshot) {
                       final state = stateSnapshot.data;
                       final playing = state?.playing ?? false;
-                      final isShuffle = state?.shuffleMode == AudioServiceShuffleMode.all;
-                      final repeatMode = state?.repeatMode ?? AudioServiceRepeatMode.none;
 
                       return Padding(
                         padding: const EdgeInsets.symmetric(horizontal: 16.0),
                         child: Row(
                           mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                           children: [
-                            IconButton(
-                              icon: Icon(
-                                Icons.shuffle,
-                                color: isShuffle ? const Color(0xFF8C9EFF) : Colors.white38,
-                                size: 24,
+                            // Every control sits in a 68-tall box (matching the play/pause
+                            // circle) so the Row centers all five on the exact same line —
+                            // IconButton's own minimum tap target height varies with iconSize
+                            // (26 vs 36), which otherwise throws off the optical center.
+                            SizedBox(
+                              height: 68,
+                              child: Center(
+                                child: IconButton(
+                                  icon: const Icon(Icons.replay_5, color: Colors.white70, size: 26),
+                                  tooltip: 'Retroceder 5 s',
+                                  onPressed: () => audioHandler.seekRelative(
+                                    const Duration(seconds: -5),
+                                  ),
+                                ),
                               ),
-                              onPressed: () {
-                                audioHandler.setShuffleMode(
-                                  isShuffle
-                                      ? AudioServiceShuffleMode.none
-                                      : AudioServiceShuffleMode.all,
-                                );
-                              },
                             ),
-                            IconButton(
-                              icon: const Icon(Icons.skip_previous, color: Colors.white, size: 36),
-                              onPressed: () => audioHandler.skipToPrevious(),
+                            SizedBox(
+                              height: 68,
+                              child: Center(
+                                child: IconButton(
+                                  icon: const Icon(Icons.skip_previous, color: Colors.white, size: 36),
+                                  onPressed: () => audioHandler.skipToPrevious(),
+                                ),
+                              ),
                             ),
                             Container(
                               width: 68,
@@ -277,11 +322,27 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                                 },
                               ),
                             ),
-                            IconButton(
-                              icon: const Icon(Icons.skip_next, color: Colors.white, size: 36),
-                              onPressed: () => audioHandler.skipToNext(),
+                            SizedBox(
+                              height: 68,
+                              child: Center(
+                                child: IconButton(
+                                  icon: const Icon(Icons.skip_next, color: Colors.white, size: 36),
+                                  onPressed: () => audioHandler.skipToNext(),
+                                ),
+                              ),
                             ),
-                            _buildRepeatButton(audioHandler, repeatMode),
+                            SizedBox(
+                              height: 68,
+                              child: Center(
+                                child: IconButton(
+                                  icon: const Icon(Icons.forward_5, color: Colors.white70, size: 26),
+                                  tooltip: 'Adelantar 5 s',
+                                  onPressed: () => audioHandler.seekRelative(
+                                    const Duration(seconds: 5),
+                                  ),
+                                ),
+                              ),
+                            ),
                           ],
                         ),
                       );
@@ -297,35 +358,245 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
     );
   }
 
-  Widget _buildRepeatButton(AudioPlayerHandler audioHandler, AudioServiceRepeatMode mode) {
-    IconData icon = Icons.repeat;
-    Color color = Colors.white38;
-
-    if (mode == AudioServiceRepeatMode.one) {
-      icon = Icons.repeat_one;
-      color = const Color(0xFF8C9EFF);
-    } else if (mode == AudioServiceRepeatMode.all) {
-      icon = Icons.repeat;
-      color = const Color(0xFF8C9EFF);
+  String _repeatModeLabel(AudioServiceRepeatMode mode) {
+    switch (mode) {
+      case AudioServiceRepeatMode.one:
+        return 'Una canción';
+      case AudioServiceRepeatMode.all:
+        return 'Todas';
+      default:
+        return 'Desactivado';
     }
+  }
 
-    return IconButton(
-      icon: Icon(icon, color: color, size: 24),
-      onPressed: () {
-        if (mode == AudioServiceRepeatMode.none) {
-          audioHandler.setRepeatMode(AudioServiceRepeatMode.all);
-        } else if (mode == AudioServiceRepeatMode.all) {
-          audioHandler.setRepeatMode(AudioServiceRepeatMode.one);
-        } else {
-          audioHandler.setRepeatMode(AudioServiceRepeatMode.none);
-        }
+  String _formatRemaining(Duration d) {
+    final minutes = d.inMinutes;
+    final seconds = d.inSeconds % 60;
+    return '$minutes:${seconds.toString().padLeft(2, '0')}';
+  }
+
+  void _showOptionsBottomSheet(BuildContext context, AudioPlayerHandler audioHandler) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              StreamBuilder<PlaybackState>(
+                stream: audioHandler.playbackState,
+                builder: (context, snapshot) {
+                  final state = snapshot.data;
+                  final isShuffle = state?.shuffleMode == AudioServiceShuffleMode.all;
+                  final repeatMode = state?.repeatMode ?? AudioServiceRepeatMode.none;
+                  final isRepeatActive = repeatMode != AudioServiceRepeatMode.none;
+
+                  return Column(
+                    children: [
+                      ListTile(
+                        leading: Icon(
+                          Icons.shuffle,
+                          color: isShuffle ? const Color(0xFF8C9EFF) : Colors.white54,
+                        ),
+                        title: const Text('Aleatorio', style: TextStyle(color: Colors.white)),
+                        trailing: Text(
+                          isShuffle ? 'Activado' : 'Desactivado',
+                          style: TextStyle(
+                            color: isShuffle ? const Color(0xFF8C9EFF) : Colors.white38,
+                          ),
+                        ),
+                        onTap: () {
+                          audioHandler.setShuffleMode(
+                            isShuffle ? AudioServiceShuffleMode.none : AudioServiceShuffleMode.all,
+                          );
+                        },
+                      ),
+                      ListTile(
+                        leading: Icon(
+                          repeatMode == AudioServiceRepeatMode.one ? Icons.repeat_one : Icons.repeat,
+                          color: isRepeatActive ? const Color(0xFF8C9EFF) : Colors.white54,
+                        ),
+                        title: const Text('Repetir', style: TextStyle(color: Colors.white)),
+                        trailing: Text(
+                          _repeatModeLabel(repeatMode),
+                          style: TextStyle(
+                            color: isRepeatActive ? const Color(0xFF8C9EFF) : Colors.white38,
+                          ),
+                        ),
+                        onTap: () {
+                          final next = switch (repeatMode) {
+                            AudioServiceRepeatMode.none => AudioServiceRepeatMode.all,
+                            AudioServiceRepeatMode.all => AudioServiceRepeatMode.one,
+                            _ => AudioServiceRepeatMode.none,
+                          };
+                          audioHandler.setRepeatMode(next);
+                        },
+                      ),
+                    ],
+                  );
+                },
+              ),
+              const Divider(color: Colors.white24, height: 1),
+              StreamBuilder<Duration?>(
+                stream: audioHandler.sleepTimerStream,
+                initialData: audioHandler.sleepTimerRemainingNow,
+                builder: (context, snapshot) {
+                  final remaining = snapshot.data;
+                  if (remaining != null) {
+                    return ListTile(
+                      leading: const Icon(Icons.bedtime, color: Color(0xFF8C9EFF)),
+                      title: const Text('Temporizador de pausa', style: TextStyle(color: Colors.white)),
+                      subtitle: Text(
+                        'Quedan ${_formatRemaining(remaining)}',
+                        style: const TextStyle(color: Colors.white54),
+                      ),
+                      trailing: TextButton(
+                        onPressed: () => audioHandler.cancelSleepTimer(),
+                        child: const Text('Cancelar'),
+                      ),
+                    );
+                  }
+                  return ListTile(
+                    leading: const Icon(Icons.bedtime_outlined, color: Colors.white54),
+                    title: const Text('Temporizador de pausa', style: TextStyle(color: Colors.white)),
+                    subtitle: const Text(
+                      'Pausa la reproducción automáticamente',
+                      style: TextStyle(color: Colors.white38),
+                    ),
+                    onTap: () {
+                      Navigator.of(sheetContext).pop();
+                      // Use the screen's own stable context, not this
+                      // StreamBuilder's — it belongs to the options sheet
+                      // we're popping, and by the time the custom-minutes
+                      // dialog chains off of it later it's already disposed.
+                      _showSleepTimerPicker(this.context, audioHandler);
+                    },
+                  );
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  void _showSleepTimerPicker(BuildContext context, AudioPlayerHandler audioHandler) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF1A1A1A),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) {
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Temporizador de pausa',
+                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 16),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 8,
+                  children: [
+                    ...[15, 30, 45, 60].map((minutes) {
+                      return ActionChip(
+                        label: Text('$minutes min', style: const TextStyle(color: Colors.white)),
+                        backgroundColor: Colors.white.withValues(alpha: 0.08),
+                        onPressed: () {
+                          audioHandler.startSleepTimer(Duration(minutes: minutes));
+                          Navigator.of(sheetContext).pop();
+                        },
+                      );
+                    }),
+                    // Peer chip, not a buried link below the presets — same visual
+                    // weight so a custom duration is just as discoverable.
+                    ActionChip(
+                      avatar: const Icon(Icons.edit_outlined, size: 16, color: Color(0xFF8C9EFF)),
+                      label: const Text('Personalizado', style: TextStyle(color: Color(0xFF8C9EFF))),
+                      backgroundColor: const Color(0xFF8C9EFF).withValues(alpha: 0.12),
+                      onPressed: () async {
+                        Navigator.of(sheetContext).pop();
+                        final customMinutes = await _promptCustomMinutes(context);
+                        if (customMinutes != null) {
+                          audioHandler.startSleepTimer(Duration(minutes: customMinutes));
+                        }
+                      },
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Future<int?> _promptCustomMinutes(BuildContext context) {
+    final controller = TextEditingController();
+    const minMinutes = 1;
+    const maxMinutes = 720; // 12 h — generous upper bound against fat-finger input
+    return showDialog<int>(
+      context: context,
+      builder: (dialogContext) {
+        String? errorText;
+        return StatefulBuilder(
+          builder: (dialogContext, setState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1A1A1A),
+              title: const Text('Minutos', style: TextStyle(color: Colors.white)),
+              content: TextField(
+                controller: controller,
+                keyboardType: TextInputType.number,
+                autofocus: true,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: 'Entre $minMinutes y $maxMinutes',
+                  hintStyle: const TextStyle(color: Colors.white38),
+                  errorText: errorText,
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: const Text('Cancelar'),
+                ),
+                TextButton(
+                  onPressed: () {
+                    final value = int.tryParse(controller.text.trim());
+                    if (value == null || value < minMinutes || value > maxMinutes) {
+                      setState(() {
+                        errorText = 'Ingresá un número entre $minMinutes y $maxMinutes';
+                      });
+                      return;
+                    }
+                    Navigator.of(dialogContext).pop(value);
+                  },
+                  child: const Text('Aceptar'),
+                ),
+              ],
+            );
+          },
+        );
       },
     );
   }
 
   Widget _buildAlbumArt(MediaItem item) {
     final artPath = item.extras?['artPath'] as String? ?? '';
-    return SmartAlbumArt(artPath: artPath, size: 300);
+    return SmartAlbumArt(artPath: artPath, title: item.title, size: 300);
   }
 
   void _showLyricsBottomSheet(BuildContext context, AudioPlayerHandler audioHandler, MediaItem mediaItem) {
@@ -765,121 +1036,35 @@ class _QueueBottomSheetState extends State<QueueBottomSheet> {
 
   Widget _buildThumbnail(MediaItem item) {
     final artPath = item.extras?['artPath'] as String? ?? '';
-    return SmartAlbumArt(artPath: artPath, size: 48);
+    return SmartAlbumArt(artPath: artPath, title: item.title, size: 48);
   }
 }
 
-// --- STATEFUL SEEK BAR ---
-class WaveformSeekBar extends StatefulWidget {
+// --- SEEK BAR ---
+// Collapsed from a WaveformSeekBar (D7, Stage 5 prune): AudioAnalysisService
+// never did real waveform extraction (it derived fake bar heights from
+// filePath.hashCode, falling back to a raw Random() on failure — see
+// CLAUDE.md), and it depended on `File(path)`, which can't read a SAF
+// content:// uri anyway. Deleted rather than fixed — a decorative feature
+// that was never doing what it looked like it did.
+class SeekBar extends StatefulWidget {
   final Duration position;
   final Duration duration;
   final ValueChanged<Duration> onChangeEnd;
-  final String? songId;
-  final String? filePath;
 
-  const WaveformSeekBar({
+  const SeekBar({
     super.key,
     required this.position,
     required this.duration,
     required this.onChangeEnd,
-    this.songId,
-    this.filePath,
   });
 
   @override
-  State<WaveformSeekBar> createState() => _WaveformSeekBarState();
+  State<SeekBar> createState() => _SeekBarState();
 }
 
-class _WaveformSeekBarState extends State<WaveformSeekBar> {
+class _SeekBarState extends State<SeekBar> {
   double? _dragValue;
-  List<double> _barHeights = [];
-  static const int barCount = 50;
-  static const double barWidth = 4.0;
-  static const double barSpacing = 3.0;
-  static const double minHeight = 8.0;
-  static const double maxHeight = 36.0;
-
-  @override
-  void initState() {
-    super.initState();
-    // Inicializar con alturas temporales mientras carga el análisis real
-    _initializeTempHeights();
-    _generateWaveform();
-  }
-
-  void _initializeTempHeights() {
-    _barHeights = List.generate(barCount, (index) {
-      return minHeight + ((index % 3) / 3) * (maxHeight - minHeight);
-    });
-  }
-
-  @override
-  void didUpdateWidget(covariant WaveformSeekBar oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.songId != widget.songId || oldWidget.filePath != widget.filePath) {
-      _generateWaveform();
-    }
-  }
-
-  Future<void> _generateWaveform() async {
-    _barHeights = [];
-    
-    // Si tenemos ruta del archivo, usar análisis real
-    if (widget.filePath != null && widget.filePath!.isNotEmpty) {
-      try {
-        final amplitudes = await AudioAnalysisService.extractWaveformData(
-          widget.filePath!,
-          barCount: barCount,
-        );
-        
-        if (mounted) {
-          setState(() {
-            _barHeights = _mapAmplitudesToHeights(amplitudes);
-          });
-        }
-        return;
-      } catch (e) {
-        print('Error en análisis de audio real, usando fallback: $e');
-      }
-    }
-    
-    // Fallback: usar songId como seed para generar una waveform única pero consistente
-    final seed = widget.songId?.hashCode ?? DateTime.now().millisecondsSinceEpoch;
-    
-    for (int i = 0; i < barCount; i++) {
-      // Generar altura basada en el seed y posición para consistencia
-      final baseSeed = seed + i * 31;
-      final isHighPeak = (baseSeed % 7) < 3; // Patrón más variado
-      final baseHeight = isHighPeak ? maxHeight : minHeight;
-      
-      // Variación más dinámica basada en el seed
-      final variation = ((baseSeed * 17) % 12).toDouble();
-      final peakFactor = (i % 5 == 0) ? 6.0 : 0.0; // Picos ocasionales
-      
-      final height = baseHeight - variation + peakFactor;
-      _barHeights.add(height.clamp(minHeight, maxHeight));
-    }
-    
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
-  /// Mapea amplitudes (0.0-1.0) a alturas de barras (minHeight-maxHeight)
-  List<double> _mapAmplitudesToHeights(List<double> amplitudes) {
-    return amplitudes.map((amplitude) {
-      // Expandir el rango para más variación visual extrema
-      // Usar curva cúbica para aún más diferenciación entre valores
-      final expandedAmplitude = amplitude * amplitude * amplitude; // Curva cúbica
-      
-      // Añadir un poco de aleatoriedad para más variación visual
-      final randomFactor = (DateTime.now().millisecondsSinceEpoch % 100) / 1000.0;
-      final adjustedAmplitude = (expandedAmplitude + randomFactor).clamp(0.0, 1.0);
-      
-      final height = minHeight + (adjustedAmplitude * (maxHeight - minHeight));
-      return height.clamp(minHeight, maxHeight);
-    }).toList();
-  }
 
   String _formatDuration(Duration d) {
     final minutes = d.inMinutes;
@@ -887,97 +1072,35 @@ class _WaveformSeekBarState extends State<WaveformSeekBar> {
     return '$minutes:${seconds.toString().padLeft(2, '0')}';
   }
 
-  void _handlePanUpdate(DragUpdateDetails details, RenderBox box) {
-    final localPosition = box.globalToLocal(details.globalPosition);
-    final percentage = (localPosition.dx / box.size.width).clamp(0.0, 1.0);
-    setState(() {
-      _dragValue = percentage * widget.duration.inMilliseconds;
-    });
-  }
-
-  void _handlePanEnd(DragEndDetails details) {
-    if (_dragValue != null) {
-      widget.onChangeEnd(Duration(milliseconds: _dragValue!.toInt()));
-      setState(() {
-        _dragValue = null;
-      });
-    }
-  }
-
-  void _handleTap(TapUpDetails details, RenderBox box) {
-    final localPosition = box.globalToLocal(details.globalPosition);
-    final percentage = (localPosition.dx / box.size.width).clamp(0.0, 1.0);
-    final newValue = percentage * widget.duration.inMilliseconds;
-    widget.onChangeEnd(Duration(milliseconds: newValue.toInt()));
-  }
-
   @override
   Widget build(BuildContext context) {
-    final value = _dragValue ?? widget.position.inMilliseconds.toDouble();
-    final max = widget.duration.inMilliseconds.toDouble();
-    final progress = max > 0 ? (value / max).clamp(0.0, 1.0) : 0.0;
-    final activeBars = (progress * barCount).floor();
+    final maxMs = widget.duration.inMilliseconds.toDouble();
+    final hasDuration = maxMs > 0;
+    final value = (_dragValue ?? widget.position.inMilliseconds.toDouble())
+        .clamp(0.0, hasDuration ? maxMs : 1.0);
 
     return Column(
       children: [
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16.0),
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              return GestureDetector(
-                onPanStart: (_) {},
-                onPanUpdate: (details) {
-                  final box = context.findRenderObject() as RenderBox;
-                  _handlePanUpdate(details, box);
-                },
-                onPanEnd: _handlePanEnd,
-                onTapUp: (details) {
-                  final box = context.findRenderObject() as RenderBox;
-                  _handleTap(details, box);
-                },
-                behavior: HitTestBehavior.opaque,
-                child: Container(
-                  height: maxHeight + 8,
-                  alignment: Alignment.center,
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    physics: const NeverScrollableScrollPhysics(),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      crossAxisAlignment: CrossAxisAlignment.center,
-                      children: List.generate(barCount, (index) {
-                        final isActive = index < activeBars;
-                        final isLastActive = index == activeBars - 1;
-                        
-                        // Calcular opacidad para la última barra activa
-                        final opacity = isLastActive 
-                            ? (progress * barCount) - activeBars
-                            : 1.0;
-
-                        // Usar altura del análisis o fallback si está vacío
-                        final height = _barHeights.isNotEmpty && index < _barHeights.length
-                            ? _barHeights[index]
-                            : minHeight;
-
-                        return Container(
-                          width: barWidth,
-                          height: height,
-                          margin: EdgeInsets.only(
-                            right: index < barCount - 1 ? barSpacing : 0,
-                          ),
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(barWidth / 2),
-                            color: isActive
-                                ? const Color(0xFF8C9EFF).withValues(alpha: opacity.clamp(0.3, 1.0))
-                                : Colors.white10,
-                          ),
-                        );
-                      }),
-                    ),
-                  ),
-                ),
-              );
-            },
+        SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            trackHeight: 4,
+            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+            overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+            activeTrackColor: const Color(0xFF8C9EFF),
+            inactiveTrackColor: Colors.white10,
+            thumbColor: const Color(0xFF8C9EFF),
+          ),
+          child: Slider(
+            min: 0,
+            max: hasDuration ? maxMs : 1,
+            value: hasDuration ? value : 0,
+            onChanged: hasDuration ? (v) => setState(() => _dragValue = v) : null,
+            onChangeEnd: hasDuration
+                ? (v) {
+                    widget.onChangeEnd(Duration(milliseconds: v.toInt()));
+                    setState(() => _dragValue = null);
+                  }
+                : null,
           ),
         ),
         Padding(
@@ -985,14 +1108,8 @@ class _WaveformSeekBarState extends State<WaveformSeekBar> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(
-                _formatDuration(widget.position),
-                style: const TextStyle(color: Colors.white54, fontSize: 12),
-              ),
-              Text(
-                _formatDuration(widget.duration),
-                style: const TextStyle(color: Colors.white54, fontSize: 12),
-              ),
+              Text(_formatDuration(widget.position), style: const TextStyle(color: Colors.white54, fontSize: 12)),
+              Text(_formatDuration(widget.duration), style: const TextStyle(color: Colors.white54, fontSize: 12)),
             ],
           ),
         ),
@@ -1001,26 +1118,16 @@ class _WaveformSeekBarState extends State<WaveformSeekBar> {
   }
 }
 
-// SeekBar original para backwards compatibility si es necesario
-class SeekBar extends WaveformSeekBar {
-  const SeekBar({
-    super.key,
-    required super.position,
-    required super.duration,
-    required super.onChangeEnd,
-    super.songId,
-    super.filePath,
-  });
-}
-
 // --- SMART ALBUM ART (DYNAMIC ASPECT CROP) ---
 class SmartAlbumArt extends StatefulWidget {
   final String artPath;
+  final String title;
   final double size;
 
   const SmartAlbumArt({
     super.key,
     required this.artPath,
+    required this.title,
     required this.size,
   });
 
@@ -1029,112 +1136,34 @@ class SmartAlbumArt extends StatefulWidget {
 }
 
 class _SmartAlbumArtState extends State<SmartAlbumArt> {
-  double? _imageAspectRatio;
-  bool _hasError = false;
+  // Consistent policy with song_tile/home_screen/mini_player: always a centered
+  // square crop via BoxFit.cover. No per-image aspect-ratio branching needed.
+  late bool _hasError = _isMissing(widget.artPath);
 
-  @override
-  void initState() {
-    super.initState();
-    _resolveImageSize();
-  }
+  static bool _isMissing(String path) => path.isEmpty || !File(path).existsSync();
 
   @override
   void didUpdateWidget(covariant SmartAlbumArt oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.artPath != widget.artPath) {
-      _resolveImageSize();
-    }
-  }
-
-  void _resolveImageSize() {
-    if (widget.artPath.isEmpty) {
       setState(() {
-        _imageAspectRatio = null;
-        _hasError = true;
+        _hasError = _isMissing(widget.artPath);
       });
-      return;
     }
-
-    final file = File(widget.artPath);
-    if (!file.existsSync()) {
-      setState(() {
-        _imageAspectRatio = null;
-        _hasError = true;
-      });
-      return;
-    }
-
-    final image = FileImage(file);
-    final stream = image.resolve(ImageConfiguration.empty);
-    stream.addListener(
-      ImageStreamListener(
-        (ImageInfo info, bool synchronousCall) {
-          if (mounted) {
-            setState(() {
-              _imageAspectRatio = info.image.width / info.image.height;
-              _hasError = false;
-            });
-          }
-        },
-        onError: (exception, stackTrace) {
-          if (mounted) {
-            setState(() {
-              _imageAspectRatio = null;
-              _hasError = true;
-            });
-          }
-        },
-      ),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_hasError || widget.artPath.isEmpty) {
+    if (_hasError) {
       return _buildPlaceholder();
     }
 
-    final file = File(widget.artPath);
-
-    if (_imageAspectRatio == null) {
-      return Image.file(
-        file,
-        fit: BoxFit.cover,
-        width: widget.size,
-        height: widget.size,
-      );
-    }
-
-    // 1. If the image is letterboxed 4:3 (~1.33)
-    // We crop 12.5% from top/bottom and 21.875% from sides to isolate the 1:1 square.
-    if ((_imageAspectRatio! - 1.333).abs() < 0.05) {
-      return SizedBox(
-        width: widget.size,
-        height: widget.size,
-        child: ClipRect(
-          child: OverflowBox(
-            alignment: Alignment.center,
-            minWidth: widget.size * 1.7778,
-            maxWidth: widget.size * 1.7778,
-            minHeight: widget.size * 1.3333,
-            maxHeight: widget.size * 1.3333,
-            child: Image.file(
-              file,
-              fit: BoxFit.fill,
-              width: widget.size * 1.7778,
-              height: widget.size * 1.3333,
-            ),
-          ),
-        ),
-      );
-    }
-
-    // 2. Otherwise (including native 16:9), BoxFit.cover on a square automatically clips side bars perfectly
     return Image.file(
-      file,
+      File(widget.artPath),
       fit: BoxFit.cover,
       width: widget.size,
       height: widget.size,
+      errorBuilder: (_, __, ___) => _buildPlaceholder(),
     );
   }
 
@@ -1142,7 +1171,7 @@ class _SmartAlbumArtState extends State<SmartAlbumArt> {
     return Container(
       width: widget.size,
       height: widget.size,
-      color: const Color(0xFF1A237E),
+      decoration: BoxDecoration(gradient: AppTheme.gradientForTitle(widget.title)),
       child: Icon(
         Icons.music_note,
         color: Colors.white70,

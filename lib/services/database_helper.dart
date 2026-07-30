@@ -22,7 +22,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 5,
+      version: 10,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -45,7 +45,15 @@ class DatabaseHelper {
         filePath TEXT NOT NULL,
         artPath TEXT NOT NULL,
         format TEXT NOT NULL,
-        downloadDate TEXT NOT NULL
+        downloadDate TEXT NOT NULL,
+        uri TEXT,
+        fileHash TEXT,
+        hashKind TEXT,
+        fileSize INTEGER,
+        modifiedAt INTEGER,
+        album TEXT,
+        missing INTEGER NOT NULL DEFAULT 0,
+        ignoredFromInbox INTEGER NOT NULL DEFAULT 0
       )
     ''');
 
@@ -72,18 +80,19 @@ class DatabaseHelper {
       )
     ''');
 
-    // Create download_queue table
+    // Note: no download_queue table on a fresh install (v10+) — the download
+    // pipeline that used it was pruned in Stage 5. Upgrades from an older
+    // version still create it via the historical _onUpgrade blocks below,
+    // then drop it in the `oldVersion < 10` block, same net result.
+
+    // Create play_history table for statistics
     await db.execute('''
-      CREATE TABLE download_queue (
+      CREATE TABLE play_history (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        videoId TEXT NOT NULL,
-        playlistId TEXT NOT NULL,
-        addedDate TEXT NOT NULL,
-        source TEXT DEFAULT 'youtube',
-        spotifyTitle TEXT,
-        spotifyArtist TEXT,
-        spotifyDurationMs INTEGER,
-        spotifyThumbnailUrl TEXT
+        songId TEXT NOT NULL,
+        playDate TEXT NOT NULL,
+        playDuration INTEGER NOT NULL,
+        FOREIGN KEY (songId) REFERENCES songs (id) ON DELETE CASCADE
       )
     ''');
   }
@@ -125,6 +134,51 @@ class DatabaseHelper {
       await db.execute("ALTER TABLE download_queue ADD COLUMN spotifyDurationMs INTEGER");
       await db.execute("ALTER TABLE download_queue ADD COLUMN spotifyThumbnailUrl TEXT");
     }
+    if (oldVersion < 6) {
+      await db.execute('''
+        CREATE TABLE IF NOT EXISTS play_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          songId TEXT NOT NULL,
+          playDate TEXT NOT NULL,
+          playDuration INTEGER NOT NULL,
+          FOREIGN KEY (songId) REFERENCES songs (id) ON DELETE CASCADE
+        )
+      ''');
+    }
+    if (oldVersion < 7) {
+      // Add expectedOrderIndex to preserve playlist order during parallel downloads
+      await db.execute(
+        'ALTER TABLE download_queue ADD COLUMN expectedOrderIndex INTEGER',
+      );
+    }
+    if (oldVersion < 8) {
+      // Local-library pivot: SAF-imported songs identify by uri/fileHash
+      // instead of filePath. Additive only — legacy rows keep working via
+      // Song.playablePath (uri ?? filePath). See CLAUDE.md D9.
+      await db.execute('ALTER TABLE songs ADD COLUMN uri TEXT');
+      await db.execute('ALTER TABLE songs ADD COLUMN fileHash TEXT');
+      await db.execute('ALTER TABLE songs ADD COLUMN hashKind TEXT');
+      await db.execute('ALTER TABLE songs ADD COLUMN fileSize INTEGER');
+      await db.execute('ALTER TABLE songs ADD COLUMN modifiedAt INTEGER');
+      await db.execute('ALTER TABLE songs ADD COLUMN album TEXT');
+      await db.execute(
+        'ALTER TABLE songs ADD COLUMN missing INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    if (oldVersion < 9) {
+      // Inbox (D6): lets the user dismiss a stray/unwanted imported file
+      // from the assignment screen without it reappearing on every scan.
+      // Never touched by the scanner itself — only by an explicit user action.
+      await db.execute(
+        'ALTER TABLE songs ADD COLUMN ignoredFromInbox INTEGER NOT NULL DEFAULT 0',
+      );
+    }
+    if (oldVersion < 10) {
+      // The download pipeline that owned this table was pruned in Stage 5 —
+      // see CLAUDE.md. Safe to drop outright: it only ever held in-flight
+      // download jobs, nothing a user would expect to survive an update.
+      await db.execute('DROP TABLE IF EXISTS download_queue');
+    }
   }
 
   // --- SONGS CRUD ---
@@ -148,7 +202,6 @@ class DatabaseHelper {
     final db = await database;
     final maps = await db.query(
       'songs',
-      columns: ['id', 'title', 'artist', 'duration', 'filePath', 'artPath', 'format', 'downloadDate'],
       where: 'id = ?',
       whereArgs: [id],
     );
@@ -158,6 +211,170 @@ class DatabaseHelper {
     } else {
       return null;
     }
+  }
+
+  // --- LOCAL LIBRARY (SAF import) ---
+
+  Future<Song?> getSongByUri(String uri) async {
+    final db = await database;
+    final maps = await db.query('songs', where: 'uri = ?', whereArgs: [uri]);
+    return maps.isNotEmpty ? Song.fromMap(maps.first) : null;
+  }
+
+  Future<Song?> getSongByHash(String fileHash) async {
+    final db = await database;
+    final maps = await db.query(
+      'songs',
+      where: 'fileHash = ?',
+      whereArgs: [fileHash],
+    );
+    return maps.isNotEmpty ? Song.fromMap(maps.first) : null;
+  }
+
+  /// Marks every previously-imported song (uri IS NOT NULL) as missing.
+  /// Call once at the start of a scan; each file actually found on disk
+  /// clears its own row's flag via [touchSongFound] as the scan proceeds,
+  /// so anything left flagged at the end genuinely wasn't seen this pass.
+  Future<void> markAllImportedSongsMissing() async {
+    final db = await database;
+    await db.update(
+      'songs',
+      {'missing': 1},
+      where: 'uri IS NOT NULL',
+    );
+  }
+
+  /// Updates a song's location/stats after finding it on disk during a scan
+  /// (same uri, or same fileHash under a new uri) and clears its tombstone.
+  Future<void> touchSongFound(
+    String songId, {
+    required String uri,
+    required int fileSize,
+    required int modifiedAt,
+    String? fileHash,
+    String? hashKind,
+    String? title,
+    String? artist,
+    String? album,
+    int? duration,
+    String? artPath,
+  }) async {
+    final db = await database;
+    final values = <String, dynamic>{
+      'uri': uri,
+      'fileSize': fileSize,
+      'modifiedAt': modifiedAt,
+      'missing': 0,
+    };
+    if (fileHash != null) values['fileHash'] = fileHash;
+    if (hashKind != null) values['hashKind'] = hashKind;
+    if (title != null) values['title'] = title;
+    if (artist != null) values['artist'] = artist;
+    if (album != null) values['album'] = album;
+    if (duration != null) values['duration'] = duration;
+    if (artPath != null) values['artPath'] = artPath;
+    await db.update('songs', values, where: 'id = ?', whereArgs: [songId]);
+  }
+
+  Future<int> getMissingImportedSongCount() async {
+    final db = await database;
+    final result = await db.rawQuery(
+      'SELECT COUNT(*) as c FROM songs WHERE uri IS NOT NULL AND missing = 1',
+    );
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  // --- INBOX (D6): songs imported loose in the library root, with no
+  // playlist assigned yet. A missing or explicitly-ignored song never shows
+  // up here — there's nothing useful to do with a file that's gone, and an
+  // ignored one was already handled by the user.
+
+  static const _inboxWhere =
+      'ps.songId IS NULL AND s.missing = 0 AND s.ignoredFromInbox = 0';
+
+  Future<List<Song>> getInboxSongs() async {
+    final db = await database;
+    final maps = await db.rawQuery('''
+      SELECT s.* FROM songs s
+      LEFT JOIN playlist_songs ps ON s.id = ps.songId
+      WHERE $_inboxWhere
+      ORDER BY s.downloadDate DESC
+    ''');
+    return maps.map((map) => Song.fromMap(map)).toList();
+  }
+
+  Future<int> getInboxSongCount() async {
+    final db = await database;
+    final result = await db.rawQuery('''
+      SELECT COUNT(*) as c FROM songs s
+      LEFT JOIN playlist_songs ps ON s.id = ps.songId
+      WHERE $_inboxWhere
+    ''');
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  /// Hides songs from the inbox permanently — the scanner never sets or
+  /// clears this flag, so once ignored a song stays ignored across rescans.
+  Future<void> ignoreSongsFromInbox(List<String> songIds) async {
+    if (songIds.isEmpty) return;
+    final db = await database;
+    await db.update(
+      'songs',
+      {'ignoredFromInbox': 1},
+      where: 'id IN (${List.filled(songIds.length, '?').join(',')})',
+      whereArgs: songIds,
+    );
+  }
+
+  /// Songs previously dismissed via [ignoreSongsFromInbox] — the "Ignoradas"
+  /// filter, so a dismiss is reversible instead of a dead end.
+  Future<List<Song>> getIgnoredSongs() async {
+    final db = await database;
+    final maps = await db.rawQuery('''
+      SELECT s.* FROM songs s
+      LEFT JOIN playlist_songs ps ON s.id = ps.songId
+      WHERE ps.songId IS NULL AND s.missing = 0 AND s.ignoredFromInbox = 1
+      ORDER BY s.downloadDate DESC
+    ''');
+    return maps.map((map) => Song.fromMap(map)).toList();
+  }
+
+  /// Moves songs back from "Ignoradas" into the regular inbox.
+  Future<void> unignoreSongsFromInbox(List<String> songIds) async {
+    if (songIds.isEmpty) return;
+    final db = await database;
+    await db.update(
+      'songs',
+      {'ignoredFromInbox': 0},
+      where: 'id IN (${List.filled(songIds.length, '?').join(',')})',
+      whereArgs: songIds,
+    );
+  }
+
+  /// Assigns every song in [songIds] to every playlist in [playlistIds],
+  /// each appended after that playlist's current last track. Used by the
+  /// inbox's batch-assign sheet, where a selection can go to more than one
+  /// playlist at once.
+  Future<void> assignSongsToPlaylists(List<String> songIds, List<String> playlistIds) async {
+    if (songIds.isEmpty || playlistIds.isEmpty) return;
+    final db = await database;
+    await db.transaction((txn) async {
+      for (final playlistId in playlistIds) {
+        final maxOrderResult = await txn.rawQuery(
+          'SELECT MAX(orderIndex) as maxOrder FROM playlist_songs WHERE playlistId = ?',
+          [playlistId],
+        );
+        var nextOrder = (maxOrderResult.first['maxOrder'] as int?) ?? -1;
+        for (final songId in songIds) {
+          nextOrder += 1;
+          await txn.insert(
+            'playlist_songs',
+            {'playlistId': playlistId, 'songId': songId, 'orderIndex': nextOrder},
+            conflictAlgorithm: ConflictAlgorithm.replace,
+          );
+        }
+      }
+    });
   }
 
   Future<void> deleteSong(String songId) async {
@@ -393,94 +610,155 @@ class DatabaseHelper {
     });
   }
 
-  // --- DOWNLOAD QUEUE CRUD ---
-
-  Future<int> addToDownloadQueue(String videoId, String playlistId) async {
-    final db = await database;
-    
-    // Check if already in queue to prevent duplicate downloads in the queue
-    final existing = await db.query(
-      'download_queue',
-      where: 'videoId = ? AND playlistId = ?',
-      whereArgs: [videoId, playlistId],
-    );
-    if (existing.isNotEmpty) return 0;
-
-    return await db.insert(
-      'download_queue',
-      {
-        'videoId': videoId,
-        'playlistId': playlistId,
-        'addedDate': DateTime.now().toIso8601String(),
-        'source': 'youtube',
-      },
-    );
-  }
-
-  Future<int> addSpotifyToDownloadQueue({
-    required String spotifyTrackId,
-    required String playlistId,
-    required String title,
-    required String artist,
-    required int durationMs,
-    String? thumbnailUrl,
-  }) async {
-    final db = await database;
-
-    // Check if already in queue to prevent duplicate downloads in the queue
-    final existing = await db.query(
-      'download_queue',
-      where: 'videoId = ? AND playlistId = ?',
-      whereArgs: [spotifyTrackId, playlistId],
-    );
-    if (existing.isNotEmpty) return 0;
-
-    return await db.insert(
-      'download_queue',
-      {
-        'videoId': spotifyTrackId,
-        'playlistId': playlistId,
-        'addedDate': DateTime.now().toIso8601String(),
-        'source': 'spotify',
-        'spotifyTitle': title,
-        'spotifyArtist': artist,
-        'spotifyDurationMs': durationMs,
-        'spotifyThumbnailUrl': thumbnailUrl,
-      },
-    );
-  }
-
-  Future<List<Map<String, dynamic>>> getDownloadQueue() async {
-    final db = await database;
-    return await db.query('download_queue', orderBy: 'id ASC');
-  }
-
-  Future<int> removeFromDownloadQueue(int queueId) async {
-    final db = await database;
-    return await db.delete(
-      'download_queue',
-      where: 'id = ?',
-      whereArgs: [queueId],
-    );
-  }
-
-  Future<int> clearDownloadQueue() async {
-    final db = await database;
-    return await db.delete('download_queue');
-  }
-
   Future close() async {
     final db = await database;
     db.close();
   }
 
-  // Clear queue items for a specific playlist
-  Future<int> clearQueueForPlaylist(String playlistId) async {
+  // --- PLAY HISTORY / STATISTICS ---
+
+  Future<int> recordPlay(String songId, int playDuration) async {
     final db = await database;
-    return await db.delete('download_queue', where: 'playlistId = ?', whereArgs: [playlistId]);
+    return await db.insert(
+      'play_history',
+      {
+        'songId': songId,
+        'playDate': DateTime.now().toIso8601String(),
+        'playDuration': playDuration,
+      },
+    );
   }
 
-  // Delete all songs belonging to a playlist (files + DB rows) and clear its download queue
+  String _getStartOfWeek() {
+    final now = DateTime.now();
+    final daysToSubtract = now.weekday - 1;
+    final monday = DateTime(now.year, now.month, now.day).subtract(Duration(days: daysToSubtract));
+    return monday.toIso8601String();
+  }
+
+  Future<List<Map<String, dynamic>>> getTopSongsThisWeek({int limit = 10}) async {
+    final db = await database;
+    final startOfWeek = _getStartOfWeek();
+    
+    final result = await db.rawQuery('''
+      SELECT s.id, s.title, s.artist, s.artPath, COUNT(*) as playCount
+      FROM play_history ph
+      JOIN songs s ON s.id = ph.songId
+      WHERE ph.playDate >= ?
+      GROUP BY s.id
+      ORDER BY playCount DESC
+      LIMIT ?
+    ''', [startOfWeek, limit]);
+    
+    return result;
+  }
+
+  Future<List<Map<String, dynamic>>> getTopSongsThisMonth({int limit = 10}) async {
+    final db = await database;
+    final oneMonthAgo = DateTime.now().subtract(Duration(days: 30)).toIso8601String();
+    
+    final result = await db.rawQuery('''
+      SELECT s.id, s.title, s.artist, s.artPath, COUNT(*) as playCount
+      FROM play_history ph
+      JOIN songs s ON s.id = ph.songId
+      WHERE ph.playDate >= ?
+      GROUP BY s.id
+      ORDER BY playCount DESC
+      LIMIT ?
+    ''', [oneMonthAgo, limit]);
+    
+    return result;
+  }
+
+  Future<int> getTotalPlaysThisWeek() async {
+    final db = await database;
+    final startOfWeek = _getStartOfWeek();
+    
+    final result = await db.rawQuery('''
+      SELECT COUNT(*) as total
+      FROM play_history
+      WHERE playDate >= ?
+    ''', [startOfWeek]);
+    
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  Future<int> getTotalPlaysThisMonth() async {
+    final db = await database;
+    final oneMonthAgo = DateTime.now().subtract(Duration(days: 30)).toIso8601String();
+    
+    final result = await db.rawQuery('''
+      SELECT COUNT(*) as total
+      FROM play_history
+      WHERE playDate >= ?
+    ''', [oneMonthAgo]);
+    
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  Future<int> getTotalListenTimeThisWeek() async {
+    final db = await database;
+    final startOfWeek = _getStartOfWeek();
+
+    final result = await db.rawQuery('''
+      SELECT COALESCE(SUM(playDuration), 0) as total
+      FROM play_history
+      WHERE playDate >= ?
+    ''', [startOfWeek]);
+
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  Future<int> getTotalListenTimeThisMonth() async {
+    final db = await database;
+    final oneMonthAgo = DateTime.now().subtract(Duration(days: 30)).toIso8601String();
+
+    final result = await db.rawQuery('''
+      SELECT COALESCE(SUM(playDuration), 0) as total
+      FROM play_history
+      WHERE playDate >= ?
+    ''', [oneMonthAgo]);
+
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  Future<Map<String, dynamic>?> getTopArtistThisWeek() async {
+    final db = await database;
+    final startOfWeek = _getStartOfWeek();
+
+    final result = await db.rawQuery('''
+      SELECT s.artist, COUNT(*) as playCount
+      FROM play_history ph
+      JOIN songs s ON s.id = ph.songId
+      WHERE ph.playDate >= ?
+      GROUP BY s.artist
+      ORDER BY playCount DESC
+      LIMIT 1
+    ''', [startOfWeek]);
+
+    if (result.isEmpty) return null;
+    return result.first;
+  }
+
+  Future<Map<String, dynamic>?> getTopArtistThisMonth() async {
+    final db = await database;
+    final oneMonthAgo = DateTime.now().subtract(Duration(days: 30)).toIso8601String();
+
+    final result = await db.rawQuery('''
+      SELECT s.artist, COUNT(*) as playCount
+      FROM play_history ph
+      JOIN songs s ON s.id = ph.songId
+      WHERE ph.playDate >= ?
+      GROUP BY s.artist
+      ORDER BY playCount DESC
+      LIMIT 1
+    ''', [oneMonthAgo]);
+
+    if (result.isEmpty) return null;
+    return result.first;
+  }
+
+  // Delete all songs belonging to a playlist (files + DB rows).
   Future<void> deleteAllSongsForPlaylist(String playlistId) async {
     final db = await database;
     await db.transaction((txn) async {
@@ -488,7 +766,11 @@ class DatabaseHelper {
       final songMaps = await txn.rawQuery('SELECT songId FROM playlist_songs WHERE playlistId = ?', [playlistId]);
       final songIds = songMaps.map((e) => e['songId'] as String).toList();
 
-      // Delete physical files for each song
+      // Delete physical files for each song. Deliberately song.filePath, not
+      // playablePath: this may only ever delete a file Heardy itself owns
+      // (a legacy download in app-private storage, empty for imported
+      // songs) — the app must never delete the user's own file in their
+      // SAF-picked folder (D3, one-way sync).
       for (final id in songIds) {
         final song = await getSongById(id);
         if (song != null) {
@@ -501,9 +783,6 @@ class DatabaseHelper {
       if (songIds.isNotEmpty) {
         await txn.delete('songs', where: 'id IN (${List.filled(songIds.length, '?').join(',')})', whereArgs: songIds);
       }
-
-      // Clear any pending download queue for this playlist
-      await txn.delete('download_queue', where: 'playlistId = ?', whereArgs: [playlistId]);
     });
   }
 }

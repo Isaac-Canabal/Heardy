@@ -6,25 +6,112 @@ import '../models/song.dart';
 import '../services/database_helper.dart';
 import '../services/audio_player_handler.dart';
 import '../services/playback_state_service.dart';
+import '../services/storage_service.dart';
 
 class MusicProvider with ChangeNotifier {
   final DatabaseHelper _dbHelper = DatabaseHelper.instance;
+  final StorageService _storageService = StorageService();
 
   List<Playlist> _playlists = [];
   List<Song> _currentPlaylistSongs = [];
   String? _currentPlaylistId;
+  int _inboxCount = 0;
+  String? _libraryRootUri;
+  int _librarySongsVersion = 0;
 
   List<Playlist> get playlists => _playlists;
   List<Song> get currentPlaylistSongs => _currentPlaylistSongs;
   String? get currentPlaylistId => _currentPlaylistId;
+  int get inboxCount => _inboxCount;
+  // Single source of truth for "is a library folder picked, and which one" —
+  // read this everywhere instead of each screen tracking its own copy.
+  // Settings/inbox_screen used to each load it independently, so picking a
+  // folder in one never showed up in the other without navigating away and
+  // back (IndexedStack keeps both alive, neither reloads on tab switch).
+  String? get libraryRootUri => _libraryRootUri;
+  // Bumped on every completed scan. search_screen.dart watches this to know
+  // when to reload its song list — same IndexedStack staleness class as
+  // libraryRootUri above: a screen that only loaded songs in initState()
+  // never saw anything imported after the app's cold start.
+  int get librarySongsVersion => _librarySongsVersion;
 
   MusicProvider() {
     loadPlaylists();
+    refreshInboxCount();
+    refreshLibraryRootUri();
   }
 
-  /// Intenta restaurar el estado de reproducción guardado
-  Future<void> restorePlaybackState(AudioPlayerHandler audioHandler) async {
+  /// Call after a scan completes — signals every screen that lists songs
+  /// (currently just search) to reload from SQLite.
+  void notifyLibraryChanged() {
+    _librarySongsVersion++;
+    notifyListeners();
+  }
+
+  /// Recomputes the inbox badge count. Call after a scan and after any
+  /// batch-assign/ignore action so the bottom-nav badge stays live.
+  Future<void> refreshInboxCount() async {
     try {
+      _inboxCount = await _dbHelper.getInboxSongCount();
+      notifyListeners();
+    } catch (e) {
+      print("Error refreshing inbox count: $e");
+    }
+  }
+
+  /// Re-reads the persisted root — only needed at startup. Once loaded,
+  /// mutate it via [setLibraryRootUri] instead of round-tripping through
+  /// storage again.
+  Future<void> refreshLibraryRootUri() async {
+    try {
+      _libraryRootUri = await _storageService.getLibraryRootUri();
+      notifyListeners();
+    } catch (e) {
+      print("Error refreshing library root uri: $e");
+    }
+  }
+
+  /// Call right after picking a folder (or after clearing it because a scan
+  /// found it gone) — updates every screen watching this provider
+  /// immediately, no navigation required.
+  void setLibraryRootUri(String? uri) {
+    _libraryRootUri = uri;
+    notifyListeners();
+  }
+
+  bool _isRestoringPlayback = false;
+
+  /// Intenta restaurar el estado de reproducción guardado.
+  ///
+  /// Idempotente por estado real, no por un flag de "ya corrí una vez": si
+  /// `audioHandler` ya tiene una fuente cargada no hace nada, así que es seguro
+  /// llamarla más de una vez (p. ej. tras un timing distinto en un arranque lento)
+  /// sin pisar una reproducción ya en curso.
+  Future<void> restorePlaybackState(AudioPlayerHandler audioHandler) async {
+    if (_isRestoringPlayback) return;
+    if (audioHandler.hasLoadedSource) {
+      print('El reproductor ya tiene una fuente cargada, no hace falta restaurar');
+      return;
+    }
+
+    _isRestoringPlayback = true;
+    try {
+      // Estado sucio: queue/mediaItem ya describen una canción (sobrevivieron en
+      // memoria a un proceso que Android mató sin pasar por onTaskRemoved) pero
+      // el player no tiene nada cargado. Reconstruir directo desde lo que ya hay
+      // en memoria — no hace falta tocar SharedPreferences/SQLite para esto.
+      final staleQueue = audioHandler.queue.value;
+      final staleMediaItem = audioHandler.mediaItem.value;
+      if (staleQueue.isNotEmpty && staleMediaItem != null) {
+        print('Estado sucio detectado (queue/mediaItem sin fuente cargada), reconstruyendo...');
+        await audioHandler.restorePlaylist(
+          staleQueue,
+          staleMediaItem.id,
+          audioHandler.player.position,
+        );
+        return;
+      }
+
       print('Verificando estado de reproducción guardado...');
       final savedState = await PlaybackStateService.restoreState();
       if (savedState == null) {
@@ -34,10 +121,6 @@ class MusicProvider with ChangeNotifier {
 
       print('Estado guardado encontrado, iniciando restauración...');
 
-      // Esperar un poco para asegurar que audio_service esté completamente inicializado
-      await Future.delayed(const Duration(milliseconds: 500));
-
-      // Obtener datos guardados
       final playlistId = savedState['playlistId'] as String?;
       final currentMediaId = savedState['currentMediaId'] as String;
       final position = savedState['position'] as Duration;
@@ -47,123 +130,103 @@ class MusicProvider with ChangeNotifier {
       final loopModeStr = savedState['loopModeStr'] as String?;
       final speed = savedState['speed'] as double?;
 
-      // Cargar la playlist si existe
-      if (playlistId != null && playlistId.isNotEmpty) {
-        final playlistExists = _playlists.any((p) => p.id == playlistId);
-        if (!playlistExists) {
-          print('La playlist guardada ya no existe');
-          await PlaybackStateService.clearState();
-          return;
-        }
-
-        await loadSongsForPlaylist(playlistId, updateCurrent: true);
-        
-        // Esperar un poco más después de cargar las canciones
-        await Future.delayed(const Duration(milliseconds: 200));
-
-        // Reconstruir la queue
-        final queueSongs = _currentPlaylistSongs.where((song) {
-          return queueIds.contains(song.id);
-        }).toList();
-
-        if (queueSongs.isEmpty) {
-          print('La queue guardada está vacía o inválida');
-          await PlaybackStateService.clearState();
-          return;
-        }
-
-        // Convertir a MediaItems
-        final mediaItems = queueSongs.map((song) => MediaItem(
-          id: song.id,
-          title: song.title,
-          artist: song.artist,
-          duration: Duration(seconds: song.duration),
-          artUri: song.artPath.isNotEmpty
-              ? Uri.file(song.artPath)
-              : null,
-          extras: {'playlist_id': playlistId},
-        )).toList();
-
-        // Setear la queue
-        try {
-          audioHandler.queue.add(mediaItems);
-        } catch (e) {
-          print('Error seteando queue: $e');
-          await PlaybackStateService.clearState();
-          return;
-        }
-
-        // Encontrar el índice de la canción actual
-        final currentIndex = mediaItems.indexWhere((item) => item.id == currentMediaId);
-        if (currentIndex == -1) {
-          print('Canción actual no encontrada en la queue');
-          await PlaybackStateService.clearState();
-          return;
-        }
-
-        // Ir a la posición con retry en caso de fallo
-        try {
-          await audioHandler.skipToQueueItem(currentIndex);
-          await Future.delayed(const Duration(milliseconds: 100));
-          await audioHandler.seek(position);
-        } catch (e) {
-          print('Error al navegar a la canción: $e');
-          await PlaybackStateService.clearState();
-          return;
-        }
-
-        // Restaurar shuffle y repeat mode
-        if (shuffleModeStr != null) {
-          try {
-            final shuffleMode = AudioServiceShuffleMode.values.firstWhere(
-              (mode) => mode.name == shuffleModeStr,
-              orElse: () => AudioServiceShuffleMode.none,
-            );
-            await audioHandler.setShuffleMode(shuffleMode);
-          } catch (e) {
-            print('Error restaurando shuffle mode: $e');
-          }
-        }
-
-        if (loopModeStr != null) {
-          try {
-            final loopMode = AudioServiceRepeatMode.values.firstWhere(
-              (mode) => mode.name == loopModeStr,
-              orElse: () => AudioServiceRepeatMode.one,
-            );
-            await audioHandler.setRepeatMode(loopMode);
-          } catch (e) {
-            print('Error restaurando loop mode: $e');
-          }
-        }
-
-        // Restaurar velocidad
-        if (speed != null && speed > 0) {
-          try {
-            await audioHandler.player.setSpeed(speed);
-          } catch (e) {
-            print('Error restaurando velocidad: $e');
-          }
-        }
-
-        // Solo reproducir si estaba reproduciendo
-        if (isPlaying) {
-          try {
-            await audioHandler.play();
-          } catch (e) {
-            print('Error iniciando reproducción: $e');
-          }
-        } else {
-          print('Estado restaurado: canción pausada en ${position.inSeconds}s');
-        }
-
-        print('Estado de reproducción restaurado exitosamente');
+      if (playlistId == null || playlistId.isEmpty) {
+        print('No hay playlistId guardado');
+        await PlaybackStateService.clearState();
+        return;
       }
+
+      // Asegurar que la lista de playlists esté cargada de la base de datos
+      await loadPlaylists();
+
+      final playlistExists = _playlists.any((p) => p.id == playlistId);
+      if (!playlistExists) {
+        print('La playlist guardada ya no existe');
+        await PlaybackStateService.clearState();
+        return;
+      }
+
+      await loadSongsForPlaylist(playlistId, updateCurrent: true);
+
+      // Reconstruir la queue CON filePath y artPath en extras
+      final playlist = _playlists.firstWhere((p) => p.id == playlistId);
+      final queueSongs = _currentPlaylistSongs.where((song) {
+        return queueIds.contains(song.id);
+      }).toList();
+
+      if (queueSongs.isEmpty) {
+        print('La queue guardada está vacía o inválida');
+        await PlaybackStateService.clearState();
+        return;
+      }
+
+      final mediaItems = queueSongs.map((song) => MediaItem(
+        id: song.id,
+        album: playlist.name,
+        title: song.title,
+        artist: song.artist,
+        duration: Duration(seconds: song.duration),
+        artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
+        extras: {
+          'filePath': song.playablePath,   // ← crítico para que just_audio cargue el audio (uri SAF o ruta legacy)
+          'artPath': song.artPath,
+          'playlist_id': playlistId,
+        },
+      )).toList();
+
+      // Restaurar shuffle y repeat mode ANTES de cargar
+      if (shuffleModeStr != null) {
+        try {
+          final shuffleMode = AudioServiceShuffleMode.values.firstWhere(
+            (mode) => mode.name == shuffleModeStr,
+            orElse: () => AudioServiceShuffleMode.none,
+          );
+          await audioHandler.setShuffleMode(shuffleMode);
+        } catch (e) {
+          print('Error restaurando shuffle mode: $e');
+        }
+      }
+
+      if (loopModeStr != null) {
+        try {
+          final loopMode = AudioServiceRepeatMode.values.firstWhere(
+            (mode) => mode.name == loopModeStr,
+            orElse: () => AudioServiceRepeatMode.one,
+          );
+          await audioHandler.setRepeatMode(loopMode);
+        } catch (e) {
+          print('Error restaurando loop mode: $e');
+        }
+      }
+
+      if (speed != null && speed > 0) {
+        try {
+          await audioHandler.player.setSpeed(speed);
+        } catch (e) {
+          print('Error restaurando velocidad: $e');
+        }
+      }
+
+      // Cargar playlist con o sin reproducción según el estado guardado
+      if (isPlaying) {
+        // Estaba reproduciendo: cargar y reproducir desde la posición
+        await audioHandler.playPlaylist(mediaItems, currentMediaId);
+        await Future.delayed(const Duration(milliseconds: 150));
+        await audioHandler.seek(position);
+      } else {
+        // Estaba pausado: cargar fuente de audio SIN reproducir
+        await audioHandler.restorePlaylist(mediaItems, currentMediaId, position);
+      }
+
+      print('Estado de reproducción restaurado exitosamente (${isPlaying ? "PLAYING" : "PAUSED"} en ${position.inSeconds}s)');
     } catch (e) {
       print('Error restaurando estado de reproducción: $e');
       await PlaybackStateService.clearState();
+    } finally {
+      _isRestoringPlayback = false;
     }
   }
+
 
   /// Fetches all playlists from the database and updates the local cache.
   Future<void> loadPlaylists() async {
@@ -284,6 +347,18 @@ class MusicProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  /// Plays a tapped result from local search, queuing the rest of the
+  /// current result set so next/previous stay within it — not tied to any
+  /// playlist, so it doesn't touch `_currentPlaylistId`/`_currentPlaylistSongs`.
+  Future<void> playSearchResults(
+    List<Song> results,
+    Song target,
+    AudioPlayerHandler audioHandler,
+  ) async {
+    if (results.isEmpty) return;
+    await _playSongList(audioHandler, results, target, 'Búsqueda');
+  }
+
   Future<void> _playSongList(
     AudioPlayerHandler audioHandler,
     List<Song> songs,
@@ -300,7 +375,7 @@ class MusicProvider with ChangeNotifier {
             duration: Duration(seconds: song.duration),
             artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
             extras: {
-              'filePath': song.filePath,
+              'filePath': song.playablePath,
               'artPath': song.artPath,
             },
           ),
@@ -390,7 +465,7 @@ class MusicProvider with ChangeNotifier {
               duration: Duration(seconds: song.duration),
               artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
               extras: {
-                'filePath': song.filePath,
+                'filePath': song.playablePath,
                 'artPath': song.artPath,
               },
             ),

@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:audio_service/audio_service.dart';
 import '../providers/music_provider.dart';
-import '../services/database_helper.dart';
-import '../providers/download_provider.dart';
 import '../services/audio_player_handler.dart';
 import '../models/song.dart';
 import '../widgets/song_tile.dart';
@@ -53,13 +51,19 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     final musicProvider = Provider.of<MusicProvider>(context);
     final audioHandler = Provider.of<AudioPlayerHandler>(context);
 
-    // Fetch the active playlist metadata
-    final playlist = musicProvider.playlists.firstWhere(
-      (p) => p.id == widget.playlistId,
-      orElse: () => musicProvider.currentPlaylistSongs.isNotEmpty
-          ? musicProvider.playlists.firstWhere((p) => p.id == widget.playlistId)
-          : musicProvider.playlists.first, // fallback if deleted
-    );
+    // Fetch the active playlist metadata.
+    //
+    // Esto era un `firstWhere` cuyo `orElse` —el camino para "no encontrada"—
+    // repetía la MISMA búsqueda sin `orElse`, así que lanzaba StateError justo en
+    // el caso que pretendía cubrir; y su otra rama, `playlists.first`, lanzaba
+    // igual si no quedaba ninguna playlist. Borrar la playlist que estabas viendo
+    // reventaba `build()` con pantalla roja.
+    final matches =
+        musicProvider.playlists.where((p) => p.id == widget.playlistId);
+    if (matches.isEmpty) {
+      return _PlaylistGoneScaffold();
+    }
+    final playlist = matches.first;
 
     // Filter and sort tracks based on search bar and sort option
     final allSongs = musicProvider.currentPlaylistSongs;
@@ -135,26 +139,6 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                 ),
               ),
             ],
-          ),
-          IconButton(
-            icon: const Icon(Icons.refresh),
-            tooltip: 'Recargar Playlist',
-            onPressed: () async {
-              if (playlist.originalUrl == null || playlist.originalUrl!.isEmpty) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: const Text('No hay URL asociada a esta lista.'),
-                    backgroundColor: Colors.redAccent.shade700,
-                  ),
-                );
-                return;
-              }
-              ScaffoldMessenger.of(context).showSnackBar(
-                const SnackBar(content: Text('Buscando nuevas canciones...')),
-              );
-              final downloadProvider = Provider.of<DownloadProvider>(context, listen: false);
-              await downloadProvider.downloadPlaylist(playlist.originalUrl!, playlist.id);
-            },
           ),
           IconButton(
             icon: Icon(_isReordering ? Icons.done : Icons.edit_outlined),
@@ -307,20 +291,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     );
   }
 
-  String _getSortLabel(String sortBy) {
-    switch (sortBy) {
-      case 'manual':
-        return 'Orden de importación';
-      case 'artist':
-        return 'Artista';
-      case 'title':
-        return 'Título';
-      case 'duration':
-        return 'Duración';
-      default:
-        return 'Desconocido';
-    }
-  }
+
 
   Widget _buildSearchField() {
     return Container(
@@ -429,7 +400,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         duration: Duration(seconds: song.duration),
         artUri: song.artPath.isNotEmpty ? Uri.file(song.artPath) : null,
         extras: {
-          'filePath': song.filePath,
+          'filePath': song.playablePath,
           'artPath': song.artPath,
         },
       );
@@ -438,4 +409,52 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     await audioHandler.playPlaylist(mediaItems, targetSong.id);
   }
 
+}
+
+/// Pantalla mínima para cuando la playlist que se estaba viendo ya no existe
+/// (borrada desde otra pantalla mientras esta seguía en la pila de navegación).
+///
+/// Antes esto no existía y el caso terminaba en StateError dentro de `build()`.
+/// Se resuelve con una salida explícita en vez de intentar adivinar otra
+/// playlist, que es lo que hacía el `orElse` roto: mostrar contenido de una
+/// playlist distinta a la que el usuario abrió sería peor que decirle la verdad.
+class _PlaylistGoneScaffold extends StatelessWidget {
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('Playlist no disponible')),
+      body: Container(
+        decoration: AppTheme.gradientScaffold(),
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.playlist_remove_rounded,
+                  size: 56,
+                  color: Colors.white.withValues(alpha: 0.35),
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Esta playlist ya no existe.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.7),
+                    fontSize: 15,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('Volver'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:audio_service/audio_service.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -8,7 +9,6 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'services/database_helper.dart';
 import 'services/audio_player_handler.dart';
 import 'providers/music_provider.dart';
-import 'providers/download_provider.dart';
 import 'providers/settings_provider.dart';
 import 'screens/main_shell_screen.dart';
 import 'screens/playlist_detail_screen.dart';
@@ -16,6 +16,11 @@ import 'theme/app_theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  await SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+    DeviceOrientation.portraitDown,
+  ]);
 
   await DatabaseHelper.instance.database;
 
@@ -24,7 +29,10 @@ void main() async {
   const InitializationSettings initializationSettings = InitializationSettings(
     android: initializationSettingsAndroid,
   );
-  await flutterLocalNotificationsPlugin.initialize(initializationSettings);
+  // A fresh instance is enough: flutter_local_notifications initializes the
+  // plugin platform-wide, so any other instance (e.g. AudioPlayerHandler's
+  // own for playback-error notifications) shares this same initialization.
+  await FlutterLocalNotificationsPlugin().initialize(initializationSettings);
 
   final AudioPlayerHandler audioHandler = await AudioService.init(
     builder: () => AudioPlayerHandler(),
@@ -44,31 +52,26 @@ void main() async {
     }
   }
 
+  final musicProvider = MusicProvider();
+
   runApp(
     MultiProvider(
       providers: [
         Provider<AudioPlayerHandler>.value(value: audioHandler),
         ChangeNotifierProvider(create: (_) => SettingsProvider()),
-        ChangeNotifierProvider(create: (_) => MusicProvider()),
-        ChangeNotifierProxyProvider2<MusicProvider, AudioPlayerHandler, DownloadProvider>(
-          create: (_) => DownloadProvider()..initQueue(),
-          update: (_, musicProvider, audioHandler, downloadProvider) {
-            downloadProvider!.musicProvider = musicProvider;
-            downloadProvider.audioHandler = audioHandler;
-            
-            // Restaurar estado de reproducción después de que todo esté inicializado
-            // Usar Future.microtask para asegurar que se ejecute después del build inicial
-            Future.microtask(() async {
-              await musicProvider.restorePlaybackState(audioHandler);
-            });
-            
-            return downloadProvider;
-          },
-        ),
+        ChangeNotifierProvider.value(value: musicProvider),
       ],
       child: const HeardyApp(),
     ),
   );
+
+  // Restaurar estado de reproducción una vez que el primer frame ya se dibujó —
+  // condición real (el widget tree y sus Providers ya existen), no un delay
+  // arbitrario adivinado. `restorePlaybackState` es idempotente por estado
+  // real (ver MusicProvider), así que no depende de correr en un momento exacto.
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    musicProvider.restorePlaybackState(audioHandler);
+  });
 }
 
 class HeardyApp extends StatelessWidget {

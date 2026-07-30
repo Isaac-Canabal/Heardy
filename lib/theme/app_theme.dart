@@ -38,6 +38,27 @@ abstract final class AppTheme {
     colors: [Color(0xFF06B6D4), Color(0xFF60A5FA), Color(0xFF818CF8)],
   );
 
+  static const _placeholderGradients = <List<Color>>[
+    [Color(0xFF6366F1), Color(0xFFA855F7)],
+    [Color(0xFFEC4899), Color(0xFFF97316)],
+    [Color(0xFF0EA5E9), Color(0xFF22D3EE)],
+    [Color(0xFF10B981), Color(0xFF84CC16)],
+    [Color(0xFFF59E0B), Color(0xFFEF4444)],
+    [Color(0xFF8B5CF6), Color(0xFFD946EF)],
+  ];
+
+  /// Deterministic placeholder gradient for a song with no cover art — the
+  /// same title always maps to the same colors (D5), so a library without
+  /// artwork doesn't render as a wall of identical tiles.
+  static LinearGradient gradientForTitle(String title) {
+    final index = title.hashCode.abs() % _placeholderGradients.length;
+    return LinearGradient(
+      begin: Alignment.topLeft,
+      end: Alignment.bottomRight,
+      colors: _placeholderGradients[index],
+    );
+  }
+
   static BoxShadow get cardGlow => BoxShadow(
         color: _p.primary.withValues(alpha: 0.35),
         blurRadius: 20,

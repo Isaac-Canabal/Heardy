@@ -5,8 +5,7 @@ import '../providers/music_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/database_helper.dart';
 import '../theme/app_theme.dart';
-import '../services/audio_player_handler.dart';
-import '../services/repair_service.dart';
+import '../services/storage_service.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -45,6 +44,34 @@ class SettingsScreen extends StatelessWidget {
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
     if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
+  }
+
+  Future<void> _pickLibraryFolder(BuildContext context) async {
+    final storageService = StorageService();
+    try {
+      final rootUri = await storageService.pickLibraryRoot();
+      if (!context.mounted) return;
+      if (rootUri == null) return; // user cancelled the picker
+      // Notify MusicProvider immediately so Bandeja (kept alive by the
+      // bottom nav's IndexedStack) reflects the pick without the user
+      // having to navigate away and back.
+      context.read<MusicProvider>().setLibraryRootUri(rootUri);
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Carpeta "Heardy" lista. Andá a Bandeja para escanearla.'),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('No se pudo elegir la carpeta: $e'),
+          backgroundColor: Colors.red.withValues(alpha: 0.8),
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
   }
 
   @override
@@ -116,6 +143,8 @@ class SettingsScreen extends StatelessWidget {
               },
             ),
           ),
+          const SizedBox(height: 28),
+          const _StatisticsSection(),
           const SizedBox(height: 28),
           _SectionTitle('Apariencia'),
           const SizedBox(height: 10),
@@ -234,7 +263,7 @@ class SettingsScreen extends StatelessWidget {
                   ),
           ),
           const SizedBox(height: 28),
-          _SectionTitle('Mantenimiento'),
+          _SectionTitle('Biblioteca local (beta)'),
           const SizedBox(height: 10),
           Container(
             decoration: AppTheme.glassCard(),
@@ -245,13 +274,13 @@ class SettingsScreen extends StatelessWidget {
                 Row(
                   children: [
                     Icon(
-                      Icons.build_rounded,
+                      Icons.folder_open_rounded,
                       color: AppTheme.primaryLight,
                       size: 20,
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      'Reparar reproductor',
+                      'Importar desde carpeta',
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.7),
                         fontSize: 13,
@@ -261,7 +290,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Usa esto si el audio deja de reproducirse. Reinicia el estado del reproductor sin perder tus canciones.',
+                  'Elegí una carpeta y Heardy creará "Heardy/" dentro, con una subcarpeta por playlist. Metés archivos .mp3/.mp4 ahí desde el explorador — recargar y asignar lo suelto se hace desde la pestaña Bandeja.',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.45),
                     fontSize: 12,
@@ -271,86 +300,18 @@ class SettingsScreen extends StatelessWidget {
                 const SizedBox(height: 12),
                 SizedBox(
                   width: double.infinity,
-                  child: ElevatedButton.icon(
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.primary.withValues(alpha: 0.3),
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.white,
+                      side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
-                    icon: const Icon(Icons.refresh_rounded, size: 18),
-                    label: const Text('Reparar', style: TextStyle(fontWeight: FontWeight.w600)),
-                    onPressed: () async {
-                      final confirm = await showDialog<bool>(
-                        context: context,
-                        builder: (ctx) => AlertDialog(
-                          backgroundColor: AppTheme.surface,
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                          title: const Text('Reparar Reproductor', style: TextStyle(color: Colors.white)),
-                          content: const Text(
-                            '¿Deseas realizar una reparación completa? Esto incluirá:\n\n• Verificar archivos corruptos\n• Limpiar archivos temporales\n• Verificar base de datos\n• Reiniciar el reproductor\n\nLa reproducción actual se detendrá.',
-                            style: TextStyle(color: Colors.white70),
-                          ),
-                          actions: [
-                            TextButton(
-                              onPressed: () => Navigator.pop(ctx, false),
-                              child: Text('Cancelar', style: TextStyle(color: Colors.white.withAlpha(128))),
-                            ),
-                            TextButton(
-                              onPressed: () => Navigator.pop(ctx, true),
-                              child: Text('Reparar', style: TextStyle(color: AppTheme.primaryLight, fontWeight: FontWeight.bold)),
-                            ),
-                          ],
-                        ),
-                      );
-                      if (confirm == true && context.mounted) {
-                        // Mostrar diálogo de progreso
-                        showDialog(
-                          context: context,
-                          barrierDismissible: false,
-                          builder: (ctx) => AlertDialog(
-                            backgroundColor: AppTheme.surface,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                            content: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                CircularProgressIndicator(color: AppTheme.primaryLight),
-                                SizedBox(height: 16),
-                                Text('Reparando...', style: TextStyle(color: Colors.white)),
-                                SizedBox(height: 8),
-                                Text('Esto puede tomar unos segundos', style: TextStyle(color: Colors.white54, fontSize: 12)),
-                              ],
-                            ),
-                          ),
-                        );
-                        
-                        final audioHandler = Provider.of<AudioPlayerHandler>(context, listen: false);
-                        final result = await RepairService.performFullRepair(
-                          audioHandler: audioHandler,
-                          musicProvider: musicProvider,
-                        );
-                        
-                        if (context.mounted) {
-                          Navigator.pop(context); // Cerrar diálogo de progreso
-                          
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            SnackBar(
-                              content: Text(result.getUserMessage()),
-                              backgroundColor: result.hasErrors 
-                                  ? Colors.red.withValues(alpha: 0.8)
-                                  : result.hasWarnings
-                                      ? Colors.orange.withValues(alpha: 0.8)
-                                      : AppTheme.surface,
-                              behavior: SnackBarBehavior.floating,
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                              duration: const Duration(seconds: 4),
-                            ),
-                          );
-                        }
-                      }
-                    },
+                    icon: const Icon(Icons.folder_rounded, size: 18),
+                    label: const Text('Elegir carpeta', style: TextStyle(fontWeight: FontWeight.w600)),
+                    onPressed: () => _pickLibraryFolder(context),
                   ),
                 ),
               ],
@@ -443,7 +404,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Reproductor y descargador offline de música desde YouTube.',
+                  'Reproductor de tu biblioteca musical, 100% offline.',
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.45),
                     fontSize: 13,
@@ -454,6 +415,486 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _StatisticsData {
+  final int totalPlays;
+  final int totalListenSeconds;
+  final String? topArtist;
+  final int topArtistPlays;
+  final List<Map<String, dynamic>> topSongs;
+
+  const _StatisticsData({
+    required this.totalPlays,
+    required this.totalListenSeconds,
+    this.topArtist,
+    required this.topArtistPlays,
+    required this.topSongs,
+  });
+}
+
+class _StatisticsSection extends StatefulWidget {
+  const _StatisticsSection();
+
+  @override
+  State<_StatisticsSection> createState() => _StatisticsSectionState();
+}
+
+class _StatisticsSectionState extends State<_StatisticsSection> {
+  bool _isWeek = true;
+  bool _isExpanded = false;
+
+  Future<_StatisticsData> _loadStatistics(bool isWeek) async {
+    final db = DatabaseHelper.instance;
+    final results = await Future.wait([
+      isWeek ? db.getTotalPlaysThisWeek() : db.getTotalPlaysThisMonth(),
+      isWeek ? db.getTotalListenTimeThisWeek() : db.getTotalListenTimeThisMonth(),
+      isWeek ? db.getTopArtistThisWeek() : db.getTopArtistThisMonth(),
+      isWeek ? db.getTopSongsThisWeek(limit: 10) : db.getTopSongsThisMonth(limit: 10),
+    ]);
+
+    final topArtist = results[2] as Map<String, dynamic>?;
+    return _StatisticsData(
+      totalPlays: results[0] as int,
+      totalListenSeconds: results[1] as int,
+      topArtist: topArtist?['artist'] as String?,
+      topArtistPlays: topArtist?['playCount'] as int? ?? 0,
+      topSongs: results[3] as List<Map<String, dynamic>>,
+    );
+  }
+
+  String _formatListenTime(int totalSeconds) {
+    if (totalSeconds < 60) return '$totalSeconds s';
+    final hours = totalSeconds ~/ 3600;
+    final minutes = (totalSeconds % 3600) ~/ 60;
+    if (hours > 0) return '${hours}h ${minutes}m';
+    return '${minutes}m';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _SectionTitle('Estadísticas'),
+        const SizedBox(height: 10),
+        Container(
+          decoration: AppTheme.glassCard(),
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.bar_chart_rounded,
+                    color: AppTheme.primaryLight,
+                    size: 20,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(
+                    'Tu actividad',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.7),
+                      fontSize: 13,
+                    ),
+                  ),
+                  const Spacer(),
+                  _PeriodToggle(
+                    isWeek: _isWeek,
+                    onChanged: (isWeek) => setState(() {
+                      _isWeek = isWeek;
+                      _isExpanded = false; // Reset on period change
+                    }),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+              FutureBuilder<_StatisticsData>(
+                future: _loadStatistics(_isWeek),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(
+                      child: Padding(
+                        padding: EdgeInsets.symmetric(vertical: 24),
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    );
+                  }
+
+                  final data = snapshot.data;
+                  if (data == null || (data.totalPlays == 0 && data.topSongs.isEmpty)) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 8),
+                      child: Text(
+                        'Reproduce música para ver tus estadísticas.',
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.45),
+                          fontSize: 13,
+                        ),
+                      ),
+                    );
+                  }
+
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _StatMiniCard(
+                              label: 'Reproducciones',
+                              value: '${data.totalPlays}',
+                              icon: Icons.play_circle_outline_rounded,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _StatMiniCard(
+                              label: 'Tiempo escuchado',
+                              value: _formatListenTime(data.totalListenSeconds),
+                              icon: Icons.schedule_rounded,
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (data.topArtist != null) ...[
+                        const SizedBox(height: 16),
+                        Text(
+                          'Artista más escuchado',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.55),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Icon(
+                              Icons.person_rounded,
+                              color: AppTheme.primaryLight,
+                              size: 18,
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                data.topArtist!,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 15,
+                                ),
+                              ),
+                            ),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: AppTheme.primary.withValues(alpha: 0.25),
+                                borderRadius: BorderRadius.circular(8),
+                              ),
+                              child: Text(
+                                '${data.topArtistPlays}x',
+                                style: TextStyle(
+                                  color: AppTheme.primaryLight,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w700,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                      if (data.topSongs.isNotEmpty) ...[
+                        const SizedBox(height: 16),
+                        Text(
+                          'Top canciones',
+                          style: TextStyle(
+                            color: Colors.white.withValues(alpha: 0.55),
+                            fontSize: 12,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        ...List.generate(
+                          _isExpanded ? data.topSongs.length : (data.topSongs.length > 5 ? 5 : data.topSongs.length), 
+                          (index) {
+                            final song = data.topSongs[index];
+                            return _TopSongRow(
+                              rank: index + 1,
+                              title: song['title'] as String? ?? 'Sin título',
+                              artist: song['artist'] as String? ?? 'Desconocido',
+                              artPath: song['artPath'] as String? ?? '',
+                              playCount: song['playCount'] as int? ?? 0,
+                            );
+                          }
+                        ),
+                        if (data.topSongs.length > 5)
+                          Center(
+                            child: IconButton(
+                              icon: Icon(
+                                _isExpanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                                color: Colors.white.withValues(alpha: 0.5),
+                              ),
+                              onPressed: () {
+                                setState(() {
+                                  _isExpanded = !_isExpanded;
+                                });
+                              },
+                            ),
+                          ),
+                      ],
+                    ],
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _PeriodToggle extends StatelessWidget {
+  final bool isWeek;
+  final ValueChanged<bool> onChanged;
+
+  const _PeriodToggle({
+    required this.isWeek,
+    required this.onChanged,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.06),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _PeriodChip(
+            label: 'Semana',
+            selected: isWeek,
+            onTap: () => onChanged(true),
+          ),
+          _PeriodChip(
+            label: 'Mes',
+            selected: !isWeek,
+            onTap: () => onChanged(false),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PeriodChip extends StatelessWidget {
+  final String label;
+  final bool selected;
+  final VoidCallback onTap;
+
+  const _PeriodChip({
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: selected
+          ? AppTheme.primary.withValues(alpha: 0.35)
+          : Colors.transparent,
+      borderRadius: BorderRadius.circular(10),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(10),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          child: Text(
+            label,
+            style: TextStyle(
+              color: selected ? Colors.white : Colors.white.withValues(alpha: 0.5),
+              fontSize: 12,
+              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StatMiniCard extends StatelessWidget {
+  final String label;
+  final String value;
+  final IconData icon;
+
+  const _StatMiniCard({
+    required this.label,
+    required this.value,
+    required this.icon,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.04),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: AppTheme.primaryLight, size: 18),
+          const SizedBox(height: 8),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 20,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            label,
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.45),
+              fontSize: 11,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TopSongRow extends StatelessWidget {
+  final int rank;
+  final String title;
+  final String artist;
+  final String artPath;
+  final int playCount;
+
+  const _TopSongRow({
+    required this.rank,
+    required this.title,
+    required this.artist,
+    required this.artPath,
+    required this.playCount,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 22,
+            child: Text(
+              '$rank',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.4),
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          const SizedBox(width: 8),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(8),
+            child: _buildArt(),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                    fontSize: 14,
+                  ),
+                ),
+                Text(
+                  artist,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.45),
+                    fontSize: 12,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppTheme.primary.withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              '${playCount}x',
+              style: TextStyle(
+                color: AppTheme.primaryLight,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildArt() {
+    if (artPath.isNotEmpty) {
+      final file = File(artPath);
+      if (file.existsSync()) {
+        return Image.file(
+          file,
+          width: 40,
+          height: 40,
+          fit: BoxFit.cover,
+          errorBuilder: (_, __, ___) => _placeholderArt(),
+        );
+      }
+    }
+    return _placeholderArt();
+  }
+
+  Widget _placeholderArt() {
+    return Container(
+      width: 40,
+      height: 40,
+      decoration: BoxDecoration(
+        gradient: AppTheme.primaryGradient,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Icon(
+        Icons.music_note_rounded,
+        color: Colors.white.withValues(alpha: 0.7),
+        size: 20,
       ),
     );
   }

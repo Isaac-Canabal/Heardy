@@ -5,7 +5,6 @@ import 'package:provider/provider.dart';
 import '../services/audio_player_handler.dart';
 import '../theme/app_theme.dart';
 import '../screens/now_playing_screen.dart';
-import '../providers/settings_provider.dart';
 
 class MiniPlayer extends StatelessWidget {
   const MiniPlayer({super.key});
@@ -13,7 +12,6 @@ class MiniPlayer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final audioHandler = Provider.of<AudioPlayerHandler>(context);
-    final settings = Provider.of<SettingsProvider>(context);
 
     return StreamBuilder<MediaItem?>(
       stream: audioHandler.mediaItem,
@@ -185,19 +183,19 @@ class MiniPlayer extends StatelessWidget {
           width: 44,
           height: 44,
           fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _buildPlaceholder(),
+          errorBuilder: (_, __, ___) => _buildPlaceholder(item.title),
         );
       }
     }
-    return _buildPlaceholder();
+    return _buildPlaceholder(item.title);
   }
 
-  Widget _buildPlaceholder() {
+  Widget _buildPlaceholder(String title) {
     return Container(
       width: 44,
       height: 44,
       decoration: BoxDecoration(
-        gradient: AppTheme.primaryGradient,
+        gradient: AppTheme.gradientForTitle(title),
         borderRadius: BorderRadius.circular(8),
       ),
       child: const Icon(Icons.music_note_rounded, color: Colors.white70),
