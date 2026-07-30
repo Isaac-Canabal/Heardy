@@ -22,7 +22,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 7,
+      version: 8,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -45,7 +45,14 @@ class DatabaseHelper {
         filePath TEXT NOT NULL,
         artPath TEXT NOT NULL,
         format TEXT NOT NULL,
-        downloadDate TEXT NOT NULL
+        downloadDate TEXT NOT NULL,
+        uri TEXT,
+        fileHash TEXT,
+        hashKind TEXT,
+        fileSize INTEGER,
+        modifiedAt INTEGER,
+        album TEXT,
+        missing INTEGER NOT NULL DEFAULT 0
       )
     ''');
 
@@ -154,6 +161,20 @@ class DatabaseHelper {
         'ALTER TABLE download_queue ADD COLUMN expectedOrderIndex INTEGER',
       );
     }
+    if (oldVersion < 8) {
+      // Local-library pivot: SAF-imported songs identify by uri/fileHash
+      // instead of filePath. Additive only — legacy rows keep working via
+      // Song.playablePath (uri ?? filePath). See CLAUDE.md D9.
+      await db.execute('ALTER TABLE songs ADD COLUMN uri TEXT');
+      await db.execute('ALTER TABLE songs ADD COLUMN fileHash TEXT');
+      await db.execute('ALTER TABLE songs ADD COLUMN hashKind TEXT');
+      await db.execute('ALTER TABLE songs ADD COLUMN fileSize INTEGER');
+      await db.execute('ALTER TABLE songs ADD COLUMN modifiedAt INTEGER');
+      await db.execute('ALTER TABLE songs ADD COLUMN album TEXT');
+      await db.execute(
+        'ALTER TABLE songs ADD COLUMN missing INTEGER NOT NULL DEFAULT 0',
+      );
+    }
   }
 
   // --- SONGS CRUD ---
@@ -177,7 +198,6 @@ class DatabaseHelper {
     final db = await database;
     final maps = await db.query(
       'songs',
-      columns: ['id', 'title', 'artist', 'duration', 'filePath', 'artPath', 'format', 'downloadDate'],
       where: 'id = ?',
       whereArgs: [id],
     );
@@ -187,6 +207,67 @@ class DatabaseHelper {
     } else {
       return null;
     }
+  }
+
+  // --- LOCAL LIBRARY (SAF import) ---
+
+  Future<Song?> getSongByUri(String uri) async {
+    final db = await database;
+    final maps = await db.query('songs', where: 'uri = ?', whereArgs: [uri]);
+    return maps.isNotEmpty ? Song.fromMap(maps.first) : null;
+  }
+
+  Future<Song?> getSongByHash(String fileHash) async {
+    final db = await database;
+    final maps = await db.query(
+      'songs',
+      where: 'fileHash = ?',
+      whereArgs: [fileHash],
+    );
+    return maps.isNotEmpty ? Song.fromMap(maps.first) : null;
+  }
+
+  /// Marks every previously-imported song (uri IS NOT NULL) as missing.
+  /// Call once at the start of a scan; each file actually found on disk
+  /// clears its own row's flag via [touchSongFound] as the scan proceeds,
+  /// so anything left flagged at the end genuinely wasn't seen this pass.
+  Future<void> markAllImportedSongsMissing() async {
+    final db = await database;
+    await db.update(
+      'songs',
+      {'missing': 1},
+      where: 'uri IS NOT NULL',
+    );
+  }
+
+  /// Updates a song's location/stats after finding it on disk during a scan
+  /// (same uri, or same fileHash under a new uri) and clears its tombstone.
+  Future<void> touchSongFound(
+    String songId, {
+    required String uri,
+    required int fileSize,
+    required int modifiedAt,
+    String? fileHash,
+    String? hashKind,
+  }) async {
+    final db = await database;
+    final values = <String, dynamic>{
+      'uri': uri,
+      'fileSize': fileSize,
+      'modifiedAt': modifiedAt,
+      'missing': 0,
+    };
+    if (fileHash != null) values['fileHash'] = fileHash;
+    if (hashKind != null) values['hashKind'] = hashKind;
+    await db.update('songs', values, where: 'id = ?', whereArgs: [songId]);
+  }
+
+  Future<int> getMissingImportedSongCount() async {
+    final db = await database;
+    final result = await db.rawQuery(
+      'SELECT COUNT(*) as c FROM songs WHERE uri IS NOT NULL AND missing = 1',
+    );
+    return Sqflite.firstIntValue(result) ?? 0;
   }
 
   Future<void> deleteSong(String songId) async {

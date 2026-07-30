@@ -5,10 +5,18 @@ class Song {
   final String title;
   final String artist;
   final int duration; // in seconds
-  final String filePath;
+  final String filePath; // legacy: app-private path for downloaded songs
   final String artPath; // local file path to downloaded thumbnail
   final String format; // e.g. 'm4a'
   final DateTime downloadDate;
+  // Local-library fields (schema v8) — null/0 for legacy downloaded songs.
+  final String? uri; // SAF content:// URI, for imported songs
+  final String? fileHash; // hash of the audio payload, see hashKind
+  final String? hashKind; // 'mp3-audio' | 'mp4-mdat' | 'raw-file'
+  final int? fileSize;
+  final int? modifiedAt; // epoch millis, from the SAF document
+  final String? album;
+  final bool missing; // tombstone: true if not seen in the last scan
 
   Song({
     required this.id,
@@ -19,7 +27,18 @@ class Song {
     required this.artPath,
     required this.format,
     required this.downloadDate,
+    this.uri,
+    this.fileHash,
+    this.hashKind,
+    this.fileSize,
+    this.modifiedAt,
+    this.album,
+    this.missing = false,
   });
+
+  /// Path/URI to actually hand to the audio player: imported songs use their
+  /// SAF content:// URI, legacy downloaded songs fall back to filePath.
+  String get playablePath => uri ?? filePath;
 
   Map<String, dynamic> toMap() {
     return {
@@ -31,6 +50,13 @@ class Song {
       'artPath': artPath,
       'format': format,
       'downloadDate': downloadDate.toIso8601String(),
+      'uri': uri,
+      'fileHash': fileHash,
+      'hashKind': hashKind,
+      'fileSize': fileSize,
+      'modifiedAt': modifiedAt,
+      'album': album,
+      'missing': missing ? 1 : 0,
     };
   }
 
@@ -44,6 +70,13 @@ class Song {
       artPath: map['artPath'] as String? ?? '',
       format: map['format'] as String,
       downloadDate: DateTime.parse(map['downloadDate'] as String),
+      uri: map['uri'] as String?,
+      fileHash: map['fileHash'] as String?,
+      hashKind: map['hashKind'] as String?,
+      fileSize: map['fileSize'] as int?,
+      modifiedAt: map['modifiedAt'] as int?,
+      album: map['album'] as String?,
+      missing: (map['missing'] as int? ?? 0) != 0,
     );
   }
 

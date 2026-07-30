@@ -28,6 +28,9 @@ dependencies:
   cupertino_icons: ^1.0.6
   palette_generator: ^0.3.3
   audio_waveforms: ^1.0.4
+  saf_util: ^3.1.0
+  saf_stream: ^4.0.1
+  crypto: ^3.0.7
 
 dev_dependencies:
   flutter_test:
@@ -38,6 +41,7 @@ dev_dependencies:
   # un directorio temporal, que es lo único que impedía ejercitar el motor de
   # descarga real desde escritorio (los plugins no cargan bajo `dart run`).
   path_provider_platform_interface: ^2.1.2
+  sqflite_common_ffi: ^2.4.2
 
 flutter_launcher_icons:
   android: true
