@@ -62,9 +62,16 @@ class MetadataService {
     AudioMetadata? tags;
     try {
       await _safStream.copyToLocalFile(uri, tempPath);
+      final copiedSize = await tempFile.exists() ? await tempFile.length() : -1;
+      print('MetadataService: copiado $fileName -> $tempPath (${copiedSize}b)');
       tags = readMetadata(tempFile, getImage: true);
-    } catch (e) {
-      print('MetadataService: no se pudieron leer tags de $fileName: $e');
+      print(
+        'MetadataService: readMetadata($fileName) -> title=${tags.title} artist=${tags.artist} '
+        'album=${tags.album} pictures=${tags.pictures.length} duration=${tags.duration}',
+      );
+    } catch (e, s) {
+      print('MetadataService: no se pudieron leer tags de $fileName ($uri): $e');
+      print(s);
     } finally {
       try {
         if (await tempFile.exists()) await tempFile.delete();
@@ -72,6 +79,9 @@ class MetadataService {
     }
 
     final guess = _parseFilename(_withoutExtension(fileName));
+    if (tags == null) {
+      print('MetadataService: sin tags para $fileName, uso fallback de nombre -> title=${guess.title} artist=${guess.artist}');
+    }
 
     final title = _clean(tags?.title) ?? guess.title;
     final artist = _clean(tags?.artist) ?? guess.artist ?? 'Desconocido';
@@ -83,6 +93,8 @@ class MetadataService {
     if (picture != null && picture.bytes.isNotEmpty) {
       artPath = await _saveArtwork(songId, picture);
     }
+
+    print('MetadataService: resultado final para $fileName -> title=$title artist=$artist album=$album artPath=$artPath');
 
     return ExtractedMetadata(
       title: title,

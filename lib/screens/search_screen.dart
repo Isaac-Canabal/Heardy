@@ -25,12 +25,12 @@ class _SearchScreenState extends State<SearchScreen> {
   List<Song> _allSongs = [];
   String _query = '';
   bool _loading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
+  // -1 so the very first build (version starts at 0 in MusicProvider)
+  // triggers the initial load too — one mechanism for both "first open"
+  // and "reload after a scan", instead of an initState that only ever
+  // saw whatever existed at cold start (IndexedStack keeps this screen
+  // alive, so initState never runs again).
+  int _loadedVersion = -1;
 
   @override
   void dispose() {
@@ -65,6 +65,11 @@ class _SearchScreenState extends State<SearchScreen> {
   Widget build(BuildContext context) {
     final maxResults = context.watch<SettingsProvider>().maxSearchResults;
     final audioHandler = context.watch<AudioPlayerHandler>();
+    final libraryVersion = context.watch<MusicProvider>().librarySongsVersion;
+    if (_loadedVersion != libraryVersion) {
+      _loadedVersion = libraryVersion;
+      _load();
+    }
     final results = _matches(maxResults);
 
     return SafeArea(

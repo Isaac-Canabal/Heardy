@@ -17,6 +17,7 @@ class MusicProvider with ChangeNotifier {
   String? _currentPlaylistId;
   int _inboxCount = 0;
   String? _libraryRootUri;
+  int _librarySongsVersion = 0;
 
   List<Playlist> get playlists => _playlists;
   List<Song> get currentPlaylistSongs => _currentPlaylistSongs;
@@ -28,11 +29,23 @@ class MusicProvider with ChangeNotifier {
   // folder in one never showed up in the other without navigating away and
   // back (IndexedStack keeps both alive, neither reloads on tab switch).
   String? get libraryRootUri => _libraryRootUri;
+  // Bumped on every completed scan. search_screen.dart watches this to know
+  // when to reload its song list — same IndexedStack staleness class as
+  // libraryRootUri above: a screen that only loaded songs in initState()
+  // never saw anything imported after the app's cold start.
+  int get librarySongsVersion => _librarySongsVersion;
 
   MusicProvider() {
     loadPlaylists();
     refreshInboxCount();
     refreshLibraryRootUri();
+  }
+
+  /// Call after a scan completes — signals every screen that lists songs
+  /// (currently just search) to reload from SQLite.
+  void notifyLibraryChanged() {
+    _librarySongsVersion++;
+    notifyListeners();
   }
 
   /// Recomputes the inbox badge count. Call after a scan and after any

@@ -81,6 +81,7 @@ class _InboxScreenState extends State<InboxScreen> {
       final musicProvider = context.read<MusicProvider>();
       await musicProvider.loadPlaylists();
       await musicProvider.refreshInboxCount();
+      musicProvider.notifyLibraryChanged();
       await _load();
       if (!mounted) return;
       _showSnack(
