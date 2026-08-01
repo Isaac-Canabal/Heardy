@@ -100,10 +100,14 @@ class YtdlpServerSource implements DownloadSource {
         throw DownloadSourceException(DownloadSourceErrorKind.unauthorized, detail);
       case 415:
         throw DownloadSourceException(DownloadSourceErrorKind.unsupportedMedia, detail);
-      case 400:
       case 404:
+        // El servidor reserva el 404 para lo definitivo: vídeo borrado,
+        // privado, sólo para miembros, restringido por edad, o URL inválida.
+        // Lo pasajero (su IP bloqueada, un corte de red) sale como 502.
+        throw DownloadSourceException(DownloadSourceErrorKind.notFound, detail);
+      case 400:
       case 422:
-        throw DownloadSourceException(DownloadSourceErrorKind.extraction, detail);
+        throw DownloadSourceException(DownloadSourceErrorKind.notFound, detail);
       default:
         throw DownloadSourceException(
           DownloadSourceErrorKind.extraction,

@@ -22,7 +22,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 11,
+      version: 12,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -194,6 +194,20 @@ class DatabaseHelper {
       await db.execute(_createDownloadQueueSql);
       await db.execute(_createDownloadQueueIndexSql);
     }
+    if (oldVersion < 12) {
+      // Un trabajo encolado desde /search o desde la expansión de una
+      // playlist trae metadata "plana" (`extract_flat`), donde el artista es
+      // en realidad el nombre del canal. Antes de descargar hay que pedir la
+      // definitiva con /resolve — pero un trabajo encolado desde una URL
+      // suelta ya la tiene, porque la vista previa la resolvió.
+      //
+      // Esta columna es lo que distingue ambos casos. Sin ella habría que
+      // resolver siempre, y una descarga pasaría de 2 extracciones a 3 sobre
+      // un presupuesto por IP medido en 12-24 peticiones.
+      await db.execute(
+        'ALTER TABLE download_queue ADD COLUMN metadataComplete INTEGER NOT NULL DEFAULT 0',
+      );
+    }
   }
 
   /// Persisted so an in-progress batch survives the app being killed.
@@ -215,7 +229,8 @@ class DatabaseHelper {
         expectedOrderIndex INTEGER,
         addedDate TEXT NOT NULL,
         attempts INTEGER NOT NULL DEFAULT 0,
-        lastError TEXT
+        lastError TEXT,
+        metadataComplete INTEGER NOT NULL DEFAULT 0
       )
     ''';
 
@@ -683,6 +698,7 @@ class DatabaseHelper {
     int? durationSeconds,
     String? thumbnailUrl,
     int? expectedOrderIndex,
+    bool metadataComplete = false,
   }) async {
     final db = await database;
     final inserted = await db.insert(
@@ -700,10 +716,46 @@ class DatabaseHelper {
         'expectedOrderIndex': expectedOrderIndex,
         'addedDate': DateTime.now().toIso8601String(),
         'attempts': 0,
+        'metadataComplete': metadataComplete ? 1 : 0,
       },
       conflictAlgorithm: ConflictAlgorithm.ignore,
     );
     return inserted != 0;
+  }
+
+  /// Guarda la metadata definitiva obtenida con /resolve y marca el trabajo
+  /// como resuelto.
+  ///
+  /// Se llama **en cuanto el resolve tiene éxito**, antes de descargar nada:
+  /// si la descarga falla luego y el trabajo se reintenta, el resolve ya no
+  /// se repite. Es la diferencia entre gastar una petición por canción y
+  /// gastar una por intento.
+  Future<void> markDownloadMetadataResolved(
+    int queueId, {
+    required String sourceId,
+    required String title,
+    required String artist,
+    String? album,
+    int? durationSeconds,
+    String? thumbnailUrl,
+    String? sourceUrl,
+  }) async {
+    final db = await database;
+    await db.update(
+      'download_queue',
+      {
+        'sourceId': sourceId,
+        'title': title,
+        'artist': artist,
+        'album': album,
+        'durationSeconds': durationSeconds,
+        'thumbnailUrl': thumbnailUrl,
+        if (sourceUrl != null) 'sourceUrl': sourceUrl,
+        'metadataComplete': 1,
+      },
+      where: 'id = ?',
+      whereArgs: [queueId],
+    );
   }
 
   /// La cola en orden de inserción, que para una playlist es su orden real.

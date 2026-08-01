@@ -33,7 +33,64 @@ class NoAudioTrackError(Exception):
 
 
 class ExtractionError(Exception):
-    """yt-dlp no pudo extraer: vídeo privado, borrado, bloqueado por región…"""
+    """Fallo TEMPORAL: la IP está bloqueada, la red falló, YouTube tosió.
+
+    Reintentar más tarde tiene sentido. Sale como HTTP 502.
+    """
+
+
+class PermanentlyUnavailableError(Exception):
+    """Fallo DEFINITIVO para esa URL: vídeo borrado, privado, URL inválida.
+
+    Reintentar no puede funcionar nunca, así que sale como HTTP 404 y el
+    cliente lo saca de la cola en vez de gastar su presupuesto de reintentos.
+
+    Deliberadamente NO hereda de [ExtractionError]: si lo hiciera, un
+    `except ExtractionError` lo atraparía primero y volvería a colapsar los
+    dos casos en un 502, que es justo lo que esto viene a separar.
+    """
+
+
+#: Para capturar ambos de una vez donde el manejo es común.
+EXTRACTION_ERRORS = (ExtractionError, PermanentlyUnavailableError)
+
+
+# Frases con las que yt-dlp señala que el problema es del vídeo y no del
+# momento. Se comparan en minúsculas contra el mensaje completo.
+#
+# Ojo con lo que NO está aquí: "sign in to confirm you're not a bot" es un
+# bloqueo de IP, o sea temporal, y meterlo en esta lista haría que la cola
+# descartara canciones perfectamente descargables. Es justo el error que más
+# se parece a uno permanente sin serlo.
+_PERMANENT_MARKERS = (
+    "video unavailable",
+    "this video is unavailable",
+    "private video",
+    "this video is private",
+    "has been removed",
+    "removed by the uploader",
+    "account associated with this video has been terminated",
+    "does not exist",
+    "incomplete youtube id",
+    "unsupported url",
+    "is not a valid url",
+    "no video formats found",
+    "members-only",
+    "join this channel",
+    "confirm your age",
+    "age-restricted",
+    "video is not available in your country",
+    "blocked it in your country",
+)
+
+
+def _classify(message: str) -> Exception:
+    """Convierte el mensaje de yt-dlp en la excepción del tipo correcto."""
+    lowered = message.lower()
+    for marker in _PERMANENT_MARKERS:
+        if marker in lowered:
+            return PermanentlyUnavailableError(message)
+    return ExtractionError(message)
 
 
 def _lock_for(video_id: str) -> threading.Lock:
@@ -93,9 +150,9 @@ def _extract(url: str, opts: dict) -> dict:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
     except UnsupportedError as e:
-        raise ExtractionError(f"URL no soportada: {e}") from e
+        raise PermanentlyUnavailableError(f"URL no soportada: {e}") from e
     except (DownloadError, ExtractorError) as e:
-        raise ExtractionError(str(e)) from e
+        raise _classify(str(e)) from e
     if info is None:
         raise ExtractionError("yt-dlp no devolvió información para esa URL")
     return info
@@ -188,7 +245,7 @@ def fetch_audio(video_id: str) -> Path:
                 raise NoAudioTrackError(
                     "El vídeo no ofrece ninguna pista de audio AAC/M4A"
                 ) from e
-            raise ExtractionError(message) from e
+            raise _classify(message) from e
 
         if not partial.is_file() or partial.stat().st_size == 0:
             partial.unlink(missing_ok=True)

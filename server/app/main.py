@@ -60,6 +60,14 @@ async def _run(fn, *args):
 
 
 def _extraction_error(exc: Exception) -> HTTPException:
+    """Traduce un fallo de extracción al código que el cliente sabe leer.
+
+    La distinción importa: el cliente reintenta un 502 y descarta un 404. Si
+    todo saliera como 502, una canción borrada de YouTube consumiría el
+    presupuesto de reintentos entero de la cola en cada arranque de la app.
+    """
+    if isinstance(exc, ytdlp_client.PermanentlyUnavailableError):
+        return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
 
@@ -98,7 +106,7 @@ async def health() -> JSONResponse:
 async def resolve(body: UrlRequest) -> dict:
     try:
         return await _run(ytdlp_client.resolve, body.url)
-    except ytdlp_client.ExtractionError as e:
+    except ytdlp_client.EXTRACTION_ERRORS as e:
         raise _extraction_error(e) from e
 
 
@@ -106,7 +114,7 @@ async def resolve(body: UrlRequest) -> dict:
 async def playlist(body: UrlRequest) -> dict:
     try:
         return await _run(ytdlp_client.resolve_playlist, body.url)
-    except ytdlp_client.ExtractionError as e:
+    except ytdlp_client.EXTRACTION_ERRORS as e:
         raise _extraction_error(e) from e
 
 
@@ -117,7 +125,7 @@ async def search(
 ) -> dict:
     try:
         results = await _run(ytdlp_client.search, q, limit)
-    except ytdlp_client.ExtractionError as e:
+    except ytdlp_client.EXTRACTION_ERRORS as e:
         raise _extraction_error(e) from e
     return {"results": results}
 
@@ -140,7 +148,7 @@ async def audio(video_id: str, request: Request):
         # 415 y no 502: es definitivo para este vídeo, el cliente no debe
         # reintentarlo. DownloadProvider distingue ambos casos.
         raise HTTPException(status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, detail=str(e)) from e
-    except ytdlp_client.ExtractionError as e:
+    except ytdlp_client.EXTRACTION_ERRORS as e:
         raise _extraction_error(e) from e
 
     file_size = path.stat().st_size

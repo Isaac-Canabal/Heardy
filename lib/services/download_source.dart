@@ -96,9 +96,16 @@ enum DownloadSourceErrorKind {
   /// X-Api-Key ausente o incorrecta.
   unauthorized,
 
-  /// El servidor respondió, pero no pudo extraer (vídeo privado, borrado,
-  /// bloqueado por región, o YouTube bloqueando su IP).
+  /// El servidor respondió pero no pudo extraer, y el fallo **puede ser
+  /// pasajero**: su IP bloqueada por YouTube, un corte de red por su lado.
+  /// Reintentar tiene sentido.
   extraction,
+
+  /// El vídeo ya no existe para nadie: borrado, privado, sólo para miembros,
+  /// con restricción de edad, o la URL no era válida. **Definitivo.**
+  /// Reintentar no puede funcionar nunca, así que la cola lo descarta en vez
+  /// de gastar en él su presupuesto de reintentos.
+  notFound,
 
   /// El vídeo no tiene ninguna pista de audio AAC/M4A. Definitivo: no tiene
   /// sentido reintentarlo.
@@ -115,6 +122,11 @@ class DownloadSourceException implements Exception {
   const DownloadSourceException(this.kind, this.message);
 
   /// True si reintentar más tarde tiene alguna posibilidad de funcionar.
+  ///
+  /// Es lo único que la cola mira para decidir entre reintentar y descartar,
+  /// así que clasificar mal un error se paga de una de dos formas: gastar el
+  /// presupuesto de reintentos en un vídeo que ya no existe, o tirar una
+  /// canción perfectamente descargable por un corte de red de un segundo.
   bool get isRetryable =>
       kind == DownloadSourceErrorKind.network || kind == DownloadSourceErrorKind.extraction;
 
@@ -127,6 +139,8 @@ class DownloadSourceException implements Exception {
         DownloadSourceErrorKind.unauthorized =>
           'La clave de API del servidor no es válida',
         DownloadSourceErrorKind.extraction => message,
+        DownloadSourceErrorKind.notFound =>
+          'Ese vídeo ya no está disponible (borrado, privado o restringido)',
         DownloadSourceErrorKind.unsupportedMedia =>
           'Ese vídeo no tiene una pista de audio compatible',
         DownloadSourceErrorKind.cancelled => 'Descarga cancelada',

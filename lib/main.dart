@@ -8,6 +8,10 @@ import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import 'services/database_helper.dart';
 import 'services/audio_player_handler.dart';
+import 'services/download_service.dart';
+import 'services/download_source.dart';
+import 'services/ytdlp_server_source.dart';
+import 'providers/download_provider.dart';
 import 'providers/music_provider.dart';
 import 'providers/settings_provider.dart';
 import 'screens/main_shell_screen.dart';
@@ -53,13 +57,38 @@ void main() async {
   }
 
   final musicProvider = MusicProvider();
+  final settingsProvider = SettingsProvider();
+
+  // La fuente lee la configuración por closures, no por copia: cambiar la
+  // dirección o la clave en Ajustes tiene efecto inmediato, sin reconstruir
+  // nada ni reiniciar la app.
+  final DownloadSource downloadSource = YtdlpServerSource(
+    baseUrl: () => settingsProvider.downloadServerUrl,
+    apiKey: () => settingsProvider.downloadServerApiKey,
+  );
+  final downloadProvider = DownloadProvider(
+    service: DownloadService(source: downloadSource),
+    // Así se entera la biblioteca de una descarga nueva sin que
+    // DownloadProvider tenga que conocer a MusicProvider.
+    onDownloadComplete: (playlistId) async {
+      await musicProvider.loadPlaylists();
+      await musicProvider.loadSongsForPlaylist(
+        playlistId,
+        updateCurrent: musicProvider.currentPlaylistId == playlistId,
+      );
+      await musicProvider.refreshInboxCount();
+      musicProvider.notifyLibraryChanged();
+    },
+  );
 
   runApp(
     MultiProvider(
       providers: [
         Provider<AudioPlayerHandler>.value(value: audioHandler),
-        ChangeNotifierProvider(create: (_) => SettingsProvider()),
+        Provider<DownloadSource>.value(value: downloadSource),
+        ChangeNotifierProvider.value(value: settingsProvider),
         ChangeNotifierProvider.value(value: musicProvider),
+        ChangeNotifierProvider.value(value: downloadProvider),
       ],
       child: const HeardyApp(),
     ),
@@ -71,6 +100,10 @@ void main() async {
   // real (ver MusicProvider), así que no depende de correr en un momento exacto.
   WidgetsBinding.instance.addPostFrameCallback((_) {
     musicProvider.restorePlaybackState(audioHandler);
+    // Retoma una tanda que quedó a medias porque el proceso murió. La cola
+    // vive en SQLite justamente para esto; si está vacía, processQueue sale
+    // enseguida sin hacer nada.
+    downloadProvider.processQueue();
   });
 }
 

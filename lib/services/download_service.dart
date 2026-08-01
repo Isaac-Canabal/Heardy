@@ -27,7 +27,12 @@ enum DownloadOutcome {
 class DownloadResult {
   final DownloadOutcome outcome;
   final Song song;
-  const DownloadResult(this.outcome, this.song);
+
+  /// La pista tal como se usó de verdad: la resuelta si hubo `resolveFirst`,
+  /// la de entrada si no.
+  final RemoteTrack track;
+
+  const DownloadResult(this.outcome, this.song, this.track);
 }
 
 /// Convierte una pista remota en una canción de la biblioteca local.
@@ -63,9 +68,25 @@ class DownloadService {
   /// Descarga [track] y la incorpora a la biblioteca, dentro de la carpeta de
   /// [playlistId] si se indica (si no, cae en la bandeja como cualquier
   /// archivo suelto).
+  ///
+  /// [resolveFirst] pide la metadata definitiva antes de bajar nada. Hay que
+  /// ponerlo a true siempre que [track] venga de `/search` o de expandir una
+  /// playlist, porque ahí `artist` es el nombre del canal y no el artista
+  /// real — y como los tags se escriben dentro del archivo, ese error
+  /// sobrevive a un reescaneo.
+  ///
+  /// **El paso vive aquí y no en quien llama a propósito**: así ningún call
+  /// site futuro puede saltárselo. Si el resolve falla, falla la descarga
+  /// entera; nunca se continúa con metadata plana como respaldo.
+  ///
+  /// [onResolved] se dispara en cuanto el resolve tiene éxito, antes de bajar
+  /// un solo byte, para que la cola pueda persistirlo: si la descarga falla y
+  /// el trabajo se reintenta, el resolve ya no se repite.
   Future<DownloadResult> download(
     RemoteTrack track, {
     String? playlistId,
+    bool resolveFirst = false,
+    Future<void> Function(RemoteTrack resolved)? onResolved,
     ProgressCallback? onProgress,
     CancellationCheck? isCancelled,
   }) async {
@@ -75,6 +96,18 @@ class DownloadService {
         DownloadSourceErrorKind.notConfigured,
         'Elegí primero una carpeta de biblioteca en Ajustes',
       );
+    }
+
+    if (resolveFirst) {
+      _throwIfCancelled(isCancelled);
+      final source = track.sourceUrl.isNotEmpty
+          ? track.sourceUrl
+          : 'https://www.youtube.com/watch?v=${track.id}';
+      // Sin try/catch: un fallo aquí debe propagarse tal cual, con su
+      // DownloadSourceErrorKind intacto, para que la cola distinga entre
+      // reintentar (red, IP bloqueada) y descartar (vídeo borrado).
+      track = await _source.resolve(source);
+      await onResolved?.call(track);
     }
 
     final tempDir = await getTemporaryDirectory();
@@ -158,7 +191,7 @@ class DownloadService {
         if (playlistId != null) {
           await _addToPlaylist(playlistId, existing.id);
         }
-        return DownloadResult(DownloadOutcome.alreadyInLibrary, existing);
+        return DownloadResult(DownloadOutcome.alreadyInLibrary, existing, track);
       }
 
       // 10. Carátula en el directorio privado, misma convención que
@@ -201,7 +234,7 @@ class DownloadService {
         print('DownloadService: no se pudieron precargar letras de ${song.title}: $e');
       }
 
-      return DownloadResult(DownloadOutcome.inserted, song);
+      return DownloadResult(DownloadOutcome.inserted, song, track);
     } finally {
       // 11. El temporal no sobrevive a esta llamada pase lo que pase — mismo
       // patrón que MetadataService.extract.
