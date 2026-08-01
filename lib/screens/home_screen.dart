@@ -121,7 +121,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Crea una lista o ve a Descargas para importar música.',
+              'Crea una lista, metés archivos en tu carpeta o descargás desde Añadir.',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.white.withValues(alpha: 0.45),
@@ -263,27 +263,6 @@ class _PlaylistCard extends StatelessWidget {
                               fontSize: 12,
                             ),
                           ),
-                          if (count > 0) ...[
-                            const SizedBox(height: 6),
-                            Row(
-                              children: [
-                                Icon(
-                                  Icons.download_done_rounded,
-                                  size: 14,
-                                  color: Colors.greenAccent.shade200,
-                                ),
-                                const SizedBox(width: 4),
-                                Text(
-                                  'Descargada',
-                                  style: TextStyle(
-                                    color: Colors.greenAccent.shade200,
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
                         ],
                       ),
                     ),

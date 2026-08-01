@@ -1,11 +1,26 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:audio_service/audio_service.dart';
+import '../providers/download_provider.dart';
 import '../providers/music_provider.dart';
 import '../services/audio_player_handler.dart';
+import '../services/download_source.dart';
+import '../models/playlist.dart';
 import '../models/song.dart';
 import '../widgets/song_tile.dart';
 import '../theme/app_theme.dart';
+
+/// Entradas de [remote] cuyo `sourceUrl` todavía no está entre las canciones
+/// ya presentes en la playlist ([existingSongs]) — lo que decide qué se
+/// vuelve a encolar al "Actualizar desde YouTube" sin descargar dos veces lo
+/// mismo. Aparte como función pura para poder probarla sin necesitar un
+/// `AudioPlayerHandler` real (que arrastra `just_audio`/canales de
+/// plataforma, y para el que este proyecto no tiene ningún fake de test).
+@visibleForTesting
+List<RemoteTrack> missingPlaylistEntries(RemotePlaylist remote, List<Song> existingSongs) {
+  final existingUrls = existingSongs.map((s) => s.sourceUrl).whereType<String>().toSet();
+  return remote.entries.where((e) => !existingUrls.contains(e.sourceUrl)).toList();
+}
 
 class PlaylistDetailScreen extends StatefulWidget {
   final String playlistId;
@@ -22,6 +37,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   String _searchQuery = '';
   String _sortBy = 'manual'; // manual, artist, title, date
   bool _isReordering = false;
+  bool _isUpdatingFromYoutube = false;
   final List<String> _temporarilyRemovedSongIds = [];
 
   @override
@@ -44,6 +60,57 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     _searchController.dispose();
     _renameController.dispose();
     super.dispose();
+  }
+
+  /// Expande de nuevo la playlist de origen y encola sólo lo que falta,
+  /// comparando por `song.sourceUrl` — nunca vuelve a descargar lo que ya
+  /// está. Sólo aparece para playlists con `originalUrl` (creadas desde una
+  /// URL de YouTube en ImportScreen).
+  Future<void> _updateFromYoutube(Playlist playlist) async {
+    final originalUrl = playlist.originalUrl;
+    if (originalUrl == null || originalUrl.isEmpty || _isUpdatingFromYoutube) return;
+
+    setState(() => _isUpdatingFromYoutube = true);
+    try {
+      final musicProvider = context.read<MusicProvider>();
+      final downloadProvider = context.read<DownloadProvider>();
+      final source = context.read<DownloadSource>();
+
+      final remote = await source.resolvePlaylist(originalUrl);
+      final missing = missingPlaylistEntries(remote, musicProvider.currentPlaylistSongs);
+
+      if (!mounted) return;
+      if (missing.isEmpty) {
+        _showSnack('Ya está actualizada, no hay canciones nuevas');
+        return;
+      }
+
+      final added = await downloadProvider.enqueuePlaylist(
+        RemotePlaylist(id: remote.id, name: remote.name, sourceUrl: remote.sourceUrl, entries: missing),
+        playlistId: playlist.id,
+      );
+      downloadProvider.processQueue();
+      if (!mounted) return;
+      _showSnack('$added ${added == 1 ? "canción nueva encolada" : "canciones nuevas encoladas"}');
+    } on DownloadSourceException catch (e) {
+      if (!mounted) return;
+      _showSnack(e.userMessage, isError: true);
+    } catch (e) {
+      if (!mounted) return;
+      _showSnack('No se pudo actualizar: $e', isError: true);
+    } finally {
+      if (mounted) setState(() => _isUpdatingFromYoutube = false);
+    }
+  }
+
+  void _showSnack(String message, {bool isError = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: isError ? Colors.red.withValues(alpha: 0.8) : null,
+        behavior: SnackBarBehavior.floating,
+      ),
+    );
   }
 
   @override
@@ -89,6 +156,18 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       appBar: AppBar(
         title: Text(playlist.name),
         actions: [
+          if (playlist.originalUrl != null && playlist.originalUrl!.isNotEmpty)
+            IconButton(
+              icon: _isUpdatingFromYoutube
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.sync_rounded),
+              tooltip: 'Actualizar desde YouTube',
+              onPressed: _isUpdatingFromYoutube ? null : () => _updateFromYoutube(playlist),
+            ),
           PopupMenuButton<String>(
             icon: const Icon(Icons.sort_rounded),
             tooltip: 'Ordenar',
@@ -341,7 +420,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Ve al buscador de YouTube para descargar y añadir música aquí.',
+              'Metés archivos en tu carpeta o descargás desde la pestaña Añadir.',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.grey[500],

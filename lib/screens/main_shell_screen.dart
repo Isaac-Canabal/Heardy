@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../providers/download_provider.dart';
 import '../providers/music_provider.dart';
 import '../providers/settings_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/mini_player.dart';
 import 'home_screen.dart';
+import 'import_screen.dart';
 import 'inbox_screen.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
@@ -24,6 +26,12 @@ class _MainShellScreenState extends State<MainShellScreen> {
     // Suscribirse a SettingsProvider para redibujar instantáneamente cuando cambie el tema
     Provider.of<SettingsProvider>(context);
     final inboxCount = context.watch<MusicProvider>().inboxCount;
+    // pendingCount ya cuenta el trabajo que se está descargando ahora mismo:
+    // sigue en download_queue (la fila SQLite) hasta que termina, y el
+    // provider sólo refresca su lista en memoria al principio de cada
+    // iteración del bucle — así que sumarle +1 por "current" lo contaría dos
+    // veces.
+    final downloadCount = context.watch<DownloadProvider>().pendingCount;
 
     return Scaffold(
       body: Container(
@@ -35,6 +43,7 @@ class _MainShellScreenState extends State<MainShellScreen> {
               children: const [
                 HomeScreen(),
                 InboxScreen(),
+                ImportScreen(),
                 SearchScreen(),
                 SettingsScreen(),
               ],
@@ -70,6 +79,19 @@ class _MainShellScreenState extends State<MainShellScreen> {
               child: const Icon(Icons.inbox_rounded),
             ),
             label: 'Bandeja',
+          ),
+          NavigationDestination(
+            icon: Badge(
+              isLabelVisible: downloadCount > 0,
+              label: Text('$downloadCount'),
+              child: const Icon(Icons.cloud_download_outlined),
+            ),
+            selectedIcon: Badge(
+              isLabelVisible: downloadCount > 0,
+              label: Text('$downloadCount'),
+              child: const Icon(Icons.cloud_download_rounded),
+            ),
+            label: 'Añadir',
           ),
           NavigationDestination(
             icon: Icon(Icons.search_outlined),
