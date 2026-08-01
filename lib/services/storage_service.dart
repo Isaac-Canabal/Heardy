@@ -78,6 +78,39 @@ class StorageService {
     return _safUtil.hasPersistedPermission(uri, checkRead: true, checkWrite: true);
   }
 
+  /// Carpeta de una playlist dentro de la raíz, creándola si no existe.
+  ///
+  /// Es el único punto donde la app crea algo en la carpeta del usuario, y lo
+  /// hace por la enmienda a D3 (ver CLAUDE.md, DD3): crear archivos nuevos en
+  /// la carpeta que el usuario eligió para su música es el mecanismo de
+  /// importación. Lo que sigue prohibido es reorganizar o reescribir lo que
+  /// ya estaba ahí.
+  ///
+  /// Se busca con `child()` antes de `mkdirp()`, misma cautela que
+  /// [pickLibraryRoot], para no acabar con dos carpetas del mismo nombre.
+  Future<String> resolvePlaylistFolder(String rootUri, String playlistName) async {
+    final safeName = sanitizeFolderName(playlistName);
+    final existing = await _findChildDir(rootUri, safeName);
+    if (existing != null) return existing.uri;
+    final created = await _safUtil.mkdirp(rootUri, [safeName]);
+    return created.uri;
+  }
+
+  /// Quita lo que ningún sistema de archivos de Android acepta en un nombre.
+  /// Nunca devuelve vacío: un nombre de playlist compuesto solo de caracteres
+  /// prohibidos crearía una carpeta sin nombre.
+  static String sanitizeFolderName(String name) {
+    final cleaned = name
+        .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '')
+        .replaceAll(RegExp(r'\s+'), ' ')
+        .trim()
+        // Un punto final lo descarta FAT32, común en tarjetas SD.
+        .replaceAll(RegExp(r'\.+$'), '')
+        .trim();
+    if (cleaned.isEmpty) return 'Sin nombre';
+    return cleaned.length > 100 ? cleaned.substring(0, 100).trim() : cleaned;
+  }
+
   Future<List<SafDocumentFile>> listChildren(String uri) => _safUtil.list(uri);
 
   Future<SafDocumentFile?> _findChildDir(String parentUri, String name) async {

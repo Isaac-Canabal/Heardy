@@ -22,7 +22,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 10,
+      version: 11,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -53,7 +53,8 @@ class DatabaseHelper {
         modifiedAt INTEGER,
         album TEXT,
         missing INTEGER NOT NULL DEFAULT 0,
-        ignoredFromInbox INTEGER NOT NULL DEFAULT 0
+        ignoredFromInbox INTEGER NOT NULL DEFAULT 0,
+        sourceUrl TEXT
       )
     ''');
 
@@ -80,10 +81,12 @@ class DatabaseHelper {
       )
     ''');
 
-    // Note: no download_queue table on a fresh install (v10+) — the download
-    // pipeline that used it was pruned in Stage 5. Upgrades from an older
-    // version still create it via the historical _onUpgrade blocks below,
-    // then drop it in the `oldVersion < 10` block, same net result.
+    // Download queue, reintroduced in v11 on the download branch with a
+    // generic shape (sourceType/sourceId) instead of the old one's loose
+    // `spotify*` columns. The v10 drop of the historical table stands; this
+    // is a new table that happens to reuse the name.
+    await db.execute(_createDownloadQueueSql);
+    await db.execute(_createDownloadQueueIndexSql);
 
     // Create play_history table for statistics
     await db.execute('''
@@ -179,7 +182,49 @@ class DatabaseHelper {
       // download jobs, nothing a user would expect to survive an update.
       await db.execute('DROP TABLE IF EXISTS download_queue');
     }
+    if (oldVersion < 11) {
+      // Download branch. `sourceUrl` lets an import detect "already
+      // downloaded" without spending a request, and gives PlaylistDetail a
+      // way to tell which tracks of a YouTube playlist are still missing.
+      await db.execute('ALTER TABLE songs ADD COLUMN sourceUrl TEXT');
+      // Recreate the queue with a generic shape. The old table (dropped in
+      // v10) hardcoded `spotify*` columns; this one carries a sourceType so
+      // YouTube and Spotify jobs share one code path.
+      await db.execute('DROP TABLE IF EXISTS download_queue');
+      await db.execute(_createDownloadQueueSql);
+      await db.execute(_createDownloadQueueIndexSql);
+    }
   }
+
+  /// Persisted so an in-progress batch survives the app being killed.
+  /// Deliberately NOT foreign-keyed to `playlists`: a queued job whose target
+  /// playlist the user deletes mid-batch should fail as one job, not cascade
+  /// away silently and leave the batch looking complete.
+  static const _createDownloadQueueSql = '''
+      CREATE TABLE IF NOT EXISTS download_queue (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        sourceType TEXT NOT NULL,
+        sourceId TEXT NOT NULL,
+        sourceUrl TEXT,
+        playlistId TEXT NOT NULL,
+        title TEXT,
+        artist TEXT,
+        album TEXT,
+        durationSeconds INTEGER,
+        thumbnailUrl TEXT,
+        expectedOrderIndex INTEGER,
+        addedDate TEXT NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        lastError TEXT
+      )
+    ''';
+
+  /// Dedupe is on the triple, not on sourceId alone: queuing the same song
+  /// into two different playlists is a legitimate thing to do.
+  static const _createDownloadQueueIndexSql = '''
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_download_queue_job
+        ON download_queue (sourceType, sourceId, playlistId)
+    ''';
 
   // --- SONGS CRUD ---
 
@@ -227,6 +272,18 @@ class DatabaseHelper {
       'songs',
       where: 'fileHash = ?',
       whereArgs: [fileHash],
+    );
+    return maps.isNotEmpty ? Song.fromMap(maps.first) : null;
+  }
+
+  /// Looks up a song by where it was downloaded from. Lets the import flow
+  /// answer "do I already have this?" without spending a network request.
+  Future<Song?> getSongBySourceUrl(String sourceUrl) async {
+    final db = await database;
+    final maps = await db.query(
+      'songs',
+      where: 'sourceUrl = ?',
+      whereArgs: [sourceUrl],
     );
     return maps.isNotEmpty ? Song.fromMap(maps.first) : null;
   }
@@ -608,6 +665,83 @@ class DatabaseHelper {
         );
       }
     });
+  }
+
+  // --- DOWNLOAD QUEUE (rama de descargas, schema v11) ---
+
+  /// Encola un trabajo. Devuelve false si ya estaba encolado para esa misma
+  /// playlist — el índice único hace el dedupe en la propia base, no a base
+  /// de un SELECT previo que dos llamadas concurrentes podrían saltarse.
+  Future<bool> enqueueDownload({
+    required String sourceType,
+    required String sourceId,
+    required String playlistId,
+    String? sourceUrl,
+    String? title,
+    String? artist,
+    String? album,
+    int? durationSeconds,
+    String? thumbnailUrl,
+    int? expectedOrderIndex,
+  }) async {
+    final db = await database;
+    final inserted = await db.insert(
+      'download_queue',
+      {
+        'sourceType': sourceType,
+        'sourceId': sourceId,
+        'sourceUrl': sourceUrl,
+        'playlistId': playlistId,
+        'title': title,
+        'artist': artist,
+        'album': album,
+        'durationSeconds': durationSeconds,
+        'thumbnailUrl': thumbnailUrl,
+        'expectedOrderIndex': expectedOrderIndex,
+        'addedDate': DateTime.now().toIso8601String(),
+        'attempts': 0,
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    return inserted != 0;
+  }
+
+  /// La cola en orden de inserción, que para una playlist es su orden real.
+  Future<List<Map<String, dynamic>>> getDownloadQueue() async {
+    final db = await database;
+    return db.query('download_queue', orderBy: 'id ASC');
+  }
+
+  Future<int> getDownloadQueueLength() async {
+    final db = await database;
+    final result = await db.rawQuery('SELECT COUNT(*) AS c FROM download_queue');
+    return (result.first['c'] as int?) ?? 0;
+  }
+
+  Future<void> removeFromDownloadQueue(int queueId) async {
+    final db = await database;
+    await db.delete('download_queue', where: 'id = ?', whereArgs: [queueId]);
+  }
+
+  Future<void> clearDownloadQueue() async {
+    final db = await database;
+    await db.delete('download_queue');
+  }
+
+  Future<void> clearDownloadQueueForPlaylist(String playlistId) async {
+    final db = await database;
+    await db.delete('download_queue', where: 'playlistId = ?', whereArgs: [playlistId]);
+  }
+
+  /// Registra un intento fallido. El contador vive en la base y no en memoria
+  /// para que un reinicio de la app no reinicie el presupuesto de reintentos
+  /// de un trabajo que nunca va a funcionar.
+  Future<void> markDownloadAttempt(int queueId, String? error) async {
+    final db = await database;
+    await db.rawUpdate(
+      'UPDATE download_queue SET attempts = attempts + 1, lastError = ? WHERE id = ?',
+      [error, queueId],
+    );
   }
 
   Future close() async {

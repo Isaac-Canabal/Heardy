@@ -17,6 +17,8 @@ class Song {
   final int? modifiedAt; // epoch millis, from the SAF document
   final String? album;
   final bool missing; // tombstone: true if not seen in the last scan
+  // Download branch (schema v11) — null for songs the user supplied himself.
+  final String? sourceUrl; // canonical URL this song was downloaded from
 
   Song({
     required this.id,
@@ -34,7 +36,46 @@ class Song {
     this.modifiedAt,
     this.album,
     this.missing = false,
+    this.sourceUrl,
   });
+
+  Song copyWith({
+    String? id,
+    String? title,
+    String? artist,
+    int? duration,
+    String? filePath,
+    String? artPath,
+    String? format,
+    DateTime? downloadDate,
+    String? uri,
+    String? fileHash,
+    String? hashKind,
+    int? fileSize,
+    int? modifiedAt,
+    String? album,
+    bool? missing,
+    String? sourceUrl,
+  }) {
+    return Song(
+      id: id ?? this.id,
+      title: title ?? this.title,
+      artist: artist ?? this.artist,
+      duration: duration ?? this.duration,
+      filePath: filePath ?? this.filePath,
+      artPath: artPath ?? this.artPath,
+      format: format ?? this.format,
+      downloadDate: downloadDate ?? this.downloadDate,
+      uri: uri ?? this.uri,
+      fileHash: fileHash ?? this.fileHash,
+      hashKind: hashKind ?? this.hashKind,
+      fileSize: fileSize ?? this.fileSize,
+      modifiedAt: modifiedAt ?? this.modifiedAt,
+      album: album ?? this.album,
+      missing: missing ?? this.missing,
+      sourceUrl: sourceUrl ?? this.sourceUrl,
+    );
+  }
 
   /// Path/URI to actually hand to the audio player: imported songs use their
   /// SAF content:// URI, legacy downloaded songs fall back to filePath.
@@ -57,6 +98,7 @@ class Song {
       'modifiedAt': modifiedAt,
       'album': album,
       'missing': missing ? 1 : 0,
+      'sourceUrl': sourceUrl,
     };
   }
 
@@ -77,6 +119,7 @@ class Song {
       modifiedAt: map['modifiedAt'] as int?,
       album: map['album'] as String?,
       missing: (map['missing'] as int? ?? 0) != 0,
+      sourceUrl: map['sourceUrl'] as String?,
     );
   }
 
