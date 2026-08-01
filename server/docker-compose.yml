@@ -1,0 +1,29 @@
+services:
+  heardy-dl:
+    build: .
+    image: heardy-dl:local
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HEARDY_POT_PROVIDER_URL: http://bgutil-pot:4416
+    # Solo loopback por defecto: se llega desde fuera por Tailscale, no
+    # exponiendo el puerto a la LAN entera ni, mucho menos, a internet.
+    # Cambia a "8080:8080" a conciencia si de verdad quieres oírlo en la LAN.
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - heardy-cache:/data/cache
+    depends_on:
+      - bgutil-pot
+
+  # Genera los PO Tokens que YouTube exige desde 2025, ligados al id de vídeo
+  # y de vida corta. Sin esto, la mayoría de clientes devuelven 403 (DD1).
+  bgutil-pot:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    restart: unless-stopped
+    # Sin `ports`: solo lo consume heardy-dl por la red interna de compose.
+    expose:
+      - "4416"
+
+volumes:
+  heardy-cache:

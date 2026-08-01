@@ -1,0 +1,16 @@
+# El framework se fija: sus cambios no aportan nada aquí y una actualización
+# sorpresa solo puede romper el arranque.
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+httpx==0.28.1
+pydantic==2.10.4
+
+# yt-dlp NO se fija a propósito, al contrario que el resto. Es la única pieza
+# cuyo valor está en ser la más nueva posible: los arreglos a los cambios de
+# YouTube llegan en días y fijar una versión es exactamente cómo se acaba con
+# un servidor que dejó de funcionar sin que nadie tocara nada. Se reconstruye
+# con `docker compose build --pull --no-cache` para traer la última.
+yt-dlp
+
+# Plugin que conecta yt-dlp con el sidecar de PO Tokens.
+bgutil-ytdlp-pot-provider

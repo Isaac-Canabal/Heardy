@@ -109,6 +109,12 @@ coverage/
 .env.local
 .env.*.local
 
+# Servidor de descargas (server/) — Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
 # Temporary files
 *.tmp
 *.temp
