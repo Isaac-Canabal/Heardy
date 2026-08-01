@@ -6,12 +6,14 @@ import '../providers/download_provider.dart';
 import '../providers/music_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/download_source.dart';
+import '../services/spotify_match.dart';
+import '../services/spotify_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/download_progress_card.dart';
 import '../widgets/playlist_target_sheet.dart';
 
 /// What a pasted URL turned out to be, once analyzed.
-enum _UrlKind { video, playlist }
+enum _UrlKind { video, playlist, spotify }
 
 /// "Pegar URL → vista previa → elegir playlist → encolar", plus the live
 /// queue underneath. This is the second way music enters the library —
@@ -23,7 +25,15 @@ enum _UrlKind { video, playlist }
 /// directly) and to the queue only through [DownloadProvider] — this screen
 /// has no idea a Python process exists.
 class ImportScreen extends StatefulWidget {
-  const ImportScreen({super.key});
+  /// Inyectable por lo mismo que [DownloadSource]/[DownloadProvider] lo son:
+  /// permite un test que ejercite el flujo de Spotify entero sin red, con
+  /// un fake que sustituya el scraping real. `SpotifyService` no pasa por
+  /// `Provider` como las otras dependencias porque no tiene una interfaz
+  /// abstracta que justifique una — solo existe una implementación real, y
+  /// esto le basta para ser sustituible en pruebas.
+  final SpotifyService spotifyService;
+
+  ImportScreen({super.key, SpotifyService? spotifyService}) : spotifyService = spotifyService ?? SpotifyService();
 
   @override
   State<ImportScreen> createState() => _ImportScreenState();
@@ -36,6 +46,8 @@ class _ImportScreenState extends State<ImportScreen> {
   _UrlKind? _analyzedKind;
   RemoteTrack? _analyzedTrack;
   RemotePlaylist? _analyzedPlaylist;
+  SpotifyAnalysisResult? _analyzedSpotify;
+  List<SpotifyMatch>? _analyzedSpotifyMatches;
 
   @override
   void dispose() {
@@ -47,6 +59,8 @@ class _ImportScreenState extends State<ImportScreen> {
     _analyzedKind = null;
     _analyzedTrack = null;
     _analyzedPlaylist = null;
+    _analyzedSpotify = null;
+    _analyzedSpotifyMatches = null;
     _errorMessage = null;
   }
 
@@ -74,7 +88,24 @@ class _ImportScreenState extends State<ImportScreen> {
 
     try {
       final source = context.read<DownloadSource>();
-      if (_looksLikePlaylist(url)) {
+      if (SpotifyService.isSpotifyUrl(url)) {
+        // Se resuelve aparte de YouTube: analiza el enlace de Spotify (sin
+        // tocar el servidor propio) y después busca en YouTube el
+        // equivalente de cada pista, una por una, por proximidad de
+        // duración — nunca por título/artista. El resultado elegido se
+        // enseña siempre antes de descargar; nada se resuelve en silencio.
+        final spotify = await widget.spotifyService.analyze(url);
+        final matches = <SpotifyMatch>[];
+        for (final track in spotify.tracks) {
+          matches.add(await matchSpotifyTrack(track, source));
+        }
+        if (!mounted) return;
+        setState(() {
+          _analyzedKind = _UrlKind.spotify;
+          _analyzedSpotify = spotify;
+          _analyzedSpotifyMatches = matches;
+        });
+      } else if (_looksLikePlaylist(url)) {
         final playlist = await source.resolvePlaylist(url);
         if (!mounted) return;
         setState(() {
@@ -94,7 +125,14 @@ class _ImportScreenState extends State<ImportScreen> {
       setState(() => _errorMessage = e.userMessage);
     } catch (e) {
       if (!mounted) return;
-      setState(() => _errorMessage = 'No se pudo analizar el enlace: $e');
+      // SpotifyService lanza Exception simples con mensajes ya redactados
+      // para el usuario ("URL de Spotify no válida", "El enlace puede ser
+      // privado…") — sólo hay que pelarles el prefijo "Exception: ".
+      final raw = e.toString();
+      final message = raw.startsWith('Exception: ') ? raw.substring('Exception: '.length) : raw;
+      setState(() {
+        _errorMessage = SpotifyService.isSpotifyUrl(url) ? message : 'No se pudo analizar el enlace: $message';
+      });
     } finally {
       // Un único punto de reset — la pantalla que reemplaza a ésta (la vieja
       // add_from_youtube_screen.dart) tenía un bug justo por resetear el
@@ -152,6 +190,47 @@ class _ImportScreenState extends State<ImportScreen> {
     _showSnack('$added ${added == 1 ? "canción encolada" : "canciones encoladas"}');
   }
 
+  Future<void> _downloadSpotifyMatches(SpotifyAnalysisResult spotify, List<SpotifyMatch> matches) async {
+    final acceptable = matches.where((m) => m.isAcceptable).toList();
+    if (acceptable.isEmpty) return;
+
+    final choice = await pickTargetPlaylist(
+      context,
+      suggestedName: spotify.isCollection ? spotify.name : null,
+    );
+    if (choice == null || !mounted) return;
+    final playlistId = await resolveTargetPlaylistId(context, choice);
+    if (playlistId == null || !mounted) return;
+
+    final provider = context.read<DownloadProvider>();
+    var added = 0;
+    for (final match in acceptable) {
+      final ok = await provider.enqueueTrack(
+        match.youtubeTrack!,
+        playlistId: playlistId,
+        sourceType: 'spotify',
+        // El match viene de /search (extract_flat): mismo motivo que la
+        // pestaña de búsqueda (DD6) — se resuelve en el worker antes de
+        // bajar nada, no aquí.
+        metadataComplete: false,
+      );
+      if (ok) added++;
+    }
+    if (!mounted) return;
+
+    setState(_clearAnalysis);
+    _urlController.clear();
+    provider.processQueue();
+
+    final skipped = matches.length - acceptable.length;
+    _showSnack(
+      skipped == 0
+          ? '$added ${added == 1 ? "canción encolada" : "canciones encoladas"}'
+          : '$added ${added == 1 ? "canción encolada" : "canciones encoladas"} · '
+              '$skipped sin buena coincidencia en YouTube',
+    );
+  }
+
   void _showSnack(String message) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), behavior: SnackBarBehavior.floating, duration: const Duration(seconds: 3)),
@@ -173,7 +252,7 @@ class _ImportScreenState extends State<ImportScreen> {
           const Padding(
             padding: EdgeInsets.fromLTRB(20, 12, 20, 0),
             child: Text(
-              'Añadir desde YouTube',
+              'Añadir música',
               style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w800, letterSpacing: -0.5),
             ),
           ),
@@ -190,7 +269,7 @@ class _ImportScreenState extends State<ImportScreen> {
                     autocorrect: false,
                     onSubmitted: (_) => _analyze(),
                     decoration: InputDecoration(
-                      hintText: 'Pegá un enlace de YouTube…',
+                      hintText: 'Pegá un enlace de YouTube o Spotify…',
                       prefixIcon: Icon(Icons.link_rounded, color: AppTheme.primaryLight),
                       suffixIcon: IconButton(
                         icon: const Icon(Icons.content_paste_rounded, size: 18),
@@ -233,6 +312,8 @@ class _ImportScreenState extends State<ImportScreen> {
                   _buildTrackPreview(_analyzedTrack!),
                 if (_analyzedKind == _UrlKind.playlist && _analyzedPlaylist != null)
                   _buildPlaylistPreview(_analyzedPlaylist!),
+                if (_analyzedKind == _UrlKind.spotify && _analyzedSpotify != null && _analyzedSpotifyMatches != null)
+                  _buildSpotifyPreview(_analyzedSpotify!, _analyzedSpotifyMatches!),
                 _buildQueueSection(),
               ],
             ),
@@ -437,6 +518,87 @@ class _ImportScreenState extends State<ImportScreen> {
     );
   }
 
+  Widget _buildSpotifyPreview(SpotifyAnalysisResult spotify, List<SpotifyMatch> matches) {
+    final acceptable = matches.where((m) => m.isAcceptable).length;
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20),
+      decoration: AppTheme.glassCard(),
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              _Thumb(url: spotify.thumbnailUrl ?? '', size: 52),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.podcasts_rounded, color: Colors.green.shade400, size: 14),
+                        const SizedBox(width: 4),
+                        Text(
+                          'Spotify',
+                          style: TextStyle(color: Colors.green.shade400, fontSize: 11, fontWeight: FontWeight.w700),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      spotify.name,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700, fontSize: 15),
+                    ),
+                    if (spotify.subtitle != null)
+                      Text(
+                        spotify.subtitle!,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(color: Colors.white.withValues(alpha: 0.55), fontSize: 13),
+                      ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          // El resultado elegido en YouTube para cada pista se enseña
+          // siempre acá, antes de descargar nada — nunca se resuelve en
+          // silencio (ver CLAUDE.md, Fase 8).
+          ...matches.map((m) => _SpotifyMatchRow(match: m)),
+          const SizedBox(height: 4),
+          Text(
+            acceptable == matches.length
+                ? '$acceptable de ${matches.length} con buena coincidencia'
+                : '$acceptable de ${matches.length} se van a descargar — el resto no tiene una '
+                    'coincidencia confiable en YouTube',
+            style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton.icon(
+              key: const Key('download_spotify_button'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.primary,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 13),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              ),
+              icon: const Icon(Icons.download_rounded, size: 18),
+              label: Text(acceptable == 0 ? 'Sin coincidencias descargables' : 'Descargar $acceptable canciones'),
+              onPressed: acceptable == 0 ? null : () => _downloadSpotifyMatches(spotify, matches),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildQueueSection() {
     final provider = context.watch<DownloadProvider>();
     final current = provider.current;
@@ -499,6 +661,64 @@ class _ImportScreenState extends State<ImportScreen> {
           ...failures.map((f) => _FailureRow(failure: f)),
         ],
       ],
+    );
+  }
+}
+
+/// Una fila del emparejamiento Spotify -> YouTube: el original y en qué se
+/// convirtió, con el semáforo de confianza que decide si entra en el lote.
+class _SpotifyMatchRow extends StatelessWidget {
+  final SpotifyMatch match;
+  const _SpotifyMatchRow({required this.match});
+
+  @override
+  Widget build(BuildContext context) {
+    final (icon, color, label) = switch (match) {
+      SpotifyMatch(isGoodMatch: true) => (Icons.check_circle_rounded, Colors.greenAccent, 'Δ ${match.durationDiffSeconds}s'),
+      SpotifyMatch(isAcceptable: true) => (
+          Icons.warning_amber_rounded,
+          Colors.amberAccent,
+          'revisar · Δ ${match.durationDiffSeconds}s',
+        ),
+      _ => (Icons.block_rounded, Colors.redAccent, 'no se descargará'),
+    };
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(icon, color: color, size: 16),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  '${match.original.artist} - ${match.original.title}',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w600),
+                ),
+                if (match.youtubeTrack != null)
+                  Text(
+                    '→ ${match.youtubeTrack!.artist} - ${match.youtubeTrack!.title}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12),
+                  )
+                else
+                  Text(
+                    'No se encontró nada parecido en YouTube',
+                    style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(label, style: TextStyle(color: color, fontSize: 11, fontWeight: FontWeight.w600)),
+        ],
+      ),
     );
   }
 }

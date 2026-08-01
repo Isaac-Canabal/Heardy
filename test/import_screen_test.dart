@@ -239,7 +239,7 @@ void main() {
         ],
         child: MaterialApp(
           theme: AppTheme.dark(),
-          home: const Scaffold(body: ImportScreen()),
+          home: Scaffold(body: ImportScreen()),
         ),
       ),
     );

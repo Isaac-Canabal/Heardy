@@ -40,12 +40,14 @@ class _MainShellScreenState extends State<MainShellScreen> {
           children: [
             IndexedStack(
               index: _index,
-              children: const [
-                HomeScreen(),
-                InboxScreen(),
+              // ImportScreen ya no es const (Fase 8: toma un SpotifyService
+              // inyectable para tests), así que la lista entera deja de serlo.
+              children: [
+                const HomeScreen(),
+                const InboxScreen(),
                 ImportScreen(),
-                SearchScreen(),
-                SettingsScreen(),
+                const SearchScreen(),
+                const SettingsScreen(),
               ],
             ),
             const Positioned(
