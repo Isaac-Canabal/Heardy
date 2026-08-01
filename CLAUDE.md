@@ -118,7 +118,7 @@ Non-negotiable: no stage may leave the project unable to build or the app unable
    - **`now_playing_screen.dart`**: completed D7 (deferred from before Stage 1) — collapsed `WaveformSeekBar` into a plain `SeekBar` built on Flutter's `Slider`, deleting `audio_analysis_service.dart` with it. This was already broken for imported songs before this stage even started: `AudioAnalysisService` read `File(filePath)` directly, which can't open a SAF `content://` uri — one more confirmation this was dead weight, not a feature worth preserving.
    
    Verified: `flutter analyze` clean, `flutter clean` + rebuild succeeds, all 6 tests pass, and a grep across `lib/`, `pubspec.yaml`, and the manifest for every deleted symbol/package turns up nothing but two historical comments (harmless prose, not code). **Everything deleted here is preserved at the `youtube-downloader-final` tag** (`git checkout youtube-downloader-final -- <path>` to recover any of it) — pruning it from the working tree doesn't lose it.
-6. **Device verification and docs.** Confirm D8 on hardware. Rewrite this file's Architecture sections and README.md to describe the local-library app; delete the download-era sections, which by then describe code that no longer exists.
+6. **Device verification and docs — done 2026-08-01, folded into `feature/youtube-downloads`' own Stage 9 below** (the download branch's device pass covered this pivot's remaining hardware gap too, D8 included). Architecture/README rewritten for the two-import-path reality rather than the download-era pipeline this note originally meant to delete — by the time this landed, that pipeline was back by design, not gone.
 
 ## YouTube downloads — branch `feature/youtube-downloads` only (decided 2026-08-01)
 
@@ -180,7 +180,9 @@ Same non-negotiable rule as the pivot: every stage ends with the app compiling a
    - **`ImportScreen` gained an injectable `spotifyService` constructor parameter** (default `SpotifyService()`), the same DI shape already used for `DownloadSource`/`DownloadProvider` — `SpotifyService` doesn't go through `Provider` because there's no second implementation to swap in, only a test fake, but the same reasoning that made the rest of this screen testable applies. This is also why `ImportScreen()` stopped being `const` — fixed the two call sites that assumed it still was (`main_shell_screen.dart`'s tab list, `import_screen_test.dart`'s test harness) — caught by a full-project `flutter test`/`flutter analyze` run, not by the file-scoped ones used mid-edit; scope test/analyze runs to the whole project before calling any stage done, not just the files touched.
    - **Unlike Stage 6/7's screens, `ImportScreen` needed no `AudioPlayerHandler`**, so the entire flow — Spotify-vs-YouTube URL detection, good/acceptable/rejected match classification, batch enqueue, `sourceType`/`originalUrl` correctness — got real widget-level test coverage, closing the kind of gap Stage 6/7 had to leave open.
    - **Validation:** 85 tests project-wide (10 in `spotify_match_test.dart` — pure matching logic, no widget/network — plus 5 in `import_screen_spotify_test.dart`), `flutter analyze` clean, `flutter build apk --debug` succeeds.
-9. **Device verification + docs** — also the place to finally close D8's open hardware gap.
+9. **Device verification + docs — done 2026-08-01, on a real Android 14 device (LLY LX3, API 34) over USB with `adb reverse` forwarding the server's port.** Closed the walk of every real-hardware gap this file had accumulated since the pivot: SAF folder picker + persisted permission, the scan/metadata-read path, the whole download flow (single video, playlist, in-app search, Spotify bridge) against the **real, running server**, a rescan reporting `unchanged`/0 new after downloading, and — the one gap every stage since the pivot's Stage 1 had explicitly flagged and deferred — **D8's background playback and lock-screen/notification controls, confirmed working** now that `flutter_background_service`/`wakelock_plus` are gone.
+   - **One real bug found and fixed by this pass, not before it:** `search_screen.dart`'s `_buildHint` (Stage 7) overflowed 7px on a real device when the on-screen keyboard compressed the available height — invisible on every desktop/widget-test run because none of those simulate a keyboard. Fixed by wrapping it in a `SingleChildScrollView` with `mainAxisSize: MainAxisSize.min` instead of a bare `Column`, the general fix for "content might not fit, let it scroll rather than assert." `ImportScreen`'s analogous hint states weren't touched — they're gated before their screen's text field ever renders, so they're not reachable with a keyboard up in the first place; a speculative fix there without a reproduced failure would have been unjustified.
+   - **Still open, deliberately, going into the next session: Docker deployment was never actually run.** `server/`'s native path (`setup.bat`/`run.bat`) is what got exercised end-to-end, on this machine and now from the device; the `Dockerfile`/`docker-compose.yml` path has only been reviewed by inspection since it was written in Stage 2. Before relying on it: `docker compose up -d --build`, confirm `/health` the same way `server/README.md`'s own checklist describes, and confirm a real download through it from the app.
 
 ## Commands
 
@@ -197,152 +199,162 @@ No CI config, no `analysis_options.yaml` beyond `flutter_lints` default. Signing
 
 ## Architecture
 
+*(This section describes the state after the local-library pivot AND the `feature/youtube-downloads` branch. On `main`, ignore every mention of `server/`, `DownloadSource`, `DownloadService`, `DownloadProvider`, `import_screen.dart` and the Spotify bridge — none of that exists there.)*
+
 ### Directory map
 
 ```
 lib/
 ├── main.dart                        # entrypoint: DB init, notifications, AudioService init, permission
-│                                     # requests, Provider tree wiring, RouteGenerator (only "/" and "/playlist")
-├── models/                          # plain data classes, hand-rolled toMap/fromMap/toJson/fromJson
-│   ├── song.dart                    # id, title, artist, duration, filePath, artPath, format, downloadDate
+│                                     # requests, Provider tree wiring (incl. DownloadSource/DownloadProvider),
+│                                     # RouteGenerator (only "/" and "/playlist")
+├── models/
+│   ├── song.dart                    # id, title, artist, duration, filePath, artPath, format, downloadDate,
+│   │                                 # + local-library fields (uri, fileHash, hashKind, fileSize, modifiedAt,
+│   │                                 # album, missing) + sourceUrl (download branch, schema v11)
 │   ├── playlist.dart                # id, name, creationDate, sortOrder, optional originalUrl
 │   └── playlist_song.dart           # mirrors playlist_songs join table; mostly unused since DatabaseHelper
 │                                     # queries the join table with raw SQL instead
 ├── providers/                       # ChangeNotifier state holders (see "State management" below)
-│   ├── music_provider.dart          # playlists + current playlist songs + cold-start playback restoration
-│   ├── download_provider.dart       # the download queue, YouTube/Spotify orchestration, download UI state
-│   ├── settings_provider.dart       # theme preset + max search results (SharedPreferences-backed)
-│   └── error_provider.dart          # rolling in-memory error log — defined but NOT wired into the app
+│   ├── music_provider.dart          # playlists + current playlist songs + cold-start playback restoration +
+│   │                                 # library-root/inbox-count/librarySongsVersion bookkeeping
+│   ├── settings_provider.dart       # theme preset + max search results + download-server URL/key (all
+│   │                                 # SharedPreferences-backed)
+│   └── download_provider.dart       # (download branch) the persistent download queue: enqueue, processQueue,
+│                                     # retry/backoff, cancellation — see "Download pipeline" below
 ├── services/                        # business logic, no Flutter widget dependencies
 │   ├── database_helper.dart         # SQLite schema, migrations, all CRUD/queries — single source of truth
-│   ├── youtube_service.dart         # YouTube extraction/download engine: metadata fetch, stream manifest
-│   │                                # resolution, chunked HTTP download, retry/backoff, playlist scraping
-│   │                                # fallback, shared download circuit breaker
-│   ├── ytmusic_service.dart         # wraps dart_ytmusic_api as primary metadata/search/playlist path, falls
-│   │                                # back to youtube_service.dart on failure. Delegates ALL downloading to
-│   │                                # YoutubeService (YTMusic API can't download)
-│   ├── spotify_service.dart         # scrapes open.spotify.com/embed/* for metadata (no official API); audio
-│   │                                # itself still comes from YouTube via YoutubeService.searchAndDownload
+│   ├── storage_service.dart         # SAF library-root lifecycle: pick, recognize an already-initialized
+│   │                                 # root, resolve/create a per-playlist folder for downloads
+│   ├── library_scan_service.dart    # reconciles the SAF folder into SQLite (D2's two matchers); the local
+│   │                                 # import path
+│   ├── audio_identity.dart          # content-hash of a song's audio payload only (skips ID3/MP4 tag blocks);
+│   │                                 # shared by the scanner AND the downloader so identity never diverges
+│   ├── metadata_service.dart        # audio_metadata_reader wrapper: SAF-copy-then-read tags, filename
+│   │                                 # fallback, embedded-cover extraction
+│   ├── download_source.dart         # (download branch) abstract DownloadSource interface + RemoteTrack/
+│   │                                 # RemotePlaylist DTOs — the only thing the app knows about "a server"
+│   ├── ytdlp_server_source.dart     # (download branch) the one real DownloadSource: HTTP client for server/
+│   ├── download_service.dart        # (download branch) turns a RemoteTrack into a library song: fetch →
+│   │                                 # write tags → SAF paste → AudioIdentity → dedupe → insertSong
+│   ├── spotify_service.dart         # (download branch) scrapes open.spotify.com/embed/* __NEXT_DATA__ for
+│   │                                 # metadata (no official API) — restored verbatim from the pre-pivot code
+│   ├── spotify_match.dart           # (download branch) pure Spotify→YouTube matching by duration proximity
 │   ├── audio_player_handler.dart    # audio_service/just_audio bridge: queue, background playback, lock-screen
-│   │                                # controls, play-history recording, playback-state persistence
+│   │                                 # controls, play-history recording, playback-state persistence
 │   ├── playback_state_service.dart  # SharedPreferences read/write for "resume where I left off"
-│   ├── lyrics_service.dart          # fetches/caches synced .lrc lyrics from LRCLIB
-│   ├── repair_service.dart          # manual "fix a broken player/library" flow, triggered from Settings
-│   ├── audio_analysis_service.dart  # waveform amplitude extraction for the now-playing seek bar
-│   └── log_service.dart             # appends download errors to a plain-text log, viewable from Settings
+│   └── lyrics_service.dart          # fetches/caches synced .lrc lyrics from LRCLIB
 ├── screens/                         # one file per screen/tab, StatefulWidget + Provider consumers directly
-│   ├── main_shell_screen.dart       # bottom-nav shell (Home/AddFromYouTube/Search/Settings) + MiniPlayer
+│   ├── main_shell_screen.dart       # bottom-nav shell + persistent MiniPlayer
 │   ├── home_screen.dart             # playlist library: create/rename/reorder/delete
-│   ├── add_from_youtube_screen.dart # "analyze link" flow for YouTube/Spotify URLs → enqueues via DownloadProvider
-│   ├── search_screen.dart           # YouTube/YTMusic search UI
-│   ├── playlist_detail_screen.dart  # song list for one playlist: search/sort/reorder/delete/play
+│   ├── inbox_screen.dart            # D6 batch triage for songs imported loose in the library root
+│   ├── import_screen.dart           # (download branch) "Añadir": paste a YouTube/Spotify URL → preview →
+│   │                                 # pick playlist → enqueue; also the live download-queue UI
+│   ├── search_screen.dart           # Local/YouTube segmented search
+│   ├── playlist_detail_screen.dart  # song list for one playlist: search/sort/reorder/delete/play; "Actualizar
+│   │                                 # desde YouTube" for playlists with `originalUrl` (download branch)
 │   ├── now_playing_screen.dart      # full player UI — largest screen by far
-│   └── settings_screen.dart         # theme picker, max search results, error log viewer, manual repair trigger
-├── widgets/                         # glass_card, mini_player, song_tile, download_progress_card
+│   └── settings_screen.dart         # theme picker, max search results, library-folder picker, download-server
+│                                     # URL/key (download branch)
+├── widgets/                         # glass_card, mini_player, song_tile, playlist_target_sheet,
+│                                     # download_progress_card (download branch)
 └── theme/app_theme.dart             # navy/violet/rose presets + gradient scaffold decoration
+
+server/                              # (download branch only) FastAPI + yt-dlp microservice — see server/README.md
 ```
 
-### State management: Provider, three top-level providers wired in `main.dart`
+### State management: Provider
 
-- `MusicProvider` — owns playlists and the songs of the currently-viewed playlist (queried fresh from SQLite on every mutation, not cached/derived). Also owns playback-state restoration on cold start.
-- `DownloadProvider` — owns the download queue and all download/search orchestration (YouTube + Spotify). Wired as `ChangeNotifierProxyProvider2` so it always has live references to `MusicProvider` and `AudioPlayerHandler`.
-- `SettingsProvider` — theme preset + max search results, persisted to `SharedPreferences`.
+- `MusicProvider` — owns playlists and the songs of the currently-viewed playlist (queried fresh from SQLite on every mutation, not cached/derived). Also owns playback-state restoration on cold start, and the library-root/inbox-count/`librarySongsVersion` state every screen watches to know when to reload.
+- `SettingsProvider` — theme preset, max search results, and (download branch) the download server's URL/API key — all persisted to `SharedPreferences`.
+- `DownloadProvider` *(download branch)* — the persistent download queue and its processing loop. Reaches the library through an `onDownloadComplete(playlistId)` callback rather than holding a `MusicProvider` reference, which is what keeps it unit-testable and a pure orchestrator. Knows nothing about HTTP or the server — talks only to `DownloadSource`.
 
-`AudioPlayerHandler` is provided directly via `Provider<AudioPlayerHandler>.value`, not a `ChangeNotifier` — screens read it via `context.read`/`context.watch` and react to its `mediaItem`/`playbackState`/`queue` streams directly.
+`AudioPlayerHandler` is provided directly via `Provider<AudioPlayerHandler>.value`, not a `ChangeNotifier` — screens read it via `context.read`/`context.watch` and react to its `mediaItem`/`playbackState`/`queue` streams directly. `DownloadSource` *(download branch)* is provided the same way, via `Provider<DownloadSource>.value`.
 
-### Data layer: `DatabaseHelper` (SQLite via sqflite), single source of truth
+### Data layer: `DatabaseHelper` (SQLite via sqflite), single source of truth, schema v12
 
-Tables: `songs`, `playlists`, `playlist_songs` (join table, `ON DELETE CASCADE` both ways, ordered by `orderIndex`), `download_queue` (persists across app restarts/crashes, `source` column for YouTube vs Spotify), `play_history` (top songs/artists this week/month).
+Tables: `songs`, `playlists`, `playlist_songs` (join table, `ON DELETE CASCADE` both ways, ordered by `orderIndex`), `play_history` (top songs/artists this week/month), and *(download branch)* `download_queue` (persists an in-progress batch across app kill/restart; generic `sourceType`/`sourceId` shape, not YouTube-specific).
 
-Schema changes go through `_onUpgrade` with sequential `if (oldVersion < N)` blocks — bump `version` in `_initDB` and add a new block, never rewrite an existing one. `PRAGMA foreign_keys = ON` (set in `_onConfigure`) is how cascade deletes work.
+Schema changes go through `_onUpgrade` with sequential `if (oldVersion < N)` blocks — bump `version` in `_initDB` and add a new block, never rewrite an existing one.
 
-Songs are content-addressed by `id`: a YouTube video ID, or `spotify_<sanitized>`/Spotify track ID for Spotify-sourced tracks. A song can belong to multiple playlists via `playlist_songs`; deletion always checks `getPlaylistCountForSong` first and only removes the file + row when no other playlist references it (see `deletePlaylist`, `removeSongFromPlaylist`).
+Songs are content-addressed: imported/downloaded songs use `id == fileHash` (the audio-payload hash from `AudioIdentityService`, see D2); legacy pre-pivot rows keep their YouTube video id via `filePath`. `Song.playablePath` (`uri ?? filePath`) is what actually gets handed to the player, so both generations coexist without a migration. A song can belong to multiple playlists via `playlist_songs`; deletion always checks `getPlaylistCountForSong` first.
 
-**Note:** `addToDownloadQueue` dedupes on `(videoId, playlistId)`, not `videoId` alone (see Download resilience below).
+### Two ways a song enters the library
 
-### Download pipeline (`DownloadProvider` + `YTMusicService`/`YoutubeService`/`SpotifyService`)
+This is the load-bearing idea of the whole post-pivot app: **however a song arrives, it ends up as one ordinary row in `songs`, indistinguishable from the others.**
 
-Downloads are never awaited directly by the UI — everything funnels through a **persistent SQLite-backed queue** (`download_queue` table) so an in-progress batch survives app kill/restart:
+1. **Local import** (`library_scan_service.dart`) — the user drops files into the SAF folder from outside the app; a scan reconciles disk against SQLite via D2's two matchers (same uri+size/mtime → unchanged; unknown uri but same audio hash → moved/renamed).
+2. **Download** *(download branch)* — `DownloadService.download()` writes a new file into the same SAF folder (`Heardy/<Playlist>/`), computed with the exact same `AudioIdentityService` the scanner uses. **The acceptance test for this equivalence, everywhere in this codebase: download a song, then immediately rescan — it must report `unchanged`, never `inserted`.** If it ever reports `inserted`, the downloader and the scanner have diverged on what a song's identity is, and every future download will duplicate itself.
 
-1. `downloadVideo` / `downloadPlaylist` / `downloadSpotifyTrack` / `downloadSpotifyCollection` resolve metadata, dedupe, `INSERT` into `download_queue`, call `processQueue()`.
-2. `processQueue()` is a self-scheduling loop guarded by `_isProcessingQueue` — pulls up to `_maxConcurrentDownloads` items at a time, fires `_processQueueItem` per item without awaiting, preserving playlist order via `expectedOrderIndex`.
-3. Each item retries up to 2 attempts with a 10-minute budget and exponential backoff before being dropped and surfaced as a friendly error (`_friendlyDownloadError`).
-4. `cancelAllDownloads()` / `prepareForNewDownloads()` bump `_downloadSessionId` — in-flight downloads check this against their captured session id to bail out cleanly.
+### Download pipeline *(download branch only)*
 
-`YTMusicService` wraps `dart_ytmusic_api` as primary source, falling back to `YoutubeService`/`youtube_explode_dart` on failure for every operation (metadata, playlist expansion, search) — InnerTube is less prone to blocking but less complete. `YoutubeService` adds: cycling client configs (android/androidVr), retry-with-backoff, a short-lived metadata cache, and a shared static circuit breaker (`_blockedUntil`/`_consecutiveBlocks`) that pauses all concurrent callers together on a hard block instead of each retrying independently and re-triggering it. `SpotifyService` has no official API — scrapes `open.spotify.com/embed/*` `__NEXT_DATA__` JSON for metadata; audio always comes from YouTube via search-and-match by title/artist/duration.
+The app never talks to YouTube directly — all extraction fragility lives in `server/`, a small FastAPI + yt-dlp microservice (see `server/README.md` for running it, and DD1 above for why it's a separate service instead of an in-app extractor).
+
+1. `DownloadSource` (`download_source.dart`) is the abstract seam — `resolve`/`resolvePlaylist`/`search`/`fetchAudio`/`probe`. `YtdlpServerSource` is the only real implementation; a second provider (e.g. a commercial API) would be a new class behind the same interface, not a rewrite.
+2. **`ImportScreen`/`SearchScreen` call `DownloadSource` directly** for previews/search — no download happens yet, just metadata.
+3. **`DownloadProvider.enqueueTrack`/`enqueuePlaylist`** write rows into `download_queue` and kick `processQueue()` (fire-and-forget from the UI's perspective; safe to call redundantly, a no-op if already running).
+4. **`processQueue()` drains what's runnable, one job at a time** (concurrency 1 — the extraction budget is per-IP, not per-app, and the server already serializes it too), then schedules a `Timer` for the next backoff-eligible job rather than sleeping inside its loop (a real bug found by a test: sleeping there left `isProcessing` true with nothing happening, and blocked `cancelAll`).
+5. **DD6 — the `/resolve` rule.** A job whose metadata came from `extract_flat` (search results, playlist entries, Spotify matches — `metadataComplete: false`) gets resolved for real via `/resolve` **inside `DownloadService.download(resolveFirst: true)`, before a single byte downloads** — otherwise the channel name (not the real artist) would get written into the file's tags. A job whose metadata already came from `/resolve` (a pasted single URL's own preview, `metadataComplete: true`) skips this — repeating it would waste a request for nothing. The resolved metadata is persisted to `download_queue` **the moment the resolve succeeds**, so a subsequent retry after a failed download doesn't resolve twice.
+6. **Permanent vs. transient failures.** The server classifies extraction failures: known-permanent ones (video deleted/private/members-only/age-restricted/region-blocked, bad URL) return **404**, mapped client-side to `DownloadSourceErrorKind.notFound` and dropped from the queue on the first attempt. Everything else (blocked IP, network hiccup) is **502**, retried up to 3 times with backoff `[5s, 15s, 45s]`. `attempts` lives in the DB (a restart doesn't hand a doomed job a fresh budget); the backoff timing is in-memory only (a user reopening the app wants a retry *now*). A `415` from `/audio` (no AAC/M4A track) is definitive and never retried.
+7. **`DownloadService.download()`** does the actual work once a job is due: fetch to temp → write tags with `audio_metadata_reader.updateMetadata` (the file becomes self-describing on disk) → `SafStream.pasteLocalFile` into `Heardy/<Playlist>/` → `SafUtil.stat` **after** the paste (the document provider sets `lastModified` and may rename on a name collision — always use the returned uri, never reconstruct it) → `AudioIdentityService.compute` over SAF → dedupe by hash (if the same audio already exists as a different song, delete the just-pasted duplicate file and just add the *existing* song to the target playlist) → `insertSong`.
+
+### Spotify bridge *(download branch only)*
+
+Not a queue job type — matching happens **client-side, interactively, at analyze time** in `ImportScreen`, not deferred into the background queue. `spotify_match.dart`'s `matchSpotifyTrack` searches YouTube for `'$artist $title'` and picks the closest result **by duration only** (never by title/artist string similarity, which is far less reliable across platforms): ≤3s is a clean match, ≤30s is acceptable, above that — or no comparable candidate — the track is dropped from the batch and shown as "no se descargará". The whole match list is shown once, before a single "Descargar N" button (extending this project's own batch-action philosophy from D6, rather than either silently guessing or demanding N per-track confirmations). A matched track re-enters the ordinary download pipeline exactly like a search result (`metadataComplete: false`); `sourceType: 'spotify'` is provenance only, nothing branches on it.
 
 ### Playback (`AudioPlayerHandler` extends `BaseAudioHandler` + `just_audio`)
 
-- Queue is backed by `ConcatenatingAudioSource`; items are filtered against `File(path).existsSync()` before being added, so a missing/deleted file is silently skipped.
+- Queue is backed by `ConcatenatingAudioSource`. `_isPlayable`/`_sourceUriFor` handle both path shapes: a `content://` SAF uri is checked with `SafUtil.exists` (metadata-only) instead of `File(...).existsSync()`; a failed check (revoked permission, unmounted volume, deleted file) is treated as "not playable" and silently skipped from the queue, the same outcome for every one of those causes.
 - Play-history (`play_history` table) recorded via `_startTracking`/`_finalizePlay` once >= 50% of a track's duration is reached, on track change or completion.
-- Playback state (queue, current media id, position, shuffle/loop, speed) persisted to `SharedPreferences` on every `playbackEventStream` tick via `PlaybackStateService`; restored on cold start — `main.dart` calls `MusicProvider.restorePlaybackState` from a post-frame callback (not a timing guess), which reloads from SQLite, rebuilds `MediaItem`s (re-attaching `filePath`/`artPath` extras, not persisted), and calls `playPlaylist` or `restorePlaylist`. `restorePlaybackState` is idempotent by real state (`AudioPlayerHandler.hasLoadedSource`), not a "ran once" flag — safe to call more than once, and self-heals if `queue`/`mediaItem` describe a song but the player has no source loaded (see the paused+close bug below).
-- **Paused-then-closed player corruption (fixed 2026-07-29): root cause and fix.** `androidStopForegroundOnPause` (package default `true`, never overridden here) demotes the foreground service the moment playback pauses — unlike while playing, a paused app is fully exposed to the OS killing the process outright on task removal, **without ever invoking `onTaskRemoved`**. Two bugs compounded this: (1) `onTaskRemoved` called `_player.stop()` but never cleared `_playlistSource`/`queue`/`mediaItem`, so if the process *did* survive a swipe, those streams kept describing a song the player had already released; (2) restoration only ever ran once (a boolean flag), 800ms after `runApp` — pure timing, no relation to whether restoration was actually needed. Fix: `onTaskRemoved` now clears `_playlistSource`/`queue`/`mediaItem` like `RepairService.fullRepair` does; `AudioPlayerHandler.hasLoadedSource` + the idempotent `restorePlaybackState` above self-heal both when the callback ran (state is just empty, restores normally) and when the process died before it could run (queue/mediaItem still populated but no source loaded → rebuilds directly from what's in memory, no SharedPreferences round-trip needed). Considered `androidStopForegroundOnPause: false` to stop the demotion outright — rejected: it requires `androidNotificationOngoing: false` too (the package asserts on the combination used here) and keeps the notification permanently non-dismissible while paused, a worse cost than the bug it would prevent. **If `RepairService` still turns out to be needed for this specific symptom (broken player after pausing and closing), the self-heal above didn't cover every path — treat that as a signal, not a coincidence.**
+- Playback state (queue, current media id, position, shuffle/loop, speed) persisted to `SharedPreferences` on every `playbackEventStream` tick via `PlaybackStateService`; restored on cold start — `main.dart` calls `MusicProvider.restorePlaybackState` from a post-frame callback (not a timing guess). `restorePlaybackState` is idempotent by real state (`AudioPlayerHandler.hasLoadedSource`), not a "ran once" flag — safe to call more than once, and self-heals if `queue`/`mediaItem` describe a song but the player has no source loaded (see the paused+close bug below).
+- **Paused-then-closed player corruption (fixed 2026-07-29): root cause and fix.** `androidStopForegroundOnPause` (package default `true`, never overridden here) demotes the foreground service the moment playback pauses — unlike while playing, a paused app is fully exposed to the OS killing the process outright on task removal, **without ever invoking `onTaskRemoved`**. Fix: `onTaskRemoved` now clears `_playlistSource`/`queue`/`mediaItem`; `hasLoadedSource` + the idempotent `restorePlaybackState` self-heal both when the callback ran and when the process died before it could. Considered `androidStopForegroundOnPause: false` — rejected: it requires `androidNotificationOngoing: false` too and keeps the notification permanently non-dismissible while paused, a worse cost than the bug it prevents.
+- **Confirmed on real hardware 2026-08-01 (closes D8's long-open gap):** background playback survives backgrounding the app, and the lock-screen/notification play/pause/skip controls work, on an actual Android 14 device — this had only ever been exercised via the fake SAF backend and desktop builds before.
 
 ### Lyrics (`LyricsService`)
 
-Fetches synced `.lrc` lyrics from LRCLIB (public, keyless) and caches to `<app documents>/lyrics/<songId>.lrc`. Pre-fetched in the background at the end of every download (`_downloadVideoDirectly`/`_downloadSpotifyDirectly`), so typically already cached by the time "now playing" opens.
+Fetches synced `.lrc` lyrics from LRCLIB (public, keyless) and caches to `<app documents>/lyrics/<songId>.lrc`. Pre-fetched in the background at the end of every download (`DownloadService.download`'s final step), so typically already cached by the time "now playing" opens.
 
 ### Error handling & diagnostics
 
-`LogService` appends download errors to `<app documents>/download_errors.log` (viewable/clearable from Settings). `RepairService.performFullRepair` (manual, from Settings) is a last-resort recovery: scans for corrupted/orphaned files, cleans temp files, checks DB consistency, resets `AudioPlayerHandler`/`MusicProvider` state. Still kept as a general-purpose manual fallback, but as of the fix described under "Playback" above, it should no longer be *necessary* specifically to recover from "paused, closed the app, player is broken on reopen" — that was the actual bug it was silently working around. `ErrorProvider` is **dead/scaffolded code** — not wired into the provider tree, not read by any screen. Most services/providers `print()` liberally for on-device debugging — intentional, not cleanup debt.
+Most `catch (e)` in `services/`/`providers/` `print()` and return a default rather than rethrow — intentional for a single-user offline app with no crash reporting. `RepairService`, `LogService` and `ErrorProvider` (pre-pivot manual-recovery/diagnostics scaffolding) were deleted outright in the pivot's prune stage — recoverable from the `youtube-downloader-final` tag if ever needed again, but nothing currently depends on them.
 
 ### UI structure
 
-`MainShellScreen` hosts 4 bottom-nav tabs over an `IndexedStack`: Home, `AddFromYouTubeScreen` (labeled "Descargas"), Search, Settings — plus a persistent `MiniPlayer`. `PlaylistDetailScreen` and `NowPlayingScreen` are pushed routes. Routing is a manual `onGenerateRoute` switch in `main.dart` (`RouteGenerator`) — only `/` and `/playlist` are registered. `NowPlayingScreen` is the largest screen (dynamic background from cover art via `palette_generator`, synced lyrics, reorderable queue, waveform seek bar backed by `AudioAnalysisService`). `AppTheme` supports three presets (navy/violet/rose) via `SettingsProvider`.
+`MainShellScreen` hosts 5 bottom-nav tabs over an `IndexedStack`: Home, Bandeja (inbox), Añadir *(download branch)*, Buscar, Ajustes — plus a persistent `MiniPlayer`. `PlaylistDetailScreen` and `NowPlayingScreen` are pushed routes. Routing is a manual `onGenerateRoute` switch in `main.dart` (`RouteGenerator`) — only `/` and `/playlist` are registered. `AppTheme` supports three presets (navy/violet/rose) via `SettingsProvider`.
 
 ### Android specifics
 
-Background playback: `audio_service` + `flutter_background_service` + `wakelock_plus` (held during active downloads, bracketed in `DownloadProvider`) + a foreground notification channel (`com.heardy.app.audio`). Downloads use a separate channel (`com.heardy.app.downloads`). The `min_sdk_android: 21` in `pubspec.yaml` is only `flutter_launcher_icons`' setting — the **actual** `minSdkVersion` is 24 and `targetSdk` is 36 (see D1). `flutter_background_service` and `wakelock_plus` are listed here but contribute nothing to playback — see D8.
+Background playback: `audio_service` alone (no `flutter_background_service`/`wakelock_plus` — both were dead weight, confirmed by grep and removed in the pivot; see D8) + a foreground notification channel (`com.heardy.app.audio`). `minSdkVersion` is 24, `targetSdk` is 36. *(Download branch)* `android/app/src/main/res/xml/network_security_config.xml` permits cleartext HTTP only for loopback, private IPv4 ranges, and Tailscale's CGNAT range/`.ts.net` — everything else (LRCLIB, etc.) stays HTTPS-only via the default `base-config`. No new Android permissions were needed for downloads: `INTERNET` was already declared.
 
-## Download resilience: safeguards to preserve
-
-Read before touching retry/timeout/concurrency logic. Key files: `download_provider.dart` (`processQueue`/`_processQueueItem` — concurrency + outer retry), `youtube_service.dart` (`_isRetryableError`/`_isHardBlockError`/`_getVideoWithFallback`/circuit breaker).
-
-- **Retry layers — don't add a third.** Outer (`_processQueueItem`: 2 attempts, 10-min budget) → per-method (`getVideoInfo`/`downloadVideoWithAudio`: up to 5 attempts, backoff+jitter). `_getVideoWithFallback` makes a single attempt only — a stacked inner retry here previously caused up to 30 real requests per download.
-- **`_maxConcurrentDownloads = 1`, deliberately.** YouTube's block is a cumulative per-IP request budget (~12–24 manifest requests), not a rate limit — concurrency and pacing both make it worse. Chunk-level parallelism inside a single download still gives throughput. Don't raise without re-measuring (`tool/pacing_probe.dart`).
-- **Shared static circuit breaker** in `YoutubeService` (`_blockedUntil`/`_consecutiveBlocks`) pauses every caller together on a hard block: 403/401/`VideoUnavailableException`/`VideoUnplayableException` (incl. "confirm you're not a bot", both apostrophe variants). Interactive paths (preview/search) cap the wait at 8s and throw instead of freezing the UI (`_interactiveCooldownCap`); background paths wait the full escalating cooldown (up to 180s).
-- **`YTMusicService` (InnerTube) is the primary metadata path for downloads too** — `downloadVideoWithAudio` primes `YoutubeService`'s metadata cache via `getSong` before falling back to the fragile watch-page scrape. Always test against `YTMusicService`, never `YoutubeService` directly.
-- **No network layer here has a default timeout** (`youtube_explode_dart`, `dart_ytmusic_api`, `dart:io HttpClient`). Any new call site needs an explicit timeout or it can hang forever with nothing logged.
-- **Cooldown/backoff waits must be cancellable** — poll `isCancelled` (`YoutubeService._cancellableDelay`, every 300ms) rather than sleeping the full duration, or a cancelled download holds its `_activeVideoIds`/`_activeDownloads` lock for minutes and blocks resubmitting the same video.
-- **`addToDownloadQueue` dedupes on `(videoId, playlistId)`, not `videoId` alone** — double-downloading the same video via two playlists is only prevented by `DownloadProvider._activeVideoIds`, not the DB layer.
-- **`YTMusicService._ytmusic` is only assigned once `initialize()` succeeds** (a failed init used to leave it permanently non-null-but-broken). `SpotifyService.resolveShortLink` caps redirect recursion at 5 (`_maxRedirects`).
-
-**Dead end, don't revisit without cause:** an on-device n/sig JS challenge solver (`flutter_js`/QuickJS) for `youtube_explode_dart`'s EJS solver. Android-client stream manifests already arrive unthrottled — no `n` or `s=` param (measured 15–21 MB/s on itag 140). Re-run `tool/manifest_probe.dart` to confirm this is still true before implementing anything here.
-
-## Anti-bot wall investigation — status (2026-07-28)
-
-Full detail, open experiment, and reasoning: `docs/investigacion_muro_antibot.md`.
-
-- `VideoUnplayableException`/`VideoUnavailableException` (manifest) and the rarer 403-with-healthy-manifest (bytes) are IP-reputation effects, not code bugs — confirmed by reproducing both on `main`'s code across three different IPs. There appear to be at least two distinct thresholds: one blocks the manifest step, a separate (lighter?) one blocks only byte validation while manifest still succeeds. Not fully disentangled yet.
-- `youtube_explode_dart` 3.1.0 does not generate PO Tokens — not migrating libraries over this; see the dead-end note above for the related JS-solver investigation.
-- `yt.search.search()` has a reproducible **library bug** (`NoSuchMethodError` on `viewCountText`'s "runs" shape, ~2/3 of queries) — unrelated to the anti-bot wall. Covered by `YTMusicService.searchAndDownload`'s InnerTube-first fallback and by `_isRetryableError` recognizing `NoSuchMethodError`.
-- **Before drawing any conclusion from a run, verify IP state with a 2-manifest canary first.** Without it, branch-vs-`main` comparisons are not valid — this session burned multiple runs on a still-blocked IP before catching this.
-- **Recovery requires real silence, not periodic canaries — a canary IS traffic and resets the window.** Measured 2026-07-29: probing every 5 min with a 2-manifest canary produced 0/2 for 25+ straight minutes (session estimate for recovery had been 15-40 min). Stopping the probe entirely and waiting in true silence produced a 2/2 pass after only ~10-12 min. Protocol: stop everything network-related, wait in silence, run exactly **one** canary before touching anything else.
-- **A passing 2-manifest canary does NOT mean the IP can sustain a real download session — same day, immediately after the above.** The 2/2 canary passed, so a 15-song comparison run started right away; it re-hit the classic wall (`VideoUnplayableException`, "confirm you're not a bot") around song 6 and the circuit breaker escalated through 4 consecutive hard blocks (160s→320s→640s) within the same run, timing out at 15 minutes having gotten through under 10 of 15 songs. A light canary (2 manifest-only requests) and a real download (metadata + manifest + several parallel byte-range chunks, per song) burn budget at very different rates — passing the former is only evidence the IP is *not currently blocked*, not that it has budget for a sustained session. Don't treat a clean canary as a green light to run a long batch unattended; expect to hit the wall again partway and re-check.
-
-## Testing downloads from desktop (no device install needed)
+## Testing downloads *(download branch)*
 
 ```bash
-flutter test test/download_smoke_test.dart
+cd server && run.bat              # native, no Docker needed for development — see server/README.md
+flutter test test/download_live_integration_test.dart   # exercises the real chain against the real server;
+                                                          # skips itself cleanly if the server isn't running
 ```
 
-Exercises the real download engine (metadata, manifest, chunked download, thumbnail) without an APK rebuild. Uses `YTMusicService`, not `YoutubeService` — the latter misses the InnerTube metadata path the app actually uses. `setUp` must call `YoutubeService.resetCircuitBreaker()` (shared static state across tests, otherwise one blocked test poisons the next). A bot-walled download takes ~10 min to conclude (escalating cooldowns, per-test timeout 12 min) and is reported as an environmental condition, not a failure — any other exception is a real bug.
+Pure-logic pieces (no server, no network, no widgets) are covered directly: `test/spotify_match_test.dart`, `test/ytdlp_server_source_test.dart` (HTTP client against a fake `http.Client`), `test/download_provider_test.dart` (queue/retry policy against a fake `DownloadSource`). Widget-level coverage exists for `ImportScreen` (`test/import_screen_test.dart`, `test/import_screen_spotify_test.dart`) — it needs no `AudioPlayerHandler`, unlike `PlaylistDetailScreen`/`SearchScreen`, which do and therefore can't be widget-tested in this codebase yet (no fake for `just_audio`'s platform-channel `AudioPlayer`).
+
+**A `sqflite_common_ffi` + `testWidgets` gotcha, worth knowing before writing another widget test that touches the database:** any `tester.pump()`/`pumpWidget()` following real DB I/O done outside `tester.runAsync()` hangs forever — a Dart zone issue, not an animation-loop issue. The whole interactive body of a test, pumps included, needs to live inside one `runAsync`, with real-delay pump loops (`await Future.delayed(d); await tester.pump(d);`) instead of `pumpAndSettle` (which would also never terminate while `DownloadProgressCard`'s indeterminate spinner is on screen). See `test/import_screen_test.dart`'s `_settle`/`_pumpUntil` helpers.
 
 ## Conventions
 
 - **State management: Provider only.** No Riverpod, Bloc, GetX, or Redux. Every stateful piece of app state is a `ChangeNotifier` registered in `main.dart`'s `MultiProvider`. Screens hold local UI state (search text, sort mode) directly in `State` objects rather than lifting it into a provider.
 - **File naming:** snake_case files, one primary PascalCase class per file (`music_provider.dart` → `MusicProvider`). Private helpers/fields are `_camelCase`.
-- **Two service-instantiation styles coexist:** singleton-via-static-instance (`DatabaseHelper.instance`, `LyricsService.instance`) vs. instantiated-per-owner classes (`YoutubeService`/`YTMusicService`/`SpotifyService`, one per owning provider/screen). `YoutubeService`'s circuit-breaker state is `static` regardless of instance count.
+- **Two service-instantiation styles coexist:** singleton-via-static-instance (`DatabaseHelper.instance`, `LyricsService.instance`) vs. instantiated-per-owner classes (`StorageService`, `LibraryScanService`, *(download branch)* `SpotifyService`).
 - **Models are hand-rolled, uniformly:** every model implements `toMap()`/`fromMap(Map)`/`toJson()`/`fromJson(String)` by hand — no `json_serializable`/`freezed`/`equatable`. Match this shape for new persisted entities.
-- **Fallback-chain pattern for external data:** `YTMusicService` wraps every method in try-primary-API/catch-log/fallback-to-`YoutubeService`. Follow this shape for new YTMusic-backed operations rather than calling `dart_ytmusic_api` directly from UI code.
-- **`MediaItem` construction is duplicated, not factored out** across `MusicProvider` (3 places) and `DownloadProvider` (4 places). Match the existing extras keys (`filePath`, `artPath`, `playlist_id`) exactly — `AudioPlayerHandler` reads them by string key.
-- **Error handling is print-and-swallow by default:** most `catch (e)` in `services/`/`providers/` `print()` and return a default rather than rethrow — intentional for a single-user offline app with no crash reporting. `LogService.logError` and the download path's `rethrow`s are the deliberate exceptions.
-- **Loading flags must reset in a single `finally`**, not at each return site — screens with multiple early exits after `await` (e.g. `_isAnalyzing` in `add_from_youtube_screen.dart`) can otherwise brick the UI on an untested exit path.
-- **Spanish throughout:** UI strings, most comments, and `print()` messages are in Spanish; some service-level code (`youtube_service.dart`, `ytmusic_service.dart`) is in English. Match whichever language surrounds the code you're editing.
+- **`MediaItem` construction is duplicated, not factored out** across `MusicProvider` (3 places) and `playlist_detail_screen.dart` (1 place). Match the existing extras keys (`filePath`, `artPath`, `playlist_id`) exactly — `AudioPlayerHandler` reads them by string key.
+- **Error handling is print-and-swallow by default** in `services/`/`providers/` — intentional for a single-user offline app with no crash reporting.
+- **Loading flags must reset in a single `finally`**, not at each return site — screens with multiple early exits after `await` (e.g. `_isAnalyzing` in `import_screen.dart`) can otherwise brick the UI on an untested exit path. This is a real bug this project hit once (in the pre-pivot `add_from_youtube_screen.dart`) and has deliberately avoided ever since.
+- **Dependency injection for testability, used consistently:** `DownloadSource`, `DownloadProvider`, and *(download branch)* `ImportScreen`'s `spotifyService` are all constructor/`Provider`-injected specifically so tests can substitute a fake without touching real network/SAF. Follow this shape for new external-facing dependencies rather than instantiating them inline where they're used.
+- **Spanish throughout:** UI strings, most comments, and `print()` messages are in Spanish. `server/` (Python) and its own comments are also in Spanish, matching the rest of the codebase; match whichever language surrounds the code you're editing.
 
 ## Key dependencies
 
-- **`youtube_explode_dart`** — the YouTube audio extraction/download engine (`services/youtube_service.dart`). No API key needed, resolves audio-only stream manifests directly. Now the fallback to `dart_ytmusic_api` for metadata/search/playlist, and the only engine that can actually download (YTMusic's API has no download support).
-- **`just_audio` + `audio_service`** — playback engine. `just_audio` decodes/plays local files; `audio_service` wraps it for background playback, lock-screen/notification controls, OS media-session integration.
-- **`sqflite`** — the entire persistence layer: songs, playlists, join table, download queue, play history in one SQLite file.
+- **`just_audio` + `audio_service`** — playback engine. `just_audio` decodes/plays local files (and, for imported/downloaded songs, `content://` SAF uris directly); `audio_service` wraps it for background playback, lock-screen/notification controls, OS media-session integration.
+- **`sqflite`** — the entire persistence layer: songs, playlists, join table, play history, and *(download branch)* the download queue, in one SQLite file.
+- **`saf_util` + `saf_stream`** — Storage Access Framework: tree picking, persisted permissions, batched directory listing, byte-range reads, and *(download branch)* writing downloaded files into the picked tree.
+- **`audio_metadata_reader`** — pure-Dart ID3v1/v2 + MP4/M4A tag reading, and *(download branch)* writing (so a downloaded file is self-describing on disk, not just in SQLite).
 - **`provider`** — sole state-management dependency; low ceremony over Bloc/Riverpod for a small, single-maintainer codebase.
+- *(download branch, `server/` only, not a Flutter dependency)* **`yt-dlp`** — the actual YouTube extraction engine, deliberately unpinned in `server/requirements.txt` unlike everything else there; see `server/README.md`.

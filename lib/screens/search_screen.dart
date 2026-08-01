@@ -299,10 +299,16 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Widget _buildHint(IconData icon, String title, String subtitle) {
+    // Con el teclado abierto (p. ej. mientras se escribe en el campo de
+    // arriba) el alto disponible para este hint se comprime bastante —
+    // en un dispositivo real esto desbordaba 7px con un Column normal.
+    // SingleChildScrollView + mainAxisSize.min hace que el contenido se
+    // pueda desplazar en vez de reventar el layout cuando no entra entero.
     return Center(
-      child: Padding(
+      child: SingleChildScrollView(
         padding: const EdgeInsets.all(32),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Icon(icon, size: 72, color: Colors.white.withValues(alpha: 0.3)),

@@ -5,6 +5,8 @@ Un reproductor de música para Android, 100% offline, para tu propia biblioteca 
 <img width="300" height="300" alt="image" src="https://github.com/user-attachments/assets/f559d776-36b2-48dc-8954-417d259fa8dd" />
 
 > Heardy empezó como un descargador de YouTube. Esa capa completa (motor de extracción, circuit breaker anti-bloqueo, integración con YouTube Music y Spotify) se retiró del árbol principal a favor de un reproductor de biblioteca local, pero sigue disponible íntegra en el tag de git `youtube-downloader-final` para quien quiera recuperarla o consultarla.
+>
+> La rama `feature/youtube-downloads` la reintroduce, pero como una segunda forma de incorporar canciones a esta misma biblioteca — no como un sistema aparte: descargar un video, una playlist o un enlace de Spotify termina siendo un archivo más en tu carpeta `Heardy/`, indistinguible de uno que copiaste a mano. La extracción vive en un microservicio propio (`server/`, FastAPI + yt-dlp) que corrés en tu propia máquina; ver `server/README.md` para instalarlo y `CLAUDE.md` para el detalle de arquitectura.
 
 ## Características
 
