@@ -5,7 +5,9 @@ import '../providers/music_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/database_helper.dart';
 import '../theme/app_theme.dart';
+import '../services/download_source.dart';
 import '../services/storage_service.dart';
+import '../services/ytdlp_server_source.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -317,6 +319,10 @@ class SettingsScreen extends StatelessWidget {
               ],
             ),
           ),
+          const SizedBox(height: 28),
+          _SectionTitle('Servidor de descargas'),
+          const SizedBox(height: 10),
+          const _DownloadServerSection(),
           const SizedBox(height: 28),
           _SectionTitle('Búsqueda'),
           const SizedBox(height: 10),
@@ -895,6 +901,216 @@ class _TopSongRow extends StatelessWidget {
         Icons.music_note_rounded,
         color: Colors.white.withValues(alpha: 0.7),
         size: 20,
+      ),
+    );
+  }
+}
+
+/// Configuración del microservidor de descargas (`server/` en este repo).
+///
+/// "Probar conexión" distingue los tres fallos que el usuario puede arreglar
+/// —sin configurar, inalcanzable, clave inválida— en vez de un genérico
+/// "error", porque cada uno se corrige en un sitio distinto.
+class _DownloadServerSection extends StatefulWidget {
+  const _DownloadServerSection();
+
+  @override
+  State<_DownloadServerSection> createState() => _DownloadServerSectionState();
+}
+
+class _DownloadServerSectionState extends State<_DownloadServerSection> {
+  late final TextEditingController _urlController;
+  late final TextEditingController _keyController;
+  bool _testing = false;
+  bool _obscureKey = true;
+  DownloadSourceStatus? _lastStatus;
+
+  @override
+  void initState() {
+    super.initState();
+    final settings = context.read<SettingsProvider>();
+    _urlController = TextEditingController(text: settings.downloadServerUrl);
+    _keyController = TextEditingController(text: settings.downloadServerApiKey);
+  }
+
+  @override
+  void dispose() {
+    _urlController.dispose();
+    _keyController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _saveAndTest() async {
+    // Se guarda primero: si el usuario sale de Ajustes mientras se prueba, lo
+    // que escribió no se pierde.
+    await context.read<SettingsProvider>().setDownloadServer(
+          url: _urlController.text,
+          apiKey: _keyController.text,
+        );
+    if (!mounted) return;
+
+    setState(() {
+      _testing = true;
+      _lastStatus = null;
+    });
+
+    final source = YtdlpServerSource(
+      baseUrl: () => _urlController.text,
+      apiKey: () => _keyController.text,
+    );
+    try {
+      final status = await source.probe();
+      if (!mounted) return;
+      setState(() => _lastStatus = status);
+    } finally {
+      // Un único finally, no un reset por cada salida: la convención existe
+      // porque una ruta de salida sin probar dejaba la UI bloqueada.
+      if (mounted) setState(() => _testing = false);
+    }
+  }
+
+  ({Color color, IconData icon, String text})? _statusLine() {
+    final status = _lastStatus;
+    if (status == null) return null;
+    if (!status.reachable) {
+      return (color: Colors.redAccent, icon: Icons.cloud_off_rounded, text: status.detail);
+    }
+    if (!status.authenticated) {
+      return (color: Colors.orangeAccent, icon: Icons.key_off_rounded, text: status.detail);
+    }
+    if (!status.potProviderReachable) {
+      return (color: Colors.orangeAccent, icon: Icons.warning_amber_rounded, text: status.detail);
+    }
+    return (
+      color: Colors.greenAccent,
+      icon: Icons.cloud_done_rounded,
+      text: 'Conectado — yt-dlp ${status.version ?? "?"}',
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final line = _statusLine();
+    final fieldBorder = OutlineInputBorder(
+      borderRadius: BorderRadius.circular(12),
+      borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.2)),
+    );
+
+    return Container(
+      decoration: AppTheme.glassCard(),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.dns_rounded, color: AppTheme.primaryLight, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Descargar desde YouTube',
+                style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 13),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Heardy no descarga por su cuenta: le pide el audio a un servidor tuyo. '
+            'Montalo con server/ de este repo (Docker) y pegá acá su dirección. '
+            'Sin esto, la app funciona igual como reproductor de tu biblioteca.',
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.45),
+              fontSize: 12,
+              height: 1.4,
+            ),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: _urlController,
+            style: const TextStyle(color: Colors.white, fontSize: 14),
+            keyboardType: TextInputType.url,
+            autocorrect: false,
+            decoration: InputDecoration(
+              labelText: 'Dirección',
+              hintText: '192.168.1.50:8080',
+              labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
+              hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.25), fontSize: 13),
+              border: fieldBorder,
+              enabledBorder: fieldBorder,
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: AppTheme.primaryLight),
+              ),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: _keyController,
+            style: const TextStyle(color: Colors.white, fontSize: 14),
+            obscureText: _obscureKey,
+            autocorrect: false,
+            enableSuggestions: false,
+            decoration: InputDecoration(
+              labelText: 'Clave de API',
+              labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
+              border: fieldBorder,
+              enabledBorder: fieldBorder,
+              focusedBorder: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(12),
+                borderSide: BorderSide(color: AppTheme.primaryLight),
+              ),
+              isDense: true,
+              suffixIcon: IconButton(
+                icon: Icon(
+                  _obscureKey ? Icons.visibility_rounded : Icons.visibility_off_rounded,
+                  color: Colors.white.withValues(alpha: 0.4),
+                  size: 18,
+                ),
+                onPressed: () => setState(() => _obscureKey = !_obscureKey),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white,
+                side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              icon: _testing
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Icon(Icons.wifi_tethering_rounded, size: 18),
+              label: Text(
+                _testing ? 'Probando…' : 'Guardar y probar conexión',
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              onPressed: _testing ? null : _saveAndTest,
+            ),
+          ),
+          if (line != null) ...[
+            const SizedBox(height: 12),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(line.icon, color: line.color, size: 16),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    line.text,
+                    style: TextStyle(color: line.color, fontSize: 12, height: 1.35),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ],
       ),
     );
   }
