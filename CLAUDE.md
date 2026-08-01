@@ -120,6 +120,45 @@ Non-negotiable: no stage may leave the project unable to build or the app unable
    Verified: `flutter analyze` clean, `flutter clean` + rebuild succeeds, all 6 tests pass, and a grep across `lib/`, `pubspec.yaml`, and the manifest for every deleted symbol/package turns up nothing but two historical comments (harmless prose, not code). **Everything deleted here is preserved at the `youtube-downloader-final` tag** (`git checkout youtube-downloader-final -- <path>` to recover any of it) — pruning it from the working tree doesn't lose it.
 6. **Device verification and docs.** Confirm D8 on hardware. Rewrite this file's Architecture sections and README.md to describe the local-library app; delete the download-era sections, which by then describe code that no longer exists.
 
+## YouTube downloads — branch `feature/youtube-downloads` only (decided 2026-08-01)
+
+**This section describes work that exists only on `feature/youtube-downloads`. `main` stays a pure local-library player and none of this lands there.** The branch was cut from `559d8f0` (`Temp`, which already had `main` merged in).
+
+The framing that governs every decision below: **downloading is a second import path into the same library, not a parallel subsystem.** A downloaded file must be indistinguishable from one the user copied in by hand — same content hash, same `songs` row shape, same SAF folder, same scanner. The integration seam is `LibraryScanService._reconcileFile`'s "new song" branch, which already inserts songs with `id == fileHash`, `filePath == ''`, `uri == content://…`.
+
+**The invariant that defines "correctly integrated", and the acceptance test for the whole branch:** downloading a song and immediately rescanning the library must report `unchanged` — never `inserted`, never `moved`. Anything else means the downloader and the scanner disagree about identity, which produces duplicate rows and silently drops playlist membership.
+
+### Decisions (settled with the user before implementation)
+
+- **DD1 — Audio acquisition: a self-hosted yt-dlp microservice**, not an in-app extractor. `youtube_explode_dart` 3.1.0 (latest, ~May 2026) does not generate PO Tokens, which YouTube now requires bound per video id; its changelog mentions neither PO tokens nor SABR. `docs/investigacion_muro_antibot.md` already measured the ceiling on the old in-app approach (~12–24 manifests per IP; a 15-song run hit the wall at song 6). yt-dlp plus the `bgutil-ytdlp-pot-provider` sidecar is the only part of the ecosystem actively answering PO tokens and SABR, and it is Unlicense, so nothing licence-contaminating reaches the app. Rejected, **do not revisit without new evidence**: restoring `youtube_explode_dart` (re-imports the measured wall); NewPipeExtractor (GPLv3, needs a Kotlin platform channel plus a PO-token provider of our own, and NewPipe's development was declared discontinued in July 2026); commercial APIs such as video-download-api.com/savenow.to, Zyla and Apify (no published per-download price, rate limits or SLA; job+polling with a lossy MP3 transcode; and a third party in the middle of what the user listens to); Pafy (abandoned, original repo deleted, Python-only, depends on a stale youtube-dl).
+  - **Deploy the server on a residential IP** (home PC/Raspberry Pi + Tailscale), not a VPS. Datacenter IPs (Railway/Hetzner/DO) get blocked far faster — that is how the public Cobalt instance was blocked. This is cheaper too.
+  - The client talks to it through a `DownloadSource` interface so a different provider is a ~150-line implementation, not a redesign.
+- **DD2 — Downloads land in the user's SAF folder** (`Heardy/<Playlist>/`), not in app-private storage. This is what makes them ordinary library files: the scanner owns them, the user can move/retag/back them up, and they survive an uninstall.
+- **DD3 — Amendment to D3.** D3 says "sync is one-way disk → DB" and that the app must never write to the picked folder. **That rule is hereby scoped to: the app never reorganizes, renames or rewrites the user's existing files.** Creating *new* files in the folder the user picked precisely to hold their music is the import mechanism, not a violation — it is the moral equivalent of the user dropping a file in themselves. Everything else in D3 stands: moving a song between playlists inside the app still never touches the disk, and `playlist_songs` is still the sole truth for membership after first insert.
+- **DD4 — Format: original M4A/AAC, never transcoded.** `bestaudio[ext=m4a]`. This is the choice that costs nothing: `m4a` is already in `LibraryScanService._audioExtensions`, the `mp4-mdat` hash path already handles it, `audio_metadata_reader` can write its tags, and ExoPlayer plays it natively — so the scanner needs no changes at all. Opus/WebM would mean a new extension, a new `hashKind`, and no tag writing; MP3 would mean a lossy re-encode and ffmpeg on the server.
+- **DD5 — Scope: all four of** single video URL, YouTube playlist URL, in-app search, and the Spotify bridge.
+
+### Reuse policy for the code preserved at `youtube-downloader-final`
+
+- **Restored verbatim:** `spotify_service.dart` (pure HTTP scraping of `open.spotify.com/embed/*`, zero coupling to YouTube, `dart:io` or the old `Song`) and `download_progress_card.dart` (presentational only).
+- **Reused as design reference, rewritten:** `download_provider.dart` (1498 → ~400 lines). Keep the parts that were real bug fixes — session id + `isStale()` for clean cancellation, the per-id active lock, draining workers before declaring a batch cancelled, resetting flags in a single `finally`. Drop everything else, including the anti-bot circuit breaker (the server owns that now).
+- **Not restored:** `youtube_service.dart` and `ytmusic_service.dart` (~2,400 lines whose value was hard-won anti-bot knowledge that now lives in yt-dlp — restoring them re-imports the problem), plus `log_service.dart`, `error_provider.dart`, `audio_analysis_service.dart` and `repair_service.dart`, which were dead or superseded before the pivot.
+
+### Implementation stages
+
+Same non-negotiable rule as the pivot: every stage ends with the app compiling and able to play music; `flutter analyze` clean and `flutter test` green at the end of each. Full per-phase detail (risks, dependencies, validation) is in the approved plan file.
+
+0. **Branch + this section — done 2026-08-01.**
+1. **Extract `AudioIdentity`** — move the hashing out of `library_scan_service.dart` into a shared `audio_identity.dart` so downloader and scanner compute identity with the *same code*. Prerequisite for everything else; if they diverge, every download duplicates itself on the next scan. Hash always over SAF, never over the local temp copy.
+2. **`server/`** — FastAPI + yt-dlp as a library + bgutil sidecar; `/health` `/resolve` `/playlist` `/search` `/audio/{id}`; `X-Api-Key` auth.
+3. **`DownloadSource` + `YtdlpServerSource`** — HTTP client over the `http` package already in `pubspec.yaml`; server URL/key in `SettingsProvider`. Needs `network_security_config.xml`: Android 9+ blocks cleartext, and a home server on LAN/Tailscale is typically plain `http://`.
+4. **`DownloadService`** — the core. Fetch to temp → write tags with `updateMetadata` (so the file is self-describing on disk) → `pasteLocalFile` into `Heardy/<Playlist>/` → `SafUtil.stat` *after* the paste (the document provider sets `lastModified`, and it may rename on collision, so always use the returned uri) → `AudioIdentity` over SAF → dedupe by hash → insert. Schema **v11**: `songs.sourceUrl` plus a redesigned generic `download_queue`.
+5. **Persistent queue + `DownloadProvider`.**
+6. **Import UI** — a fifth "Añadir" tab; reactivates `playlists.originalUrl`.
+7. **In-app search** — Local/YouTube segmented control in `search_screen.dart`.
+8. **Spotify bridge** — match by title+artist+duration through `/search`, always showing the chosen result before downloading.
+9. **Device verification + docs** — also the place to finally close D8's open hardware gap.
+
 ## Commands
 
 ```bash
