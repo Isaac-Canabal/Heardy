@@ -1,15 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
-import 'package:uuid/uuid.dart';
 
-import '../models/playlist.dart';
 import '../providers/download_provider.dart';
 import '../providers/music_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/download_source.dart';
 import '../theme/app_theme.dart';
 import '../widgets/download_progress_card.dart';
+import '../widgets/playlist_target_sheet.dart';
 
 /// What a pasted URL turned out to be, once analyzed.
 enum _UrlKind { video, playlist }
@@ -104,33 +103,10 @@ class _ImportScreenState extends State<ImportScreen> {
     }
   }
 
-  Future<_PlaylistChoice?> _pickTargetPlaylist({String? suggestedName}) {
-    final playlists = context.read<MusicProvider>().playlists;
-    return showModalBottomSheet<_PlaylistChoice>(
-      context: context,
-      backgroundColor: AppTheme.surface,
-      isScrollControlled: true,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (_) => _PlaylistTargetSheet(playlists: playlists, suggestedName: suggestedName),
-    );
-  }
-
-  Future<String?> _resolveTargetPlaylistId(_PlaylistChoice choice) async {
-    if (choice.existingPlaylistId != null) return choice.existingPlaylistId;
-    final name = choice.newPlaylistName;
-    if (name == null || name.isEmpty) return null;
-
-    final id = const Uuid().v4();
-    await context.read<MusicProvider>().createPlaylistWithId(id, name);
-    return id;
-  }
-
   Future<void> _downloadTrack(RemoteTrack track) async {
-    final choice = await _pickTargetPlaylist();
+    final choice = await pickTargetPlaylist(context);
     if (choice == null || !mounted) return;
-    final playlistId = await _resolveTargetPlaylistId(choice);
+    final playlistId = await resolveTargetPlaylistId(context, choice);
     if (playlistId == null || !mounted) return;
 
     final provider = context.read<DownloadProvider>();
@@ -151,7 +127,7 @@ class _ImportScreenState extends State<ImportScreen> {
   }
 
   Future<void> _downloadPlaylist(RemotePlaylist playlist) async {
-    final choice = await _pickTargetPlaylist(suggestedName: playlist.name);
+    final choice = await pickTargetPlaylist(context, suggestedName: playlist.name);
     if (choice == null || !mounted) return;
 
     // Si se crea una playlist nueva a partir de esta importación, guardamos
@@ -159,7 +135,7 @@ class _ImportScreenState extends State<ImportScreen> {
     // playlist_detail_screen.dart. Si el destino es una playlist YA
     // existente, no la tocamos: podría no ser de origen YouTube.
     final isNewPlaylist = choice.existingPlaylistId == null;
-    final playlistId = await _resolveTargetPlaylistId(choice);
+    final playlistId = await resolveTargetPlaylistId(context, choice);
     if (playlistId == null || !mounted) return;
     if (isNewPlaylist && playlist.sourceUrl.isNotEmpty) {
       await context.read<MusicProvider>().updatePlaylistUrl(playlistId, playlist.sourceUrl);
@@ -523,126 +499,6 @@ class _ImportScreenState extends State<ImportScreen> {
           ...failures.map((f) => _FailureRow(failure: f)),
         ],
       ],
-    );
-  }
-}
-
-class _PlaylistChoice {
-  final String? existingPlaylistId;
-  final String? newPlaylistName;
-  const _PlaylistChoice.existing(this.existingPlaylistId) : newPlaylistName = null;
-  const _PlaylistChoice.newPlaylist(this.newPlaylistName) : existingPlaylistId = null;
-}
-
-/// Elegir UNA playlist destino, existente o nueva — a diferencia del selector
-/// multi-select de la bandeja (que asigna canciones YA en la biblioteca a
-/// varias playlists a la vez), una descarga va a un solo lugar porque
-/// [DownloadService.download] toma un único `playlistId`.
-class _PlaylistTargetSheet extends StatefulWidget {
-  final List<Playlist> playlists;
-  final String? suggestedName;
-
-  const _PlaylistTargetSheet({required this.playlists, this.suggestedName});
-
-  @override
-  State<_PlaylistTargetSheet> createState() => _PlaylistTargetSheetState();
-}
-
-class _PlaylistTargetSheetState extends State<_PlaylistTargetSheet> {
-  String? _selectedId;
-  late final TextEditingController _newNameController;
-
-  @override
-  void initState() {
-    super.initState();
-    _newNameController = TextEditingController(text: widget.suggestedName ?? '');
-  }
-
-  @override
-  void dispose() {
-    _newNameController.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final newName = _newNameController.text.trim();
-    final canConfirm = _selectedId != null || newName.isNotEmpty;
-
-    return SafeArea(
-      child: Padding(
-        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(20, 20, 20, 8),
-              child: Text(
-                '¿A qué playlist?',
-                style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700),
-              ),
-            ),
-            if (widget.playlists.isNotEmpty)
-              Flexible(
-                child: ListView(
-                  shrinkWrap: true,
-                  children: widget.playlists.map((playlist) {
-                    return RadioListTile<String>(
-                      key: Key('playlist_radio_${playlist.id}'),
-                      value: playlist.id,
-                      groupValue: _selectedId,
-                      onChanged: (value) => setState(() {
-                        _selectedId = value;
-                        _newNameController.clear();
-                      }),
-                      activeColor: AppTheme.primary,
-                      title: Text(playlist.name, style: const TextStyle(color: Colors.white)),
-                    );
-                  }).toList(),
-                ),
-              ),
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
-              child: TextField(
-                key: const Key('new_playlist_name_field'),
-                controller: _newNameController,
-                onChanged: (_) => setState(() {
-                  if (_newNameController.text.trim().isNotEmpty) _selectedId = null;
-                }),
-                style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  hintText: 'Crear nueva playlist…',
-                  prefixIcon: Icon(Icons.add_rounded),
-                ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(20),
-              child: SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  key: const Key('confirm_playlist_choice'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.primary,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.symmetric(vertical: 14),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  ),
-                  onPressed: canConfirm
-                      ? () => Navigator.pop(
-                            context,
-                            _selectedId != null
-                                ? _PlaylistChoice.existing(_selectedId)
-                                : _PlaylistChoice.newPlaylist(newName),
-                          )
-                      : null,
-                  child: const Text('Confirmar'),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
     );
   }
 }
