@@ -5,22 +5,40 @@ servicio en vez de un extractor embebido en la app.
 """
 import asyncio
 import logging
-import os
 import re
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import cache, config, ytdlp_client
+from . import config, ytdlp_client
 from .auth import require_api_key
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("heardy")
 
-app = FastAPI(title="Heardy download API", docs_url="/docs", redoc_url=None)
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    if not config.API_KEY and not config.ALLOW_NO_AUTH:
+        raise RuntimeError(
+            "Falta HEARDY_API_KEY. Generá una y ponela en server/.env, o arrancá con "
+            "HEARDY_ALLOW_NO_AUTH=1 si solo escuchás en loopback. "
+            "Ver server/README.md."
+        )
+    config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    log.info("yt-dlp %s", ytdlp_client.version())
+    log.info("proveedor de PO tokens: %s", config.POT_PROVIDER_URL)
+    log.info("caché: %s", config.CACHE_DIR)
+    if config.ALLOW_NO_AUTH:
+        log.warning("autenticación DESACTIVADA (HEARDY_ALLOW_NO_AUTH=1)")
+    yield
+
+
+app = FastAPI(title="Heardy download API", docs_url="/docs", redoc_url=None, lifespan=lifespan)
 
 # Limita las extracciones simultáneas. yt-dlp es bloqueante, así que además
 # se ejecuta siempre en un hilo (`asyncio.to_thread`) para no congelar el
@@ -32,17 +50,6 @@ _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{5,32}$")
 
 class UrlRequest(BaseModel):
     url: str = Field(min_length=5, max_length=2048)
-
-
-@app.on_event("startup")
-async def _check_config() -> None:
-    if not config.API_KEY and not config.ALLOW_NO_AUTH:
-        raise RuntimeError(
-            "Falta HEARDY_API_KEY. Genera una (openssl rand -hex 32) y ponla en .env, "
-            "o arranca con HEARDY_ALLOW_NO_AUTH=1 si solo escuchas en loopback."
-        )
-    config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    log.info("yt-dlp %s | proveedor PO token: %s", ytdlp_client.version(), config.POT_PROVIDER_URL)
 
 
 async def _run(fn, *args):
@@ -173,8 +180,6 @@ async def audio(video_id: str, request: Request):
                 remaining -= len(chunk)
                 yield chunk
 
-    from fastapi.responses import StreamingResponse
-
     return StreamingResponse(
         _iter(),
         status_code=status.HTTP_206_PARTIAL_CONTENT,
@@ -201,10 +206,8 @@ async def clear_cache() -> dict:
 
 
 if __name__ == "__main__":
+    # Permite `python -m app.main` además de `uvicorn app.main:app`, para que
+    # run-api.bat sea una sola línea sin recordar la ruta del ASGI app.
     import uvicorn
 
-    uvicorn.run(
-        "app.main:app",
-        host=os.environ.get("HEARDY_HOST", "0.0.0.0"),
-        port=int(os.environ.get("HEARDY_PORT", "8080")),
-    )
+    uvicorn.run("app.main:app", host=config.HOST, port=config.PORT)

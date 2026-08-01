@@ -21,7 +21,13 @@ RUN useradd --system --create-home --uid 10001 heardy \
     && chown -R heardy:heardy /data
 USER heardy
 
+# Los valores por defecto de config.py están pensados para ejecución nativa
+# (caché junto al proyecto, loopback). Dentro del contenedor hay que
+# sobreescribirlos: el volumen está en /data y hay que escuchar en todas las
+# interfaces para que el mapeo de puertos de compose llegue a algo.
 ENV HEARDY_CACHE_DIR=/data/cache \
+    HEARDY_HOST=0.0.0.0 \
+    HEARDY_PORT=8080 \
     PYTHONUNBUFFERED=1
 
 EXPOSE 8080

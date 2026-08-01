@@ -2,72 +2,137 @@
 
 API HTTP que Heardy consume para importar audio de YouTube a la biblioteca
 local. La app **no** extrae nada por su cuenta: toda la fragilidad frente a
-YouTube vive aquí, donde se arregla con un `docker compose pull` en vez de
-con una release en Play Store.
+YouTube vive aquí, donde se arregla actualizando una dependencia en vez de
+publicando una release en Play Store.
 
 Ver `../CLAUDE.md` (sección "YouTube downloads", DD1) para por qué existe
 este servicio en lugar de un extractor embebido.
 
-## Despliegue
+Hay **dos formas de levantarlo** y son intercambiables: nativa con Python
+(para desarrollar y probar, es la de abajo) y Docker (para dejarlo corriendo,
+al final del documento). Ninguna necesita de la otra.
 
-**Ponlo en una IP residencial** — un PC de casa, una Raspberry Pi, un NAS —,
-no en un VPS. Las IPs de datacenter (Railway, Hetzner, DigitalOcean…) se
-bloquean mucho más rápido; así fue como bloquearon la instancia pública de
-Cobalt. Además sale gratis.
+---
 
-```bash
-cd server
-cp .env.example .env
-openssl rand -hex 32          # pega el resultado en HEARDY_API_KEY
-docker compose up -d --build
+## Requisitos previos (Windows)
+
+| Qué | Para qué | Cómo instalarlo | Obligatorio |
+|---|---|---|---|
+| **Python 3.10+** | La API | [python.org/downloads](https://www.python.org/downloads/) — marcá **"Add python.exe to PATH"** durante la instalación | Sí |
+| **Node.js LTS** | El proveedor de PO tokens es una app Node | [nodejs.org](https://nodejs.org/) (versión LTS) | Sí |
+| **Git** | Clonar el proveedor | [git-scm.com/download/win](https://git-scm.com/download/win) | Sí |
+| **ffmpeg** | Remuxear cuando YouTube sirve el audio en fragmentos DASH separados | `winget install Gyan.FFmpeg` o desde [gyan.dev](https://www.gyan.dev/ffmpeg/builds/) | Recomendado |
+
+**Sobre ffmpeg:** no se usa para recodificar — eso está prohibido por diseño
+(DD4, el audio se entrega tal cual). Hace falta solo cuando yt-dlp recibe la
+pista partida en fragmentos y tiene que volver a unirlos en un `.m4a`. Sin él
+la mayoría de vídeos funcionan igual, pero algunos fallarán con un error de
+posprocesado. Después de instalarlo, **cerrá y volvé a abrir la terminal**
+para que el PATH se actualice.
+
+Comprobá que los tres obligatorios responden antes de seguir:
+
+```bat
+py --version
+node --version
+git --version
 ```
 
-Comprueba que arrancó bien:
+---
 
-```bash
-curl -s localhost:8080/health | python -m json.tool
+## Instalación
+
+Una sola vez, desde `server\`:
+
+```bat
+setup.bat
 ```
 
-`potProvider.reachable` debe ser `true`. Si es `false`, el sidecar de PO
-Tokens no está levantado y YouTube devolverá 403 en la mayoría de vídeos.
+Eso hace cuatro cosas:
 
-## Acceso desde el móvil
+1. comprueba Python;
+2. crea el entorno virtual en `server\.venv\`;
+3. instala `requirements.txt` (FastAPI, uvicorn, yt-dlp y el plugin de PO tokens);
+4. clona y compila el proveedor de PO tokens en `server\.pot-provider\`.
 
-Por defecto el puerto solo escucha en `127.0.0.1`, así que desde el teléfono
-no se llega. Lo recomendado es [Tailscale](https://tailscale.com/): instálalo
-en el servidor y en el móvil, y apunta la app a la IP `100.x.y.z` del
-servidor. Es cifrado, no expone nada a internet y funciona igual fuera de
-casa.
+El paso 4 merece una nota: el proveedor tiene **dos mitades cuyas versiones
+deben coincidir** — el plugin de yt-dlp (pip) y el servidor HTTP (Node).
+`setup.bat` lee la versión del plugin instalado y clona el servidor en esa
+misma etiqueta. Un desajuste entre ambas es el fallo silencioso más probable
+de todo el montaje: el servidor arranca, `/health` dice que el proveedor
+responde, y las descargas fallan igual con 403.
 
-Si prefieres solo la LAN de casa, cambia el mapeo de puertos en
-`docker-compose.yml` a `"8080:8080"` y usa la IP local del servidor. En ese
-caso la app hablará por `http://`, y Android bloquea el tráfico en claro por
-defecto — la app ya trae un `network_security_config.xml` que lo permite para
-rangos privados.
+Después, generá la clave de API:
 
-No expongas este servicio a internet abierto. La clave de API es lo único que
-lo protege.
-
-## Mantenimiento
-
-Esto es lo que hay que hacer periódicamente, y es todo:
-
-```bash
-cd server
-docker compose build --pull --no-cache   # trae la última yt-dlp
-docker compose pull                      # actualiza el sidecar de PO tokens
-docker compose up -d
-curl -s localhost:8080/health
+```bat
+make-key.bat
 ```
 
-`yt-dlp` está deliberadamente **sin fijar** en `requirements.txt`, al
-contrario que el resto de dependencias: es la única pieza cuyo valor está en
-ser la más nueva posible. Fijar su versión es exactamente cómo se acaba con
-un servidor que dejó de funcionar sin que nadie tocara nada.
+Escribe una clave aleatoria en `server\.env` y la imprime. Ese valor es el que
+va en **Ajustes → Servidor de descargas** de la app. (`server\.env` está en
+`.gitignore`; no se comitea.)
 
-Si algo falla, `docker compose logs -f heardy-dl` y `GET /health` son el
-punto de partida. Los errores de extracción salen como HTTP 502 con el
-mensaje de yt-dlp íntegro.
+---
+
+## Uso diario
+
+```bat
+run.bat
+```
+
+Levanta el proveedor de PO tokens en una ventana aparte y la API en la actual.
+Dejá las dos abiertas. `Ctrl+C` para la API; cerrá la otra ventana para parar
+el proveedor.
+
+Si preferís controlarlas por separado:
+
+```bat
+run-pot.bat      REM solo el proveedor de PO tokens  (http://127.0.0.1:4416)
+run-api.bat      REM solo la API                      (http://127.0.0.1:8080)
+```
+
+### Comprobar que funciona
+
+```bat
+health.bat
+```
+
+Debe decir `[OK]` en las cuatro líneas. Lo importante es
+**`Proveedor de PO tokens responde`**: si eso falla, la API arranca igual pero
+casi todas las descargas devolverán 403.
+
+Para probar la cadena entera contra YouTube de verdad:
+
+```bat
+health.bat --url https://www.youtube.com/watch?v=jNQXAC9IVRw
+health.bat --url https://www.youtube.com/watch?v=jNQXAC9IVRw --audio
+```
+
+`--audio` baja el archivo a un temporal y comprueba que es un contenedor MP4
+válido. `health.bat` sin `--url` no toca YouTube en absoluto, así que podés
+ejecutarlo tantas veces como quieras; con `--url` sí gasta presupuesto de IP,
+que es el recurso escaso de todo esto.
+
+### Conectar la app
+
+Por defecto la API escucha solo en `127.0.0.1`, así que desde el móvil no se
+llega. Dos opciones:
+
+- **Tailscale** (recomendado): instalalo en el PC y en el móvil, y apuntá la
+  app a `100.x.y.z:8080`. Cifrado, no expone nada a internet, y funciona
+  también fuera de casa.
+- **LAN de casa**: poné `HEARDY_HOST=0.0.0.0` en `server\.env`, reiniciá, y
+  usá la IP local del PC (`ipconfig`). Puede que haya que permitir el puerto
+  en el Firewall de Windows la primera vez.
+
+En ambos casos la app hablará por `http://`, y Android bloquea el tráfico en
+claro por defecto — la app ya trae un `network_security_config.xml` que lo
+permite para rangos privados y para Tailscale.
+
+**No expongas este servicio a internet abierto.** La clave de API es lo único
+que lo protege.
+
+---
 
 ## Endpoints
 
@@ -76,22 +141,85 @@ Todos menos `/health` requieren la cabecera `X-Api-Key`.
 | Método | Ruta | Devuelve |
 |---|---|---|
 | `GET` | `/health` | versión de yt-dlp, estado del proveedor de PO tokens, estado de la caché. **Sin autenticación**, para que la app pueda distinguir "servidor apagado" de "clave incorrecta" |
-| `POST` | `/resolve` | `{id, title, artist, album, durationSeconds, thumbnailUrl, sourceUrl}` para un vídeo. Cuerpo: `{"url": "…"}` |
+| `POST` | `/resolve` | `{id, title, artist, album, durationSeconds, thumbnailUrl, sourceUrl}`. Cuerpo: `{"url": "…"}` |
 | `POST` | `/playlist` | `{id, name, sourceUrl, entries:[…]}`. Cuerpo: `{"url": "…"}` |
 | `GET` | `/search?q=&limit=` | `{results:[…]}` |
 | `GET` | `/audio/{videoId}` | los bytes M4A. Soporta `Range` |
 | `DELETE` | `/cache` | vacía la caché de audio |
 
-```bash
-KEY=$(grep HEARDY_API_KEY .env | cut -d= -f2)
+También hay documentación interactiva en `http://127.0.0.1:8080/docs`.
 
-curl -s -X POST localhost:8080/resolve \
-  -H "X-Api-Key: $KEY" -H 'Content-Type: application/json' \
-  -d '{"url":"https://www.youtube.com/watch?v=..."}' | python -m json.tool
+---
 
-curl -s -o prueba.m4a -D- localhost:8080/audio/... -H "X-Api-Key: $KEY"
-ffprobe prueba.m4a        # debe decir aac, sin recodificar
+## Diagnóstico
+
+| Síntoma | Causa probable |
+|---|---|
+| `health.bat` dice que no hay nadie escuchando | La API no está arrancada: `run.bat` |
+| `Proveedor de PO tokens NO responde` | Falta `run-pot.bat`, o su ventana se cerró |
+| 401 desde la app | La clave de Ajustes no coincide con `HEARDY_API_KEY` de `server\.env`. Tras cambiar el `.env` hay que reiniciar la API |
+| 403 / "Sign in to confirm you're not a bot" | El proveedor de PO tokens está caído, o su versión no coincide con la del plugin. Volvé a ejecutar `setup.bat` |
+| 415 | Ese vídeo no tiene pista AAC/M4A. Es definitivo para ese vídeo, no un fallo del servidor |
+| Error de posprocesado al descargar | Falta ffmpeg en el PATH |
+| `node` o `git` no reconocidos en `setup.bat` | Instalados pero sin reabrir la terminal |
+
+Los errores de extracción salen como HTTP 502 con el mensaje de yt-dlp
+íntegro, para no perder información por el camino.
+
+---
+
+## Mantenimiento
+
+Esto es lo que hay que hacer periódicamente, y es todo:
+
+```bat
+.venv\Scripts\python.exe -m pip install --upgrade yt-dlp bgutil-ytdlp-pot-provider
+.venv\Scripts\python.exe tools\setup_pot.py
 ```
+
+La segunda línea vuelve a alinear el servidor Node con la versión del plugin
+que se acaba de actualizar. **No te saltes ese paso**: actualizar solo una de
+las dos mitades es exactamente cómo se acaba con 403 en todas las descargas.
+
+`yt-dlp` está deliberadamente **sin fijar** en `requirements.txt`, al
+contrario que el resto de dependencias: es la única pieza cuyo valor está en
+ser la más nueva posible. Fijar su versión es cómo se acaba con un servidor
+que dejó de funcionar sin que nadie tocara nada.
+
+---
+
+## Despliegue con Docker (opcional)
+
+Para dejarlo corriendo permanentemente, sin ventanas de terminal abiertas.
+**No hace falta para desarrollar ni probar** — todo lo de arriba funciona sin
+Docker.
+
+**Ponelo en una IP residencial** —un PC de casa, una Raspberry Pi, un NAS—,
+no en un VPS. Las IPs de datacenter (Railway, Hetzner, DigitalOcean…) se
+bloquean mucho más rápido; así fue como bloquearon la instancia pública de
+Cobalt. Además sale gratis.
+
+```bash
+cd server
+cp .env.example .env     # y poné HEARDY_API_KEY
+docker compose up -d --build
+curl -s localhost:8080/health
+```
+
+`docker-compose.yml` levanta las dos mitades como servicios separados y las
+conecta por la red interna, así que no hay que arrancar nada a mano. Las
+variables de entorno del `Dockerfile` sobreescriben los valores por defecto
+de `config.py`, que están pensados para ejecución nativa.
+
+Actualización:
+
+```bash
+docker compose build --pull --no-cache   # trae la última yt-dlp
+docker compose pull                      # actualiza el sidecar de PO tokens
+docker compose up -d
+```
+
+---
 
 ## Decisiones que no son accidentes
 
@@ -106,10 +234,15 @@ ffprobe prueba.m4a        # debe decir aac, sin recodificar
   aditivo.
 - **Concurrencia 2 por defecto.** El muro de YouTube es un presupuesto
   acumulado por IP, no un límite de tasa: la concurrencia lo gasta más rápido
-  sin dar throughput real. Medido en `docs/investigacion_muro_antibot.md`.
+  sin dar throughput real. Medido en `../docs/investigacion_muro_antibot.md`.
 - **Caché LRU en disco.** El recurso escaso no es el disco, es el presupuesto
   de peticiones por IP. Un reintento tras un corte de red debe salir del
-  disco.
+  disco. Medido: una segunda petición del mismo audio tarda ~0,4 s.
 - **La caché baja a `.part-download` y renombra al final**, para que una
   descarga interrumpida no deje un archivo truncado que la siguiente petición
   dé por bueno.
+- **`/search` usa `extract_flat`**, una sola petición para N resultados en vez
+  de una por vídeo. El coste es que `artist` sale del nombre del canal, que
+  para un canal de recopilaciones no es el artista real. Por eso la app debe
+  llamar a `/resolve` sobre el resultado elegido antes de descargarlo, y no
+  quedarse con la metadata de la búsqueda.

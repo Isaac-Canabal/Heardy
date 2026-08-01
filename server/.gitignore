@@ -1,0 +1,12 @@
+# Entorno virtual de Python (lo recrea setup.bat)
+.venv/
+
+# Proveedor de PO tokens: se clona y compila desde su propio repo,
+# no forma parte de este.
+.pot-provider/
+
+# Caché de audio en disco
+.cache/
+
+# Configuración local con la clave de API
+.env
