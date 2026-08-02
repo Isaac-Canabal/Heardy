@@ -1,0 +1,12 @@
+# Reverse proxy sólo para el despliegue OFICIAL (servidor.md,
+# docs/arquitectura_servidor_hibrido.md sección 3). Un servidor personal en
+# Tailscale/LAN no necesita esto — Caddy ni siquiera arranca salvo que se
+# use `docker compose --profile official up`.
+#
+# HEARDY_OFFICIAL_DOMAIN es el hostname público (p. ej. el que da DuckDNS)
+# que ya apunta a la IP pública de la VM. Caddy pide y renueva el
+# certificado de Let's Encrypt solo, la primera vez que arranca — necesita
+# los puertos 80 (validación ACME) y 443 abiertos a internet.
+{$HEARDY_OFFICIAL_DOMAIN} {
+	reverse_proxy heardy-dl:8080
+}

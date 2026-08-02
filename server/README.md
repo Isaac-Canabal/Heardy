@@ -261,6 +261,31 @@ docker compose pull                      # actualiza el sidecar de PO tokens
 docker compose up -d
 ```
 
+### Despliegue oficial (Oracle Cloud, TLS con Caddy)
+
+Todo lo de arriba es exactamente lo mismo para el servidor oficial del
+proyecto — **no hay una segunda implementación**. La única diferencia es un
+tercer servicio, `caddy`, que da HTTPS automático y gratuito (Let's
+Encrypt) delante de `heardy-dl`, y que sólo tiene sentido con una IP pública
+real como la de una VM en la nube — por eso tiene `profiles: [official]` en
+`docker-compose.yml` y **no arranca con un `docker compose up -d` normal**,
+ni para un servidor personal ni por accidente:
+
+```bash
+cd server
+cp .env.example .env
+# Poné HEARDY_API_KEY (o HEARDY_API_KEYS con una clave por persona) y
+# HEARDY_OFFICIAL_DOMAIN=tu-hostname.duckdns.org (u otro proveedor de DNS
+# dinámico gratuito) apuntando ya a la IP pública de la VM.
+docker compose --profile official up -d --build
+curl -s https://tu-hostname.duckdns.org/health
+```
+
+Ver `../docs/arquitectura_servidor_hibrido.md` (secciones 3 y 6) para el
+razonamiento completo: por qué Oracle Cloud Always Free, por qué DuckDNS en
+vez de un dominio propio, y las mitigaciones al hecho de que una IP de
+datacenter se bloquea más rápido que una residencial.
+
 ---
 
 ## Decisiones que no son accidentes
@@ -283,6 +308,11 @@ docker compose up -d
 - **La caché baja a `.part-download` y renombra al final**, para que una
   descarga interrumpida no deje un archivo truncado que la siguiente petición
   dé por bueno.
+- **Caddy vive en `docker-compose.yml` con `profiles: [official]`, no en un
+  archivo separado.** Es una sola implementación de backend con dos formas
+  de arrancarla, no dos implementaciones: un servidor personal sigue siendo
+  `docker compose up -d`, exactamente como siempre, y Caddy ni se menciona a
+  menos que se pida el perfil `official` a propósito.
 - **`/search` usa `extract_flat`**, una sola petición para N resultados en vez
   de una por vídeo. El coste es que `artist` sale del nombre del canal, que
   para un canal de recopilaciones no es el artista real. Por eso la app debe
