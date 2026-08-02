@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from . import config, ytdlp_client
 from .auth import require_api_key
+from .rate_limit import enforce_rate_limit
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("heardy")
@@ -23,16 +24,24 @@ log = logging.getLogger("heardy")
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    if not config.API_KEY and not config.ALLOW_NO_AUTH:
+    if not config.API_KEYS and not config.ALLOW_NO_AUTH:
         raise RuntimeError(
-            "Falta HEARDY_API_KEY. Generá una y ponela en server/.env, o arrancá con "
-            "HEARDY_ALLOW_NO_AUTH=1 si solo escuchás en loopback. "
-            "Ver server/README.md."
+            "Falta HEARDY_API_KEY o HEARDY_API_KEYS. Generá una clave y ponela en "
+            "server/.env, o arrancá con HEARDY_ALLOW_NO_AUTH=1 si solo escuchás en "
+            "loopback. Ver server/README.md."
         )
     config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
     log.info("yt-dlp %s", ytdlp_client.version())
     log.info("proveedor de PO tokens: %s", config.POT_PROVIDER_URL)
     log.info("caché: %s", config.CACHE_DIR)
+    log.info("claves de API configuradas: %s", ", ".join(config.API_KEYS.values()) or "ninguna")
+    if config.RATE_LIMIT_PER_KEY > 0 or config.DAILY_QUOTA > 0:
+        log.info(
+            "rate limiting activo: %s peticiones/%ss por clave, %s/día en total",
+            config.RATE_LIMIT_PER_KEY or "sin límite",
+            config.RATE_LIMIT_WINDOW_SECONDS,
+            config.DAILY_QUOTA or "sin límite",
+        )
     if config.ALLOW_NO_AUTH:
         log.warning("autenticación DESACTIVADA (HEARDY_ALLOW_NO_AUTH=1)")
     yield
@@ -91,38 +100,51 @@ async def health() -> JSONResponse:
         {
             "status": "ok",
             "ytdlpVersion": ytdlp_client.version(),
-            "authRequired": bool(config.API_KEY) and not config.ALLOW_NO_AUTH,
+            "authRequired": bool(config.API_KEYS) and not config.ALLOW_NO_AUTH,
             "potProvider": {
                 "url": config.POT_PROVIDER_URL,
                 "reachable": pot_reachable,
                 "detail": pot_detail,
             },
             "cache": {"files": cached_files, "maxBytes": config.CACHE_MAX_BYTES},
+            # Puramente informativo — la app no necesita leer esto para
+            # funcionar, es diagnóstico para quien administra el servidor.
+            "rateLimiting": {
+                "perKeyLimit": config.RATE_LIMIT_PER_KEY,
+                "perKeyWindowSeconds": config.RATE_LIMIT_WINDOW_SECONDS,
+                "dailyQuota": config.DAILY_QUOTA,
+            },
         }
     )
 
 
-@app.post("/resolve", dependencies=[Depends(require_api_key)])
-async def resolve(body: UrlRequest) -> dict:
+@app.post("/resolve")
+async def resolve(body: UrlRequest, identity: str = Depends(enforce_rate_limit)) -> dict:
     try:
         return await _run(ytdlp_client.resolve, body.url)
     except ytdlp_client.EXTRACTION_ERRORS as e:
         raise _extraction_error(e) from e
+    finally:
+        log.info("/resolve por %s: %s", identity, body.url)
 
 
-@app.post("/playlist", dependencies=[Depends(require_api_key)])
-async def playlist(body: UrlRequest) -> dict:
+@app.post("/playlist")
+async def playlist(body: UrlRequest, identity: str = Depends(enforce_rate_limit)) -> dict:
     try:
         return await _run(ytdlp_client.resolve_playlist, body.url)
     except ytdlp_client.EXTRACTION_ERRORS as e:
         raise _extraction_error(e) from e
+    finally:
+        log.info("/playlist por %s: %s", identity, body.url)
 
 
-@app.get("/search", dependencies=[Depends(require_api_key)])
+@app.get("/search")
 async def search(
     q: str = Query(min_length=1, max_length=256),
     limit: int = Query(default=20, ge=1, le=config.MAX_SEARCH_RESULTS),
+    identity: str = Depends(enforce_rate_limit),
 ) -> dict:
+    log.info("/search por %s: %s", identity, q)
     try:
         results = await _run(ytdlp_client.search, q, limit)
     except ytdlp_client.EXTRACTION_ERRORS as e:
@@ -130,8 +152,8 @@ async def search(
     return {"results": results}
 
 
-@app.get("/audio/{video_id}", dependencies=[Depends(require_api_key)])
-async def audio(video_id: str, request: Request):
+@app.get("/audio/{video_id}")
+async def audio(video_id: str, request: Request, identity: str = Depends(enforce_rate_limit)):
     """Devuelve el M4A original, sin recodificar.
 
     Bloquea mientras yt-dlp lo baja en el servidor (típico 3-15 s) y luego lo
@@ -142,6 +164,7 @@ async def audio(video_id: str, request: Request):
     if not _VIDEO_ID_RE.match(video_id):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="id de vídeo inválido")
 
+    log.info("/audio por %s: %s", identity, video_id)
     try:
         path: Path = await _run(ytdlp_client.fetch_audio, video_id)
     except ytdlp_client.NoAudioTrackError as e:

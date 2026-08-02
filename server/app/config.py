@@ -32,9 +32,49 @@ def _int_env(name: str, default: int) -> int:
 
 # Clave compartida que la app manda en X-Api-Key. Sin ella el servicio se
 # niega a arrancar salvo que se ponga HEARDY_ALLOW_NO_AUTH=1 (solo para
-# pruebas en loopback).
+# pruebas en loopback). Se mantiene tal cual para no romper ningún .env de
+# servidor personal ya existente: sigue siendo la única variable que hace
+# falta rellenar para el caso de un solo usuario.
 API_KEY = os.environ.get("HEARDY_API_KEY", "").strip()
 ALLOW_NO_AUTH = os.environ.get("HEARDY_ALLOW_NO_AUTH", "").strip() == "1"
+
+
+def parse_api_keys(raw: str, legacy_key: str) -> dict[str, str]:
+    """Convierte `HEARDY_API_KEYS` ("etiqueta:clave,etiqueta:clave,...") en
+    un diccionario clave -> etiqueta. Función pura (no lee el entorno) para
+    poder probarla sin monkeypatchear variables globales.
+
+    Formato de cada entrada: `etiqueta:clave`, o solo `clave` (la etiqueta
+    pasa a ser la propia clave). Entradas vacías se ignoran.
+
+    `legacy_key` (el valor de HEARDY_API_KEY) se añade siempre bajo la
+    etiqueta "default" si no está ya presente — así un servidor personal que
+    solo definió HEARDY_API_KEY (el caso de siempre) sigue funcionando
+    exactamente igual aunque nunca toque HEARDY_API_KEYS.
+    """
+    keys: dict[str, str] = {}
+    for entry in raw.split(","):
+        entry = entry.strip()
+        if not entry:
+            continue
+        label, sep, key = entry.partition(":")
+        if sep:
+            label, key = label.strip(), key.strip()
+        else:
+            label, key = entry, entry
+        if key:
+            keys[key] = label or key
+    if legacy_key and legacy_key not in keys:
+        keys[legacy_key] = "default"
+    return keys
+
+
+# Varias claves con nombre, para el servidor oficial compartido por un grupo
+# cerrado de usuarios: cada persona tiene la suya, así se puede revocar el
+# acceso de una sola sin rotar la de las demás, y los logs/el rate limiting
+# (ver más abajo) distinguen quién generó qué tráfico. Un servidor personal
+# no necesita definir esto — HEARDY_API_KEY solo ya alcanza (ver arriba).
+API_KEYS = parse_api_keys(os.environ.get("HEARDY_API_KEYS", ""), API_KEY)
 
 # URL del proveedor que genera PO Tokens. Sin él, YouTube devuelve 403 en la
 # mayoría de clientes desde 2025 (ver DD1 en CLAUDE.md).
@@ -66,3 +106,12 @@ PORT = _int_env("HEARDY_PORT", 8080)
 # vídeos con restricción de edad, pero atan las descargas a una cuenta real:
 # es una decisión del usuario, no un valor por defecto.
 COOKIES_FILE = os.environ.get("HEARDY_COOKIES_FILE", "").strip()
+
+# Rate limiting: 0 desactiva. Pensado para el servidor oficial compartido,
+# donde varias personas gastan el mismo presupuesto de IP frente a YouTube —
+# un servidor personal de un solo usuario no lo necesita, y por eso viene
+# desactivado por defecto (comportamiento idéntico al de antes de que esto
+# existiera). Ver docs/arquitectura_servidor_hibrido.md, sección 5.
+RATE_LIMIT_PER_KEY = _int_env("HEARDY_RATE_LIMIT_PER_KEY", 0)
+RATE_LIMIT_WINDOW_SECONDS = _int_env("HEARDY_RATE_LIMIT_WINDOW_SECONDS", 3600)
+DAILY_QUOTA = _int_env("HEARDY_DAILY_QUOTA", 0)

@@ -151,15 +151,57 @@ También hay documentación interactiva en `http://127.0.0.1:8080/docs`.
 
 ---
 
+## Claves por usuario y límite de peticiones
+
+Pensado para el **servidor oficial** compartido por varias personas — un
+servidor personal de un solo usuario no necesita nada de esto y sigue
+funcionando exactamente igual con solo `HEARDY_API_KEY`. Ver
+`../docs/arquitectura_servidor_hibrido.md` (secciones 5 y 6) para el
+porqué.
+
+**Varias claves con nombre** (`HEARDY_API_KEYS` en `.env`, formato
+`etiqueta:clave,etiqueta:clave,...`): cada persona tiene la suya, así se
+puede revocar el acceso de una sin rotar la de las demás, y los logs de la
+API (`/resolve por isaac: ...`) dicen quién generó cada petición. Convive
+sin conflicto con `HEARDY_API_KEY` — si están las dos, ambas claves son
+válidas.
+
+**Límite de peticiones** (`HEARDY_RATE_LIMIT_PER_KEY`,
+`HEARDY_RATE_LIMIT_WINDOW_SECONDS`, `HEARDY_DAILY_QUOTA` en `.env`,
+todos en 0 = desactivado por defecto): protege el presupuesto de IP
+compartido frente a YouTube, tanto de abuso como de que los propios
+usuarios lo agoten entre todos en poco tiempo. Al superarlo, la API
+responde `429` con una cabecera `Retry-After` calculada a partir de la
+propia ventana — nunca un número inventado. Solo se aplica a los cuatro
+endpoints que le cuestan presupuesto a la IP (`/resolve`, `/playlist`,
+`/search`, `/audio`); `/cache` no lo necesita, es puramente local.
+
+---
+
+## Tests
+
+```bat
+test.bat
+```
+
+Corre la suite de `pytest` (`server\tests\`). La primera vez crea su propio
+`.venv` e instala `requirements-dev.txt` — deliberadamente más liviano que
+`requirements.txt`, porque los tests son de lógica pura (`auth.py`,
+`config.py`, `rate_limit.py`) y no necesitan yt-dlp ni el proveedor de PO
+tokens instalados. No toca YouTube ni el `.venv` de `run.bat`/`setup.bat`.
+
+---
+
 ## Diagnóstico
 
 | Síntoma | Causa probable |
 |---|---|
 | `health.bat` dice que no hay nadie escuchando | La API no está arrancada: `run.bat` |
 | `Proveedor de PO tokens NO responde` | Falta `run-pot.bat`, o su ventana se cerró |
-| 401 desde la app | La clave de Ajustes no coincide con `HEARDY_API_KEY` de `server\.env`. Tras cambiar el `.env` hay que reiniciar la API |
+| 401 desde la app | La clave de Ajustes no coincide con ninguna de `HEARDY_API_KEY`/`HEARDY_API_KEYS` de `server\.env`. Tras cambiar el `.env` hay que reiniciar la API |
 | 403 / "Sign in to confirm you're not a bot" | El proveedor de PO tokens está caído, o su versión no coincide con la del plugin. Volvé a ejecutar `setup.bat` |
 | 415 | Ese vídeo no tiene pista AAC/M4A. Es definitivo para ese vídeo, no un fallo del servidor |
+| 429 | Se agotó el límite de peticiones (por clave o el tope diario global). Trae `Retry-After` con los segundos exactos — solo pasa si `HEARDY_RATE_LIMIT_PER_KEY`/`HEARDY_DAILY_QUOTA` están configurados |
 | Error de posprocesado al descargar | Falta ffmpeg en el PATH |
 | `node` o `git` no reconocidos en `setup.bat` | Instalados pero sin reabrir la terminal |
 
