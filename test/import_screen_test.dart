@@ -252,14 +252,24 @@ void main() {
     return id;
   }
 
-  testWidgets('sin servidor configurado, muestra la guía y no el campo de URL', (tester) async {
+  testWidgets(
+      'sin servidor configurado (el usuario borró la dirección oficial por defecto), '
+      'muestra la guía y no el campo de URL', (tester) async {
     await tester.runAsync(() async {
       await db.clearDownloadQueue();
       final backend = FakeSafBackend();
       final root = backend.addDir(null, 'Heardy');
       SafUtilPlatform.instance = FakeSafUtil(backend);
       SafStreamPlatform.instance = FakeSafStream(backend);
-      SharedPreferences.setMockInitialValues({'heardy_library_root_uri': root.uri});
+      // Desde el modo automático (docs/arquitectura_servidor_hibrido.md,
+      // sección 4) el valor por defecto ya no es "vacío", es el servidor
+      // oficial — este estado sólo se alcanza si el usuario lo borró a
+      // propósito desde Ajustes avanzados.
+      SharedPreferences.setMockInitialValues({
+        'heardy_library_root_uri': root.uri,
+        'download_server_url': '',
+        'download_server_api_key': '',
+      });
 
       final source = _FakeDownloadSource();
       final musicProvider = MusicProvider();

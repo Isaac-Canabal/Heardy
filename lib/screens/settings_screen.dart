@@ -16,7 +16,7 @@ class SettingsScreen extends StatelessWidget {
     try {
       final songs = await DatabaseHelper.instance.getSongs();
       int totalBytes = 0;
-      
+
       for (final song in songs) {
         try {
           final audioFile = File(song.filePath);
@@ -24,7 +24,7 @@ class SettingsScreen extends StatelessWidget {
             totalBytes += await audioFile.length();
           }
         } catch (_) {}
-        
+
         try {
           if (song.artPath.isNotEmpty) {
             final artFile = File(song.artPath);
@@ -34,7 +34,7 @@ class SettingsScreen extends StatelessWidget {
           }
         } catch (_) {}
       }
-      
+
       return _formatBytes(totalBytes);
     } catch (e) {
       return 'Error calculando';
@@ -44,7 +44,8 @@ class SettingsScreen extends StatelessWidget {
   String _formatBytes(int bytes) {
     if (bytes < 1024) return '$bytes B';
     if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    if (bytes < 1024 * 1024 * 1024)
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
     return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB';
   }
 
@@ -60,7 +61,9 @@ class SettingsScreen extends StatelessWidget {
       context.read<MusicProvider>().setLibraryRootUri(rootUri);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-          content: Text('Carpeta "Heardy" lista. Andá a Bandeja para escanearla.'),
+          content: Text(
+            'Carpeta "Heardy" lista. Andá a Bandeja para escanearla.',
+          ),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -197,8 +200,11 @@ class SettingsScreen extends StatelessWidget {
                                 ),
                               ),
                               if (selected)
-                                Icon(Icons.check_circle_rounded,
-                                    color: AppTheme.primaryLight, size: 20),
+                                Icon(
+                                  Icons.check_circle_rounded,
+                                  color: AppTheme.primaryLight,
+                                  size: 20,
+                                ),
                             ],
                           ),
                         ),
@@ -305,14 +311,19 @@ class SettingsScreen extends StatelessWidget {
                   child: OutlinedButton.icon(
                     style: OutlinedButton.styleFrom(
                       foregroundColor: Colors.white,
-                      side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+                      side: BorderSide(
+                        color: Colors.white.withValues(alpha: 0.3),
+                      ),
                       shape: RoundedRectangleBorder(
                         borderRadius: BorderRadius.circular(12),
                       ),
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
                     icon: const Icon(Icons.folder_rounded, size: 18),
-                    label: const Text('Elegir carpeta', style: TextStyle(fontWeight: FontWeight.w600)),
+                    label: const Text(
+                      'Elegir carpeta',
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
                     onPressed: () => _pickLibraryFolder(context),
                   ),
                 ),
@@ -320,9 +331,9 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 28),
-          _SectionTitle('Servidor de descargas'),
+          _SectionTitle('Ajustes avanzados'),
           const SizedBox(height: 10),
-          const _DownloadServerSection(),
+          const _AdvancedSettingsSection(),
           const SizedBox(height: 28),
           _SectionTitle('Búsqueda'),
           const SizedBox(height: 10),
@@ -365,7 +376,9 @@ class SettingsScreen extends StatelessWidget {
                       icon: const Icon(Icons.remove, size: 20),
                       color: AppTheme.primaryLight,
                       onPressed: settings.maxSearchResults > 10
-                          ? () => settings.setMaxSearchResults(settings.maxSearchResults - 10)
+                          ? () => settings.setMaxSearchResults(
+                              settings.maxSearchResults - 10,
+                            )
                           : null,
                     ),
                     Expanded(
@@ -383,7 +396,9 @@ class SettingsScreen extends StatelessWidget {
                       icon: const Icon(Icons.add, size: 20),
                       color: AppTheme.primaryLight,
                       onPressed: settings.maxSearchResults < 100
-                          ? () => settings.setMaxSearchResults(settings.maxSearchResults + 10)
+                          ? () => settings.setMaxSearchResults(
+                              settings.maxSearchResults + 10,
+                            )
                           : null,
                     ),
                   ],
@@ -457,9 +472,13 @@ class _StatisticsSectionState extends State<_StatisticsSection> {
     final db = DatabaseHelper.instance;
     final results = await Future.wait([
       isWeek ? db.getTotalPlaysThisWeek() : db.getTotalPlaysThisMonth(),
-      isWeek ? db.getTotalListenTimeThisWeek() : db.getTotalListenTimeThisMonth(),
+      isWeek
+          ? db.getTotalListenTimeThisWeek()
+          : db.getTotalListenTimeThisMonth(),
       isWeek ? db.getTopArtistThisWeek() : db.getTopArtistThisMonth(),
-      isWeek ? db.getTopSongsThisWeek(limit: 10) : db.getTopSongsThisMonth(limit: 10),
+      isWeek
+          ? db.getTopSongsThisWeek(limit: 10)
+          : db.getTopSongsThisMonth(limit: 10),
     ]);
 
     final topArtist = results[2] as Map<String, dynamic>?;
@@ -532,7 +551,8 @@ class _StatisticsSectionState extends State<_StatisticsSection> {
                   }
 
                   final data = snapshot.data;
-                  if (data == null || (data.totalPlays == 0 && data.topSongs.isEmpty)) {
+                  if (data == null ||
+                      (data.totalPlays == 0 && data.topSongs.isEmpty)) {
                     return Padding(
                       padding: const EdgeInsets.symmetric(vertical: 8),
                       child: Text(
@@ -631,23 +651,30 @@ class _StatisticsSectionState extends State<_StatisticsSection> {
                         ),
                         const SizedBox(height: 8),
                         ...List.generate(
-                          _isExpanded ? data.topSongs.length : (data.topSongs.length > 5 ? 5 : data.topSongs.length), 
+                          _isExpanded
+                              ? data.topSongs.length
+                              : (data.topSongs.length > 5
+                                    ? 5
+                                    : data.topSongs.length),
                           (index) {
                             final song = data.topSongs[index];
                             return _TopSongRow(
                               rank: index + 1,
                               title: song['title'] as String? ?? 'Sin título',
-                              artist: song['artist'] as String? ?? 'Desconocido',
+                              artist:
+                                  song['artist'] as String? ?? 'Desconocido',
                               artPath: song['artPath'] as String? ?? '',
                               playCount: song['playCount'] as int? ?? 0,
                             );
-                          }
+                          },
                         ),
                         if (data.topSongs.length > 5)
                           Center(
                             child: IconButton(
                               icon: Icon(
-                                _isExpanded ? Icons.keyboard_arrow_up_rounded : Icons.keyboard_arrow_down_rounded,
+                                _isExpanded
+                                    ? Icons.keyboard_arrow_up_rounded
+                                    : Icons.keyboard_arrow_down_rounded,
                                 color: Colors.white.withValues(alpha: 0.5),
                               ),
                               onPressed: () {
@@ -674,10 +701,7 @@ class _PeriodToggle extends StatelessWidget {
   final bool isWeek;
   final ValueChanged<bool> onChanged;
 
-  const _PeriodToggle({
-    required this.isWeek,
-    required this.onChanged,
-  });
+  const _PeriodToggle({required this.isWeek, required this.onChanged});
 
   @override
   Widget build(BuildContext context) {
@@ -731,7 +755,9 @@ class _PeriodChip extends StatelessWidget {
           child: Text(
             label,
             style: TextStyle(
-              color: selected ? Colors.white : Colors.white.withValues(alpha: 0.5),
+              color: selected
+                  ? Colors.white
+                  : Colors.white.withValues(alpha: 0.5),
               fontSize: 12,
               fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
             ),
@@ -822,10 +848,7 @@ class _TopSongRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: _buildArt(),
-          ),
+          ClipRRect(borderRadius: BorderRadius.circular(8), child: _buildArt()),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -911,6 +934,46 @@ class _TopSongRow extends StatelessWidget {
 /// "Probar conexión" distingue los tres fallos que el usuario puede arreglar
 /// —sin configurar, inalcanzable, clave inválida— en vez de un genérico
 /// "error", porque cada uno se corrige en un sitio distinto.
+/// Colapsado por defecto: el usuario promedio ya está en el servidor
+/// oficial sin haber tocado nada acá, así que esta pantalla nunca necesita
+/// abrirse para que la app funcione. Sólo existe para quien quiera apuntar
+/// a su propio servidor (ver docs/arquitectura_servidor_hibrido.md, sección 4).
+class _AdvancedSettingsSection extends StatelessWidget {
+  const _AdvancedSettingsSection();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: AppTheme.glassCard(),
+      clipBehavior: Clip.antiAlias,
+      child: Theme(
+        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
+        child: ExpansionTile(
+          initiallyExpanded: false,
+          tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+          iconColor: AppTheme.primaryLight,
+          collapsedIconColor: Colors.white.withValues(alpha: 0.5),
+          title: Row(
+            children: [
+              Icon(Icons.dns_rounded, color: AppTheme.primaryLight, size: 20),
+              const SizedBox(width: 8),
+              Text(
+                'Servidor de descargas',
+                style: TextStyle(
+                  color: Colors.white.withValues(alpha: 0.7),
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
+          children: const [_DownloadServerSection()],
+        ),
+      ),
+    );
+  }
+}
+
 class _DownloadServerSection extends StatefulWidget {
   const _DownloadServerSection();
 
@@ -944,9 +1007,9 @@ class _DownloadServerSectionState extends State<_DownloadServerSection> {
     // Se guarda primero: si el usuario sale de Ajustes mientras se prueba, lo
     // que escribió no se pierde.
     await context.read<SettingsProvider>().setDownloadServer(
-          url: _urlController.text,
-          apiKey: _keyController.text,
-        );
+      url: _urlController.text,
+      apiKey: _keyController.text,
+    );
     if (!mounted) return;
 
     setState(() {
@@ -973,13 +1036,25 @@ class _DownloadServerSectionState extends State<_DownloadServerSection> {
     final status = _lastStatus;
     if (status == null) return null;
     if (!status.reachable) {
-      return (color: Colors.redAccent, icon: Icons.cloud_off_rounded, text: status.detail);
+      return (
+        color: Colors.redAccent,
+        icon: Icons.cloud_off_rounded,
+        text: status.detail,
+      );
     }
     if (!status.authenticated) {
-      return (color: Colors.orangeAccent, icon: Icons.key_off_rounded, text: status.detail);
+      return (
+        color: Colors.orangeAccent,
+        icon: Icons.key_off_rounded,
+        text: status.detail,
+      );
     }
     if (!status.potProviderReachable) {
-      return (color: Colors.orangeAccent, icon: Icons.warning_amber_rounded, text: status.detail);
+      return (
+        color: Colors.orangeAccent,
+        icon: Icons.warning_amber_rounded,
+        text: status.detail,
+      );
     }
     return (
       color: Colors.greenAccent,
@@ -990,128 +1065,160 @@ class _DownloadServerSectionState extends State<_DownloadServerSection> {
 
   @override
   Widget build(BuildContext context) {
+    final settings = context.watch<SettingsProvider>();
     final line = _statusLine();
     final fieldBorder = OutlineInputBorder(
       borderRadius: BorderRadius.circular(12),
       borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.2)),
     );
 
-    return Container(
-      decoration: AppTheme.glassCard(),
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Por defecto, Heardy usa el servidor oficial del proyecto — no hace '
+          'falta configurar nada acá. Si preferís montar el tuyo (server/ de '
+          'este repo, con Docker), pegá su dirección abajo.',
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: 0.45),
+            fontSize: 12,
+            height: 1.4,
+          ),
+        ),
+        if (!settings.isOfficialServer) ...[
+          const SizedBox(height: 10),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: TextButton.icon(
+              style: TextButton.styleFrom(
+                foregroundColor: AppTheme.primaryLight,
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+              ),
+              icon: const Icon(Icons.restore_rounded, size: 16),
+              label: const Text(
+                'Restaurar servidor oficial',
+                style: TextStyle(fontSize: 12),
+              ),
+              onPressed: () async {
+                await settings.restoreOfficialServer();
+                if (!mounted) return;
+                setState(() {
+                  _urlController.text = settings.downloadServerUrl;
+                  _keyController.text = settings.downloadServerApiKey;
+                  _lastStatus = null;
+                });
+              },
+            ),
+          ),
+        ],
+        const SizedBox(height: 14),
+        TextField(
+          controller: _urlController,
+          style: const TextStyle(color: Colors.white, fontSize: 14),
+          keyboardType: TextInputType.url,
+          autocorrect: false,
+          decoration: InputDecoration(
+            labelText: 'Dirección',
+            hintText: '192.168.1.50:8080',
+            labelStyle: TextStyle(
+              color: Colors.white.withValues(alpha: 0.5),
+              fontSize: 13,
+            ),
+            hintStyle: TextStyle(
+              color: Colors.white.withValues(alpha: 0.25),
+              fontSize: 13,
+            ),
+            border: fieldBorder,
+            enabledBorder: fieldBorder,
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: AppTheme.primaryLight),
+            ),
+            isDense: true,
+          ),
+        ),
+        const SizedBox(height: 10),
+        TextField(
+          controller: _keyController,
+          style: const TextStyle(color: Colors.white, fontSize: 14),
+          obscureText: _obscureKey,
+          autocorrect: false,
+          enableSuggestions: false,
+          decoration: InputDecoration(
+            labelText: 'Clave de API',
+            labelStyle: TextStyle(
+              color: Colors.white.withValues(alpha: 0.5),
+              fontSize: 13,
+            ),
+            border: fieldBorder,
+            enabledBorder: fieldBorder,
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: AppTheme.primaryLight),
+            ),
+            isDense: true,
+            suffixIcon: IconButton(
+              icon: Icon(
+                _obscureKey
+                    ? Icons.visibility_rounded
+                    : Icons.visibility_off_rounded,
+                color: Colors.white.withValues(alpha: 0.4),
+                size: 18,
+              ),
+              onPressed: () => setState(() => _obscureKey = !_obscureKey),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white,
+              side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12),
+              ),
+              padding: const EdgeInsets.symmetric(vertical: 12),
+            ),
+            icon: _testing
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.wifi_tethering_rounded, size: 18),
+            label: Text(
+              _testing ? 'Probando…' : 'Guardar y probar conexión',
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            onPressed: _testing ? null : _saveAndTest,
+          ),
+        ),
+        if (line != null) ...[
+          const SizedBox(height: 12),
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(Icons.dns_rounded, color: AppTheme.primaryLight, size: 20),
+              Icon(line.icon, color: line.color, size: 16),
               const SizedBox(width: 8),
-              Text(
-                'Descargar desde YouTube',
-                style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 13),
+              Expanded(
+                child: Text(
+                  line.text,
+                  style: TextStyle(
+                    color: line.color,
+                    fontSize: 12,
+                    height: 1.35,
+                  ),
+                ),
               ),
             ],
           ),
-          const SizedBox(height: 8),
-          Text(
-            'Heardy no descarga por su cuenta: le pide el audio a un servidor tuyo. '
-            'Montalo con server/ de este repo (Docker) y pegá acá su dirección. '
-            'Sin esto, la app funciona igual como reproductor de tu biblioteca.',
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.45),
-              fontSize: 12,
-              height: 1.4,
-            ),
-          ),
-          const SizedBox(height: 14),
-          TextField(
-            controller: _urlController,
-            style: const TextStyle(color: Colors.white, fontSize: 14),
-            keyboardType: TextInputType.url,
-            autocorrect: false,
-            decoration: InputDecoration(
-              labelText: 'Dirección',
-              hintText: '192.168.1.50:8080',
-              labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
-              hintStyle: TextStyle(color: Colors.white.withValues(alpha: 0.25), fontSize: 13),
-              border: fieldBorder,
-              enabledBorder: fieldBorder,
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: AppTheme.primaryLight),
-              ),
-              isDense: true,
-            ),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: _keyController,
-            style: const TextStyle(color: Colors.white, fontSize: 14),
-            obscureText: _obscureKey,
-            autocorrect: false,
-            enableSuggestions: false,
-            decoration: InputDecoration(
-              labelText: 'Clave de API',
-              labelStyle: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
-              border: fieldBorder,
-              enabledBorder: fieldBorder,
-              focusedBorder: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(12),
-                borderSide: BorderSide(color: AppTheme.primaryLight),
-              ),
-              isDense: true,
-              suffixIcon: IconButton(
-                icon: Icon(
-                  _obscureKey ? Icons.visibility_rounded : Icons.visibility_off_rounded,
-                  color: Colors.white.withValues(alpha: 0.4),
-                  size: 18,
-                ),
-                onPressed: () => setState(() => _obscureKey = !_obscureKey),
-              ),
-            ),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: OutlinedButton.icon(
-              style: OutlinedButton.styleFrom(
-                foregroundColor: Colors.white,
-                side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                padding: const EdgeInsets.symmetric(vertical: 12),
-              ),
-              icon: _testing
-                  ? const SizedBox(
-                      width: 16,
-                      height: 16,
-                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-                    )
-                  : const Icon(Icons.wifi_tethering_rounded, size: 18),
-              label: Text(
-                _testing ? 'Probando…' : 'Guardar y probar conexión',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              onPressed: _testing ? null : _saveAndTest,
-            ),
-          ),
-          if (line != null) ...[
-            const SizedBox(height: 12),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(line.icon, color: line.color, size: 16),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Text(
-                    line.text,
-                    style: TextStyle(color: line.color, fontSize: 12, height: 1.35),
-                  ),
-                ),
-              ],
-            ),
-          ],
         ],
-      ),
+      ],
     );
   }
 }
@@ -1142,7 +1249,10 @@ class _PresetDot extends StatelessWidget {
   Widget build(BuildContext context) {
     final colors = switch (preset) {
       AppThemePreset.navy => [const Color(0xFF2563EB), const Color(0xFF1E40AF)],
-      AppThemePreset.violet => [const Color(0xFF7C3AED), const Color(0xFF4F46E5)],
+      AppThemePreset.violet => [
+        const Color(0xFF7C3AED),
+        const Color(0xFF4F46E5),
+      ],
       AppThemePreset.rose => [const Color(0xFFDB2777), const Color(0xFFBE185D)],
     };
     return Container(
