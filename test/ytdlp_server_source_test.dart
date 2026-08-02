@@ -204,6 +204,31 @@ void main() {
       );
     });
 
+    test('429 es quotaExceeded, SÍ se reintenta y trae el Retry-After exacto del servidor', () async {
+      final client = _FakeClient((_) async => http.StreamedResponse(
+            Stream.value(utf8.encode(jsonEncode({'detail': 'límite alcanzado (per-key)'}))),
+            429,
+            headers: {'retry-after': '42'},
+          ));
+      await expectLater(
+        _source(client).resolve('https://youtu.be/x'),
+        throwsA(isA<DownloadSourceException>()
+            .having((e) => e.kind, 'kind', DownloadSourceErrorKind.quotaExceeded)
+            .having((e) => e.isRetryable, 'isRetryable', isTrue)
+            .having((e) => e.retryAfterSeconds, 'retryAfterSeconds', 42)),
+      );
+    });
+
+    test('429 sin cabecera Retry-After no rompe el parseo: retryAfterSeconds queda null', () async {
+      final client = _FakeClient((_) async => _error(429, 'límite alcanzado'));
+      await expectLater(
+        _source(client).resolve('https://youtu.be/x'),
+        throwsA(isA<DownloadSourceException>()
+            .having((e) => e.kind, 'kind', DownloadSourceErrorKind.quotaExceeded)
+            .having((e) => e.retryAfterSeconds, 'retryAfterSeconds', isNull)),
+      );
+    });
+
     test('un fallo de socket se traduce a network, no se escapa como SocketException', () async {
       final client = _FakeClient((_) async => throw const SocketException('sin ruta al host'));
       await expectLater(

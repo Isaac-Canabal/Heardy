@@ -312,6 +312,69 @@ void main() {
     });
   });
 
+  group('cuota del servidor (429)', () {
+    test('un aviso de cuota no cuenta como intento y no descarta el trabajo', () async {
+      final service = _FakeDownloadService()
+        ..downloadErrors.add(
+          const DownloadSourceException(
+            DownloadSourceErrorKind.quotaExceeded,
+            'límite alcanzado (per-key)',
+            retryAfterSeconds: 60,
+          ),
+        );
+      final playlistId = await newPlaylist('Cuota');
+      final provider = providerFor(service);
+
+      await provider.enqueueTrack(_track('con-cuota'), playlistId: playlistId, metadataComplete: true);
+      await provider.processQueue();
+
+      final rows = await db.getDownloadQueue();
+      expect(rows.length, 1, reason: 'el trabajo nunca se descarta por una cuota');
+      expect(rows.first['attempts'], 0,
+          reason: 'la cuota no es un fallo del trabajo, no debe gastar presupuesto de reintentos');
+      expect(provider.failures.single.permanent, isFalse);
+      expect(provider.failures.single.retryAfterSeconds, 60);
+      expect(provider.failures.single.message, contains('minuto'));
+    });
+
+    test('reprograma exactamente al retryAfterSeconds del servidor, no a la tabla de backoff fija', () async {
+      final service = _FakeDownloadService()
+        ..downloadErrors.add(
+          const DownloadSourceException(
+            DownloadSourceErrorKind.quotaExceeded,
+            'límite alcanzado',
+            retryAfterSeconds: 3600, // fuera del rango de _backoff (5/15/45s)
+          ),
+        );
+      final playlistId = await newPlaylist('CuotaLarga');
+      final provider = providerFor(service);
+
+      await provider.enqueueTrack(_track('cuota-larga'), playlistId: playlistId, metadataComplete: true);
+      await provider.processQueue();
+
+      // No hay forma directa de leer _retryAfter desde fuera, pero se puede
+      // observar por su efecto: una segunda pasada inmediata no debe volver
+      // a intentar el trabajo (seguiría esperando su hora).
+      await provider.processQueue();
+      expect(service.calls.length, 1, reason: 'todavía dentro de la ventana de espera de una hora');
+    });
+
+    test('sin Retry-After del servidor, usa un valor por defecto en vez de reventar', () async {
+      final service = _FakeDownloadService()
+        ..downloadErrors.add(
+          const DownloadSourceException(DownloadSourceErrorKind.quotaExceeded, 'límite alcanzado'),
+        );
+      final playlistId = await newPlaylist('CuotaSinHeader');
+      final provider = providerFor(service);
+
+      await provider.enqueueTrack(_track('sin-header'), playlistId: playlistId, metadataComplete: true);
+      await provider.processQueue();
+
+      expect(await db.getDownloadQueue(), hasLength(1));
+      expect(provider.failures.single.retryAfterSeconds, isNotNull);
+    });
+  });
+
   group('cola', () {
     test('sobrevive al cierre de la app: un provider nuevo retoma lo pendiente', () async {
       final playlistId = await newPlaylist('Persistente');

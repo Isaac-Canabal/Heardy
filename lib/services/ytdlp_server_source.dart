@@ -91,7 +91,11 @@ class YtdlpServerSource implements DownloadSource {
   /// Mapea el código HTTP al tipo de error. El 415 del servidor es
   /// deliberadamente distinto del 502: significa "este vídeo no tiene pista
   /// AAC", que es definitivo, mientras que el 502 sí merece reintento.
-  void _checkStatus(int statusCode, String body) {
+  ///
+  /// [retryAfterHeader] sólo se usa para el 429: es la cabecera `Retry-After`
+  /// que el servidor calcula a partir de su propio limitador (nunca
+  /// inventada acá, ver `DownloadSourceException.retryAfterSeconds`).
+  void _checkStatus(int statusCode, String body, {String? retryAfterHeader}) {
     if (statusCode >= 200 && statusCode < 300) return;
     final detail = _detailFrom(body);
     switch (statusCode) {
@@ -108,6 +112,14 @@ class YtdlpServerSource implements DownloadSource {
       case 400:
       case 422:
         throw DownloadSourceException(DownloadSourceErrorKind.notFound, detail);
+      case 429:
+        // El propio servidor se autolimitó (no YouTube): distinto de un 502
+        // porque acá sí sabemos, con certeza, cuánto hay que esperar.
+        throw DownloadSourceException(
+          DownloadSourceErrorKind.quotaExceeded,
+          detail,
+          retryAfterSeconds: int.tryParse((retryAfterHeader ?? '').trim()),
+        );
       default:
         throw DownloadSourceException(
           DownloadSourceErrorKind.extraction,
@@ -135,7 +147,7 @@ class YtdlpServerSource implements DownloadSource {
       final response = await client
           .post(_uri(path), headers: _headers(json: true), body: jsonEncode(body))
           .timeout(timeout);
-      _checkStatus(response.statusCode, response.body);
+      _checkStatus(response.statusCode, response.body, retryAfterHeader: response.headers['retry-after']);
       return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
     } catch (e) {
       _rethrowAsSourceError(e);
@@ -163,7 +175,7 @@ class YtdlpServerSource implements DownloadSource {
       final response = await client
           .get(_uri('/search', {'q': query, 'limit': '$limit'}), headers: _headers())
           .timeout(_metadataTimeout);
-      _checkStatus(response.statusCode, response.body);
+      _checkStatus(response.statusCode, response.body, retryAfterHeader: response.headers['retry-after']);
       final json = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       return (json['results'] as List<dynamic>? ?? const [])
           .whereType<Map<String, dynamic>>()
@@ -194,7 +206,7 @@ class YtdlpServerSource implements DownloadSource {
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
         final body = await response.stream.bytesToString();
-        _checkStatus(response.statusCode, body);
+        _checkStatus(response.statusCode, body, retryAfterHeader: response.headers['retry-after']);
       }
 
       final total = response.contentLength;

@@ -778,23 +778,28 @@ class _FailureRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Un aviso de cuota no es un fallo del trabajo: sigue en la cola y se
+    // reintentará solo cuando pase el tiempo indicado. Se distingue con
+    // ámbar en vez de rojo para no leerse como "esto se rompió".
+    final isQuotaWait = failure.retryAfterSeconds != null;
+    final tint = isQuotaWait ? Colors.amber : Colors.red;
+    final icon = isQuotaWait
+        ? Icons.hourglass_bottom_rounded
+        : (failure.permanent ? Icons.block_rounded : Icons.wifi_off_rounded);
+
     return Padding(
       padding: const EdgeInsets.only(top: 8),
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
-          color: Colors.red.withValues(alpha: 0.08),
+          color: tint.withValues(alpha: 0.08),
           borderRadius: BorderRadius.circular(12),
-          border: Border.all(color: Colors.red.withValues(alpha: 0.2)),
+          border: Border.all(color: tint.withValues(alpha: 0.2)),
         ),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Icon(
-              failure.permanent ? Icons.block_rounded : Icons.wifi_off_rounded,
-              color: Colors.redAccent.shade100,
-              size: 16,
-            ),
+            Icon(icon, color: tint.shade100, size: 16),
             const SizedBox(width: 8),
             Expanded(
               child: Column(
@@ -808,7 +813,7 @@ class _FailureRow extends StatelessWidget {
                   ),
                   Text(
                     failure.message,
-                    style: TextStyle(color: Colors.red.shade100, fontSize: 11),
+                    style: TextStyle(color: tint.shade100, fontSize: 11),
                   ),
                 ],
               ),

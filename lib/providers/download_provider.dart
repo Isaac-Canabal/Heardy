@@ -73,20 +73,32 @@ class DownloadJob {
   String get displayTitle => title.isEmpty ? sourceId : title;
 }
 
-/// Un trabajo que se dio por perdido, para que la UI pueda contarlo.
+/// Un trabajo que se dio por perdido, para que la UI pueda contarlo. También
+/// se usa para avisar de una espera por cuota (ver [retryAfterSeconds]),
+/// donde el trabajo NO se pierde — sigue en la cola y se reintentará solo.
 class DownloadFailure {
   final String title;
   final String message;
 
   /// True si el vídeo no va a poder descargarse nunca (borrado, privado, sin
-  /// pista AAC). False si simplemente se agotaron los reintentos.
+  /// pista AAC). False si simplemente se agotaron los reintentos, o si es un
+  /// aviso de cuota ([retryAfterSeconds] no nulo) — en ese caso el trabajo
+  /// sigue en la cola, no se descartó nada.
   final bool permanent;
+
+  /// No nulo solo para los avisos de [DownloadSourceErrorKind.quotaExceeded]:
+  /// cuántos segundos exactos va a esperar el trabajo antes de reintentar
+  /// solo. Distingue "estamos esperando nuestro turno" (esto) de "se rindió"
+  /// (permanent) o "se agotaron los reintentos" (ninguno de los dos).
+  final int? retryAfterSeconds;
+
   final DateTime at;
 
   const DownloadFailure({
     required this.title,
     required this.message,
     required this.permanent,
+    this.retryAfterSeconds,
     required this.at,
   });
 }
@@ -116,6 +128,12 @@ class DownloadProvider extends ChangeNotifier {
     Duration(seconds: 15),
     Duration(seconds: 45),
   ];
+
+  /// Sólo por si el servidor respondiera 429 sin `Retry-After` (no debería
+  /// pasar nunca: `rate_limit.py` siempre lo calcula) — un valor defensivo
+  /// razonable, no una cifra que se le vaya a mostrar al usuario como si
+  /// fuera exacta.
+  static const int _defaultQuotaWaitSeconds = 300;
 
   final DownloadService _service;
   final DatabaseHelper _db;
@@ -445,6 +463,21 @@ class DownloadProvider extends ChangeNotifier {
   Future<void> _handleFailure(DownloadJob job, DownloadSourceException error) async {
     if (error.kind == DownloadSourceErrorKind.cancelled) return;
 
+    if (error.kind == DownloadSourceErrorKind.quotaExceeded) {
+      // El límite de peticiones del propio servidor no es un fallo del
+      // trabajo: es el servidor pidiendo que se espere un tiempo que él
+      // mismo calculó con exactitud. No cuenta contra `maxAttempts` — a
+      // diferencia de un vídeo bloqueado o una red caída, reintentar tras la
+      // cuota casi seguro funciona, así que tratarlo como un fallo normal
+      // lo tiraría de la cola sin necesidad (y el trabajo NUNCA se elimina
+      // aquí, sólo se reprograma).
+      final wait = Duration(seconds: error.retryAfterSeconds ?? _defaultQuotaWaitSeconds);
+      _retryAfter[job.queueId] = DateTime.now().add(wait);
+      _recordFailure(job, error.userMessage, permanent: false, retryAfterSeconds: wait.inSeconds);
+      await refreshQueue();
+      return;
+    }
+
     // Un fallo definitivo sale de la cola en el primer intento. Gastar tres
     // reintentos en un vídeo borrado es tiempo y presupuesto de IP tirados, y
     // encima retrasa las canciones que sí se pueden bajar.
@@ -470,13 +503,19 @@ class DownloadProvider extends ChangeNotifier {
     await refreshQueue();
   }
 
-  void _recordFailure(DownloadJob job, String message, {required bool permanent}) {
+  void _recordFailure(
+    DownloadJob job,
+    String message, {
+    required bool permanent,
+    int? retryAfterSeconds,
+  }) {
     _failures.insert(
       0,
       DownloadFailure(
         title: job.displayTitle,
         message: message,
         permanent: permanent,
+        retryAfterSeconds: retryAfterSeconds,
         at: DateTime.now(),
       ),
     );

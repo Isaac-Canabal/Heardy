@@ -111,6 +111,15 @@ enum DownloadSourceErrorKind {
   /// sentido reintentarlo.
   unsupportedMedia,
 
+  /// El propio servidor rechazó la petición por límite de peticiones (HTTP
+  /// 429) — no es YouTube bloqueando, es el servidor autolimitándose para
+  /// proteger el presupuesto de IP compartido. A diferencia de [extraction],
+  /// este caso sí sabe con certeza cuánto esperar:
+  /// [DownloadSourceException.retryAfterSeconds] trae el valor exacto que
+  /// calculó el servidor a partir de su propia ventana. Ver
+  /// docs/arquitectura_servidor_hibrido.md, sección 5.
+  quotaExceeded,
+
   /// El usuario canceló.
   cancelled,
 }
@@ -119,7 +128,14 @@ class DownloadSourceException implements Exception {
   final DownloadSourceErrorKind kind;
   final String message;
 
-  const DownloadSourceException(this.kind, this.message);
+  /// Sólo tiene valor para [DownloadSourceErrorKind.quotaExceeded]: los
+  /// segundos exactos que el servidor calculó a partir de su propia ventana
+  /// de límite (cabecera `Retry-After`, RFC 9110). Nunca se inventa un
+  /// número aquí — si el servidor no lo mandó, queda en null y quien lo
+  /// consuma debe mostrar un mensaje aproximado, no una cuenta atrás falsa.
+  final int? retryAfterSeconds;
+
+  const DownloadSourceException(this.kind, this.message, {this.retryAfterSeconds});
 
   /// True si reintentar más tarde tiene alguna posibilidad de funcionar.
   ///
@@ -128,7 +144,9 @@ class DownloadSourceException implements Exception {
   /// presupuesto de reintentos en un vídeo que ya no existe, o tirar una
   /// canción perfectamente descargable por un corte de red de un segundo.
   bool get isRetryable =>
-      kind == DownloadSourceErrorKind.network || kind == DownloadSourceErrorKind.extraction;
+      kind == DownloadSourceErrorKind.network ||
+      kind == DownloadSourceErrorKind.extraction ||
+      kind == DownloadSourceErrorKind.quotaExceeded;
 
   /// Mensaje para enseñar al usuario, ya en el idioma de la app.
   String get userMessage => switch (kind) {
@@ -143,11 +161,24 @@ class DownloadSourceException implements Exception {
           'Ese vídeo ya no está disponible (borrado, privado o restringido)',
         DownloadSourceErrorKind.unsupportedMedia =>
           'Ese vídeo no tiene una pista de audio compatible',
+        DownloadSourceErrorKind.quotaExceeded => retryAfterSeconds != null
+            ? 'Límite del servidor alcanzado. Probá de nuevo en ${_formatRetryAfter(retryAfterSeconds!)}'
+            : 'Límite del servidor alcanzado. Probá de nuevo más tarde',
         DownloadSourceErrorKind.cancelled => 'Descarga cancelada',
       };
 
   @override
-  String toString() => 'DownloadSourceException($kind): $message';
+  String toString() => 'DownloadSourceException($kind): $message'
+      '${retryAfterSeconds != null ? ' (retryAfter=${retryAfterSeconds}s)' : ''}';
+}
+
+/// "3 minutos", "1 minuto", "unos segundos" — nunca un número exacto de
+/// segundos: es una cifra que viene de un header HTTP, no algo que un
+/// usuario deba leer al pie de la letra.
+String _formatRetryAfter(int seconds) {
+  if (seconds < 60) return 'unos segundos';
+  final minutes = (seconds / 60).ceil();
+  return minutes == 1 ? '1 minuto' : '$minutes minutos';
 }
 
 /// Estado del servidor, para el botón "Probar conexión" de Ajustes.
