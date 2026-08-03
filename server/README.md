@@ -294,6 +294,27 @@ justo la condición que la sección 1 de `arquitectura_servidor_hibrido.md`
 identifica como la que menos choca con el muro anti-bot. El costo real es
 el que ya se sabía: solo responde mientras el PC esté encendido.
 
+**Que sobreviva a cerrar la terminal (Windows, sin Docker):** si corriste
+`setup.bat` en vez de Docker, `run.bat` abre dos ventanas de consola que
+mueren si las cerrás o si cerrás la sesión. Para que arranque solo al
+iniciar sesión en Windows, sin depender de una terminal abierta:
+
+```powershell
+# En PowerShell COMO ADMINISTRADOR, una sola vez:
+$action = New-ScheduledTaskAction -Execute "C:\ruta\a\server\run-official-service.bat" -WorkingDirectory "C:\ruta\a\server"
+$trigger = New-ScheduledTaskTrigger -AtLogOn
+$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
+Register-ScheduledTask -TaskName "Heardy Download Server" -Action $action -Trigger $trigger -Settings $settings -Force
+```
+
+`run-official-service.bat` es una variante de `run.bat` pensada para esto:
+arranca las dos mitades **minimizadas** (`start /min`) en vez de en
+ventanas visibles en primer plano, respetando la misma espera de ~6s antes
+de la API para que el proveedor de PO tokens ya esté escuchando. Registrar
+la tarea necesita una ventana elevada (UAC) una única vez; después arranca
+sola en cada inicio de sesión, sin abrir nada visible ni requerir que
+nadie deje una terminal abierta.
+
 ---
 
 ## Decisiones que no son accidentes
