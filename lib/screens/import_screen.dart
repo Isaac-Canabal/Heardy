@@ -43,6 +43,12 @@ class _ImportScreenState extends State<ImportScreen> {
   final _urlController = TextEditingController();
   bool _isAnalyzing = false;
   String? _errorMessage;
+  /// True sólo cuando [_errorMessage] viene de
+  /// [DownloadSourceErrorKind.network] — el único caso en el que tiene
+  /// sentido ofrecer "guardar para más tarde" en vez de simplemente mostrar
+  /// el error: los demás (401, 404, formato no soportado) no se arreglan
+  /// solos con que el servidor vuelva a estar disponible.
+  bool _errorIsOffline = false;
   _UrlKind? _analyzedKind;
   RemoteTrack? _analyzedTrack;
   RemotePlaylist? _analyzedPlaylist;
@@ -62,6 +68,7 @@ class _ImportScreenState extends State<ImportScreen> {
     _analyzedSpotify = null;
     _analyzedSpotifyMatches = null;
     _errorMessage = null;
+    _errorIsOffline = false;
   }
 
   bool _looksLikePlaylist(String url) {
@@ -122,7 +129,10 @@ class _ImportScreenState extends State<ImportScreen> {
       }
     } on DownloadSourceException catch (e) {
       if (!mounted) return;
-      setState(() => _errorMessage = e.userMessage);
+      setState(() {
+        _errorMessage = e.userMessage;
+        _errorIsOffline = e.kind == DownloadSourceErrorKind.network;
+      });
     } catch (e) {
       if (!mounted) return;
       // SpotifyService lanza Exception simples con mensajes ya redactados
@@ -138,7 +148,39 @@ class _ImportScreenState extends State<ImportScreen> {
       // add_from_youtube_screen.dart) tenía un bug justo por resetear el
       // flag en cada `return` en vez de en un solo `finally`.
       if (mounted) setState(() => _isAnalyzing = false);
+      // El servidor acaba de responder con éxito: buen momento, sin necesidad
+      // de un polling propio, para vaciar lo que haya quedado en la lista de
+      // espera de una vez anterior en la que no respondía.
+      if (mounted && _errorMessage == null) {
+        context.read<DownloadProvider>().retryPendingImports();
+      }
     }
+  }
+
+  Future<void> _saveForLater() async {
+    final url = _urlController.text.trim();
+    if (url.isEmpty) return;
+    final isPlaylist = _looksLikePlaylist(url);
+
+    final choice = await pickTargetPlaylist(context);
+    if (choice == null || !mounted) return;
+    final playlistId = await resolveTargetPlaylistId(context, choice);
+    if (playlistId == null || !mounted) return;
+
+    final provider = context.read<DownloadProvider>();
+    final added = await provider.addPendingImport(
+      sourceUrl: url,
+      playlistId: playlistId,
+      isPlaylist: isPlaylist,
+    );
+    if (!mounted) return;
+
+    setState(_clearAnalysis);
+    _urlController.clear();
+
+    _showSnack(
+      added ? 'Guardado. Se descargará solo cuando el servidor esté disponible' : 'Ya estaba en la lista de espera',
+    );
   }
 
   Future<void> _downloadTrack(RemoteTrack track) async {
@@ -307,7 +349,8 @@ class _ImportScreenState extends State<ImportScreen> {
             child: ListView(
               padding: const EdgeInsets.fromLTRB(20, 16, 20, 90),
               children: [
-                if (_errorMessage != null) _buildErrorBanner(_errorMessage!),
+                if (_errorMessage != null)
+                  _buildErrorBanner(_errorMessage!, onSaveForLater: _errorIsOffline ? _saveForLater : null),
                 if (_analyzedKind == _UrlKind.video && _analyzedTrack != null)
                   _buildTrackPreview(_analyzedTrack!),
                 if (_analyzedKind == _UrlKind.playlist && _analyzedPlaylist != null)
@@ -315,6 +358,7 @@ class _ImportScreenState extends State<ImportScreen> {
                 if (_analyzedKind == _UrlKind.spotify && _analyzedSpotify != null && _analyzedSpotifyMatches != null)
                   _buildSpotifyPreview(_analyzedSpotify!, _analyzedSpotifyMatches!),
                 _buildQueueSection(),
+                _buildPendingImportsSection(),
               ],
             ),
           ),
@@ -375,7 +419,7 @@ class _ImportScreenState extends State<ImportScreen> {
     );
   }
 
-  Widget _buildErrorBanner(String message) {
+  Widget _buildErrorBanner(String message, {VoidCallback? onSaveForLater}) {
     return Container(
       margin: const EdgeInsets.only(bottom: 16),
       padding: const EdgeInsets.all(14),
@@ -384,14 +428,111 @@ class _ImportScreenState extends State<ImportScreen> {
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 20),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(message, style: TextStyle(color: Colors.red.shade100, fontSize: 13, height: 1.35)),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Icon(Icons.error_outline_rounded, color: Colors.redAccent, size: 20),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(message, style: TextStyle(color: Colors.red.shade100, fontSize: 13, height: 1.35)),
+              ),
+            ],
           ),
+          if (onSaveForLater != null) ...[
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              key: const Key('save_for_later_button'),
+              onPressed: onSaveForLater,
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white,
+                side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+              ),
+              icon: const Icon(Icons.schedule_rounded, size: 16),
+              label: const Text('Guardar para cuando el servidor esté disponible'),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPendingImportsSection() {
+    final downloadProvider = context.watch<DownloadProvider>();
+    final pending = downloadProvider.pendingImports;
+    if (pending.isEmpty) return const SizedBox.shrink();
+
+    final musicProvider = context.watch<MusicProvider>();
+    String playlistName(String id) {
+      for (final p in musicProvider.playlists) {
+        if (p.id == id) return p.name;
+      }
+      return 'Playlist eliminada';
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(top: 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.schedule_rounded, color: Colors.white.withValues(alpha: 0.5), size: 15),
+              const SizedBox(width: 6),
+              Text(
+                'Lista de espera · servidor no disponible',
+                style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12, fontWeight: FontWeight.w700),
+              ),
+              const Spacer(),
+              TextButton(
+                onPressed: () => downloadProvider.retryPendingImports(),
+                child: const Text('Reintentar ahora'),
+              ),
+            ],
+          ),
+          ...pending.map((p) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Container(
+                  decoration: AppTheme.glassCard(),
+                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+                  child: Row(
+                    children: [
+                      Icon(
+                        p.isPlaylist ? Icons.queue_music_rounded : Icons.music_note_rounded,
+                        color: Colors.white.withValues(alpha: 0.4),
+                        size: 20,
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              p.sourceUrl,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.w600),
+                            ),
+                            Text(
+                              '→ ${playlistName(p.playlistId)}',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 11),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        icon: Icon(Icons.close_rounded, color: Colors.white.withValues(alpha: 0.4), size: 18),
+                        visualDensity: VisualDensity.compact,
+                        onPressed: () => downloadProvider.removePendingImport(p.id),
+                      ),
+                    ],
+                  ),
+                ),
+              )),
         ],
       ),
     );

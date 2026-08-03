@@ -12,18 +12,21 @@ library;
 /// tiempo de build con `--dart-define=HEARDY_OFFICIAL_SERVER_API_KEY=...`
 /// y queda vacía en un build de desarrollo normal.
 ///
-/// Mientras el servidor oficial no esté desplegado de verdad (ver
-/// CLAUDE.md, sección "YouTube downloads" → Oracle Cloud), esta URL
-/// simplemente no responde todavía: el manejo de errores que ya existe
-/// (`DownloadSourceErrorKind.network`) cubre ese estado sin nada especial —
-/// la app se comporta exactamente como si el usuario hubiera escrito una
-/// dirección incorrecta, que es justo lo que es hasta que se despliegue.
+/// **Actualización 2026-08-03:** el servidor oficial ya no va en Oracle
+/// Cloud (fricción de verificación de cuenta, ver `server/README.md` →
+/// "Despliegue oficial"). Corre en el PC de casa de Isaac y se publica con
+/// Tailscale Funnel (`tailscale funnel --bg 8080`), que le da este hostname
+/// estable mientras no cambie de máquina — confirmado con
+/// `tailscale funnel status` y probado con `/health` real desde fuera de la
+/// red local el 2026-08-03. Si el servidor se muda de PC, este valor es lo
+/// único que hay que actualizar (ver `tailscale funnel status` en la máquina
+/// nueva).
 class OfficialServer {
   const OfficialServer._();
 
   static const String url = String.fromEnvironment(
     'HEARDY_OFFICIAL_SERVER_URL',
-    defaultValue: 'https://heardy-oficial.duckdns.org',
+    defaultValue: 'https://laptop-vmiof47a.tail939abb.ts.net',
   );
 
   static const String apiKey = String.fromEnvironment(

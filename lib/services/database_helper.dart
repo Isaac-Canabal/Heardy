@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'package:path/path.dart';
+import 'package:saf_util/saf_util.dart';
 import 'package:sqflite/sqflite.dart';
 import '../models/song.dart';
 import '../models/playlist.dart';
@@ -22,7 +23,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 12,
+      version: 13,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -87,6 +88,13 @@ class DatabaseHelper {
     // is a new table that happens to reuse the name.
     await db.execute(_createDownloadQueueSql);
     await db.execute(_createDownloadQueueIndexSql);
+
+    // Servidor oficial en un PC de casa: no siempre está prendido. Guarda una
+    // URL pegada mientras no se pudo ni siquiera resolver (el servidor no
+    // respondió) para reintentarla sola cuando vuelva a estar disponible. Ver
+    // CLAUDE.md, "Lista de espera".
+    await db.execute(_createPendingImportsSql);
+    await db.execute(_createPendingImportsIndexSql);
 
     // Create play_history table for statistics
     await db.execute('''
@@ -208,6 +216,14 @@ class DatabaseHelper {
         'ALTER TABLE download_queue ADD COLUMN metadataComplete INTEGER NOT NULL DEFAULT 0',
       );
     }
+    if (oldVersion < 13) {
+      // Lista de espera: una URL pegada cuando el servidor oficial (que ahora
+      // vive en un PC de casa, no siempre encendido) no respondió ni siquiera
+      // para el /resolve inicial. Se reintenta sola cuando el servidor vuelve
+      // a estar disponible — ver CLAUDE.md.
+      await db.execute(_createPendingImportsSql);
+      await db.execute(_createPendingImportsIndexSql);
+    }
   }
 
   /// Persisted so an in-progress batch survives the app being killed.
@@ -239,6 +255,26 @@ class DatabaseHelper {
   static const _createDownloadQueueIndexSql = '''
       CREATE UNIQUE INDEX IF NOT EXISTS idx_download_queue_job
         ON download_queue (sourceType, sourceId, playlistId)
+    ''';
+
+  /// Una URL pegada mientras el servidor no respondió ni al /resolve inicial
+  /// — antes de esto no hay ni id ni título, sólo lo que el usuario pegó y a
+  /// qué playlist lo quería mandar. Sin FK a `playlists` por la misma razón
+  /// que `download_queue`: si la playlist destino desaparece mientras se
+  /// espera, esta entrada debe fallar sola, no arrastrar nada en cascada.
+  static const _createPendingImportsSql = '''
+      CREATE TABLE IF NOT EXISTS pending_imports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        kind TEXT NOT NULL,
+        sourceUrl TEXT NOT NULL,
+        playlistId TEXT NOT NULL,
+        addedDate TEXT NOT NULL
+      )
+    ''';
+
+  static const _createPendingImportsIndexSql = '''
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_imports_job
+        ON pending_imports (sourceUrl, playlistId)
     ''';
 
   // --- SONGS CRUD ---
@@ -449,6 +485,17 @@ class DatabaseHelper {
     });
   }
 
+  /// Elimina la fila y, según proceda, el archivo real: `filePath` para una
+  /// descarga heredada en almacenamiento privado, `uri` (SAF `content://`)
+  /// para una canción importada o descargada dentro de la carpeta que el
+  /// usuario eligió. **Enmienda a D3/D2, 2026-08-03**: antes se dejaba el
+  /// archivo SAF intacto a propósito ("Heardy no borra los archivos del
+  /// usuario"), pero eso hacía que "eliminar canción" no eliminara nada
+  /// visible desde fuera de la app — confuso para el propio usuario, que
+  /// gestiona esta carpeta como el mecanismo real de almacenamiento. D3 sigue
+  /// vigente para todo lo demás (mover entre playlists nunca toca el disco);
+  /// esto es específicamente sobre una eliminación explícita pedida por el
+  /// usuario, no una reorganización silenciosa.
   Future<void> deleteSong(String songId) async {
     final db = await database;
     final song = await getSongById(songId);
@@ -462,6 +509,15 @@ class DatabaseHelper {
         }
       } catch (e) {
         print("Error deleting audio file: $e");
+      }
+
+      // 1b. Físicamente, el archivo real en la carpeta SAF, si lo hay.
+      if (song.uri != null && song.uri!.isNotEmpty) {
+        try {
+          await SafUtil().delete(song.uri!, false);
+        } catch (e) {
+          print("Error deleting SAF audio file: $e");
+        }
       }
 
       // 2. Physically delete thumbnail file
@@ -796,6 +852,45 @@ class DatabaseHelper {
     );
   }
 
+  // --- LISTA DE ESPERA (pending_imports, schema v13) ---
+
+  /// Guarda una URL que no se pudo ni resolver porque el servidor no
+  /// respondió. Devuelve false si ya estaba (misma URL, misma playlist
+  /// destino) — el índice único hace el dedupe en la base.
+  Future<bool> addPendingImport({
+    required String kind,
+    required String sourceUrl,
+    required String playlistId,
+  }) async {
+    final db = await database;
+    final inserted = await db.insert(
+      'pending_imports',
+      {
+        'kind': kind,
+        'sourceUrl': sourceUrl,
+        'playlistId': playlistId,
+        'addedDate': DateTime.now().toIso8601String(),
+      },
+      conflictAlgorithm: ConflictAlgorithm.ignore,
+    );
+    return inserted != 0;
+  }
+
+  Future<List<Map<String, dynamic>>> getPendingImports() async {
+    final db = await database;
+    return db.query('pending_imports', orderBy: 'id ASC');
+  }
+
+  Future<void> removePendingImport(int id) async {
+    final db = await database;
+    await db.delete('pending_imports', where: 'id = ?', whereArgs: [id]);
+  }
+
+  Future<void> clearPendingImports() async {
+    final db = await database;
+    await db.delete('pending_imports');
+  }
+
   Future close() async {
     final db = await database;
     db.close();
@@ -952,15 +1047,18 @@ class DatabaseHelper {
       final songMaps = await txn.rawQuery('SELECT songId FROM playlist_songs WHERE playlistId = ?', [playlistId]);
       final songIds = songMaps.map((e) => e['songId'] as String).toList();
 
-      // Delete physical files for each song. Deliberately song.filePath, not
-      // playablePath: this may only ever delete a file Heardy itself owns
-      // (a legacy download in app-private storage, empty for imported
-      // songs) — the app must never delete the user's own file in their
-      // SAF-picked folder (D3, one-way sync).
+      // Delete physical files for each song — filePath for a legacy
+      // app-private download, uri (SAF) for anything imported/downloaded
+      // into the user's chosen folder. See the amendment note on
+      // [deleteSong]: this is an explicit user-requested deletion, not the
+      // scanner reorganizing files on its own.
       for (final id in songIds) {
         final song = await getSongById(id);
         if (song != null) {
           try { await File(song.filePath).delete(); } catch (_) {}
+          if (song.uri != null && song.uri!.isNotEmpty) {
+            try { await SafUtil().delete(song.uri!, false); } catch (_) {}
+          }
           try { if (song.artPath.isNotEmpty) await File(song.artPath).delete(); } catch (_) {}
         }
       }

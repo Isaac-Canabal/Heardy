@@ -73,6 +73,31 @@ class DownloadJob {
   String get displayTitle => title.isEmpty ? sourceId : title;
 }
 
+/// Una URL pegada cuando el servidor ni siquiera respondió al /resolve
+/// inicial — no hay título ni id todavía, sólo lo que el usuario pegó y a qué
+/// playlist lo quería mandar. Se reintenta sola (ver [DownloadProvider.
+/// retryPendingImports]) cuando el servidor vuelve a estar disponible.
+class PendingImport {
+  final int id;
+  final bool isPlaylist;
+  final String sourceUrl;
+  final String playlistId;
+
+  const PendingImport({
+    required this.id,
+    required this.isPlaylist,
+    required this.sourceUrl,
+    required this.playlistId,
+  });
+
+  factory PendingImport.fromRow(Map<String, dynamic> row) => PendingImport(
+        id: row['id'] as int,
+        isPlaylist: (row['kind'] ?? 'video') == 'playlist',
+        sourceUrl: (row['sourceUrl'] ?? '').toString(),
+        playlistId: (row['playlistId'] ?? '').toString(),
+      );
+}
+
 /// Un trabajo que se dio por perdido, para que la UI pueda contarlo. También
 /// se usa para avisar de una espera por cuota (ver [retryAfterSeconds]),
 /// donde el trabajo NO se pierde — sigue en la cola y se reintentará solo.
@@ -135,8 +160,31 @@ class DownloadProvider extends ChangeNotifier {
   /// fuera exacta.
   static const int _defaultQuotaWaitSeconds = 300;
 
+  /// Cuánto esperar antes de reintentar un trabajo que falló por
+  /// [DownloadSourceErrorKind.network] (el servidor no respondió en
+  /// absoluto). El servidor oficial ahora vive en un PC de casa que no
+  /// siempre está prendido (ver CLAUDE.md, sección "YouTube downloads" →
+  /// Etapa 10), así que a diferencia de [_backoff] (pensado para un corte de
+  /// red de segundos) esto no cuenta contra `maxAttempts`: el trabajo espera
+  /// indefinidamente, igual que uno que espera una cuota.
+  static const int _networkRetryWaitSeconds = 60;
+
+  /// Cuánto esperar antes de reintentar un trabajo bloqueado por el muro
+  /// anti-bot de YouTube específicamente ([DownloadSourceErrorKind.
+  /// antiBotBlocked], HTTP 503 — no [DownloadSourceErrorKind.extraction]
+  /// genérico, que sigue usando [_backoff]). La ventana medida es de
+  /// 20-40+ minutos (`docs/investigacion_muro_antibot.md`); 30 minutos es un
+  /// punto razonable dentro de ese rango, no una promesa exacta — si el
+  /// bloqueo sigue vivo, el mismo mecanismo simplemente lo vuelve a esperar
+  /// en la siguiente pasada. Tampoco cuenta contra `maxAttempts`: 3 intentos
+  /// de 45 segundos se agotarían muchísimo antes de que esto se despeje,
+  /// descartando de la cola canciones perfectamente descargables — que es
+  /// justo el hueco que este valor viene a cerrar.
+  static const int _antiBotBlockWaitSeconds = 1800;
+
   final DownloadService _service;
   final DatabaseHelper _db;
+  final DownloadSource _source;
 
   /// Se llama tras cada descarga con éxito. Es cómo la biblioteca se entera,
   /// sin que este provider tenga que conocer a MusicProvider.
@@ -144,12 +192,15 @@ class DownloadProvider extends ChangeNotifier {
 
   DownloadProvider({
     required DownloadService service,
+    required DownloadSource source,
     DatabaseHelper? db,
     this.onDownloadComplete,
   })  : _service = service,
+        _source = source,
         _db = db ?? DatabaseHelper.instance;
 
   List<DownloadJob> _queue = const [];
+  List<PendingImport> _pendingImports = const [];
   final List<DownloadFailure> _failures = [];
   DownloadJob? _current;
   DownloadPhase _phase = DownloadPhase.idle;
@@ -172,6 +223,7 @@ class DownloadProvider extends ChangeNotifier {
   Timer? _retryTimer;
 
   List<DownloadJob> get queue => List.unmodifiable(_queue);
+  List<PendingImport> get pendingImports => List.unmodifiable(_pendingImports);
   List<DownloadFailure> get failures => List.unmodifiable(_failures);
   DownloadJob? get current => _current;
   DownloadPhase get phase => _phase;
@@ -252,6 +304,105 @@ class DownloadProvider extends ChangeNotifier {
     final rows = await _db.getDownloadQueue();
     _queue = rows.map(DownloadJob.fromRow).toList();
     notifyListeners();
+  }
+
+  // --- Lista de espera ---
+  //
+  // Antes de que exista un DownloadJob hace falta un /resolve (o /playlist)
+  // que le dé título/id — y eso requiere que el servidor responda. Si no
+  // responde en absoluto ([DownloadSourceErrorKind.network]), no hay nada
+  // que encolar todavía: sólo la URL cruda y la playlist elegida quedan
+  // guardadas aquí hasta que el servidor vuelva a estar disponible.
+
+  Future<void> refreshPendingImports() async {
+    final rows = await _db.getPendingImports();
+    _pendingImports = rows.map(PendingImport.fromRow).toList();
+    notifyListeners();
+  }
+
+  Future<bool> addPendingImport({
+    required String sourceUrl,
+    required String playlistId,
+    required bool isPlaylist,
+  }) async {
+    final added = await _db.addPendingImport(
+      kind: isPlaylist ? 'playlist' : 'video',
+      sourceUrl: sourceUrl,
+      playlistId: playlistId,
+    );
+    await refreshPendingImports();
+    return added;
+  }
+
+  Future<void> removePendingImport(int id) async {
+    await _db.removePendingImport(id);
+    await refreshPendingImports();
+  }
+
+  /// Se llama cada vez que hay una señal razonable de que el servidor puede
+  /// estar arriba de nuevo (arranque en frío, o justo después de que un
+  /// `/resolve`/`/playlist` interactivo funcionó) — nunca por un polling
+  /// propio: este proyecto ya evita temporizadores que solo existen para
+  /// preguntar "¿ya volviste?" (ver `processQueue`).
+  ///
+  /// Se detiene en el primer [DownloadSourceErrorKind.network],
+  /// [DownloadSourceErrorKind.quotaExceeded] o [DownloadSourceErrorKind.
+  /// antiBotBlocked]: los tres significan "seguimos sin poder resolver nada
+  /// de verdad todavía" (servidor apagado, cuota propia, o el muro anti-bot
+  /// de YouTube), así que insistir con el resto de la lista en la misma
+  /// pasada sólo repetiría el mismo fallo. Cualquier otro error (404, formato
+  /// no soportado, etc.) sí es definitivo para esa URL puntual — se descarta
+  /// y se registra como un fallo más, igual que un trabajo de la cola normal.
+  Future<void> retryPendingImports() async {
+    await refreshPendingImports();
+    if (_pendingImports.isEmpty) return;
+
+    for (final pending in List<PendingImport>.of(_pendingImports)) {
+      try {
+        if (pending.isPlaylist) {
+          final playlist = await _source.resolvePlaylist(pending.sourceUrl);
+          await enqueuePlaylist(playlist, playlistId: pending.playlistId);
+        } else {
+          final track = await _source.resolve(pending.sourceUrl);
+          await enqueueTrack(track, playlistId: pending.playlistId, metadataComplete: true);
+        }
+        await _db.removePendingImport(pending.id);
+      } on DownloadSourceException catch (e) {
+        if (e.kind == DownloadSourceErrorKind.network ||
+            e.kind == DownloadSourceErrorKind.quotaExceeded ||
+            e.kind == DownloadSourceErrorKind.antiBotBlocked) {
+          break;
+        }
+        await _db.removePendingImport(pending.id);
+        _recordFailure(
+          DownloadJob(
+            queueId: -pending.id,
+            sourceType: 'youtube',
+            sourceId: pending.sourceUrl,
+            sourceUrl: pending.sourceUrl,
+            playlistId: pending.playlistId,
+            title: pending.sourceUrl,
+            artist: '',
+            album: null,
+            durationSeconds: 0,
+            thumbnailUrl: '',
+            expectedOrderIndex: null,
+            attempts: 0,
+            metadataComplete: false,
+          ),
+          e.userMessage,
+          permanent: true,
+        );
+      }
+    }
+
+    await refreshPendingImports();
+    // Se espera a que termine, a diferencia de cómo se llama a processQueue()
+    // desde la UI (fire-and-forget): retryPendingImports() en sí ya se llama
+    // sin esperar desde sus propios puntos de entrada (arranque en frío, el
+    // botón "Reintentar ahora"), así que no hace falta que además deje un
+    // processQueue() suelto corriendo por su cuenta.
+    await processQueue();
   }
 
   // --- Cancelar ---
@@ -462,6 +613,31 @@ class DownloadProvider extends ChangeNotifier {
 
   Future<void> _handleFailure(DownloadJob job, DownloadSourceException error) async {
     if (error.kind == DownloadSourceErrorKind.cancelled) return;
+
+    if (error.kind == DownloadSourceErrorKind.network) {
+      // El servidor oficial ahora vive en un PC de casa que puede estar
+      // apagado durante horas — muy por encima de lo que [_backoff] (pensado
+      // para un corte de red de segundos) puede cubrir sin gastar
+      // `maxAttempts`. Igual que una espera de cuota, esto no es un fallo del
+      // trabajo: se reintenta solo, indefinidamente, hasta que el servidor
+      // vuelva a responder.
+      final wait = const Duration(seconds: _networkRetryWaitSeconds);
+      _retryAfter[job.queueId] = DateTime.now().add(wait);
+      _recordFailure(job, error.userMessage, permanent: false, retryAfterSeconds: wait.inSeconds);
+      await refreshQueue();
+      return;
+    }
+
+    if (error.kind == DownloadSourceErrorKind.antiBotBlocked) {
+      // Mismo trato que `network`/`quotaExceeded`: no es un fallo del
+      // trabajo, así que no gasta `attempts`. La diferencia con `network` es
+      // sólo cuánto se espera — ver _antiBotBlockWaitSeconds.
+      final wait = const Duration(seconds: _antiBotBlockWaitSeconds);
+      _retryAfter[job.queueId] = DateTime.now().add(wait);
+      _recordFailure(job, error.userMessage, permanent: false, retryAfterSeconds: wait.inSeconds);
+      await refreshQueue();
+      return;
+    }
 
     if (error.kind == DownloadSourceErrorKind.quotaExceeded) {
       // El límite de peticiones del propio servidor no es un fallo del

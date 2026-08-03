@@ -120,6 +120,18 @@ enum DownloadSourceErrorKind {
   /// docs/arquitectura_servidor_hibrido.md, sección 5.
   quotaExceeded,
 
+  /// El muro anti-bot de YouTube específicamente ("Sign in to confirm you're
+  /// not a bot"), distinto de [extraction] genérico (HTTP 503, no 502 — ver
+  /// `server/app/ytdlp_client.py`'s `AntiBotBlockError`). Temporal, pero con
+  /// una ventana de recuperación medida en **20-40+ minutos**
+  /// (`docs/investigacion_muro_antibot.md`), no los segundos que basta
+  /// esperar tras un [extraction] cualquiera — el backoff corto de la cola
+  /// se agotaría mucho antes de que esto se despeje, descartando de la cola
+  /// canciones perfectamente descargables. Igual que con [quotaExceeded],
+  /// nunca se inventa un tiempo exacto acá: no hay `Retry-After` real que
+  /// mandar, sólo el rango medido.
+  antiBotBlocked,
+
   /// El usuario canceló.
   cancelled,
 }
@@ -146,7 +158,8 @@ class DownloadSourceException implements Exception {
   bool get isRetryable =>
       kind == DownloadSourceErrorKind.network ||
       kind == DownloadSourceErrorKind.extraction ||
-      kind == DownloadSourceErrorKind.quotaExceeded;
+      kind == DownloadSourceErrorKind.quotaExceeded ||
+      kind == DownloadSourceErrorKind.antiBotBlocked;
 
   /// Mensaje para enseñar al usuario, ya en el idioma de la app.
   String get userMessage => switch (kind) {
@@ -164,6 +177,11 @@ class DownloadSourceException implements Exception {
         DownloadSourceErrorKind.quotaExceeded => retryAfterSeconds != null
             ? 'Límite del servidor alcanzado. Probá de nuevo en ${_formatRetryAfter(retryAfterSeconds!)}'
             : 'Límite del servidor alcanzado. Probá de nuevo más tarde',
+        // Sin número: el rango de 20-40 min es lo único medido de verdad
+        // (docs/investigacion_muro_antibot.md), inventar una cifra exacta
+        // sería mentirle al usuario. Se reintenta solo igual.
+        DownloadSourceErrorKind.antiBotBlocked =>
+          'YouTube bloqueó temporalmente al servidor. Puede tardar entre 20 y 40 minutos; se reintentará solo',
         DownloadSourceErrorKind.cancelled => 'Descarga cancelada',
       };
 

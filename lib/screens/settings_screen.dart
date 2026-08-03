@@ -12,18 +12,32 @@ import '../services/ytdlp_server_source.dart';
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
 
-  Future<String> _calculateStorageUsage() async {
+  /// El audio real de las canciones importadas o descargadas vive en la
+  /// carpeta SAF que eligió el usuario, no en un `File` que `dart:io` pueda
+  /// leer (D1) — antes esto sólo sumaba `File(song.filePath)`, que para esas
+  /// canciones está vacío, así que el número mostrado ignoraba casi todo lo
+  /// que realmente ocupa espacio. Se suma aparte: el tamaño real de la
+  /// carpeta (vía SAF) más lo que sigue siendo legítimamente un `File` —
+  /// descargas heredadas pre-pivot y las miniaturas, que siempre viven en
+  /// almacenamiento privado sin importar el origen de la canción (D5).
+  Future<String> _calculateStorageUsage(String? libraryRootUri) async {
     try {
-      final songs = await DatabaseHelper.instance.getSongs();
       int totalBytes = 0;
 
+      if (libraryRootUri != null) {
+        totalBytes += await StorageService().calculateLibrarySize(libraryRootUri);
+      }
+
+      final songs = await DatabaseHelper.instance.getSongs();
       for (final song in songs) {
-        try {
-          final audioFile = File(song.filePath);
-          if (await audioFile.exists()) {
-            totalBytes += await audioFile.length();
-          }
-        } catch (_) {}
+        if (song.uri == null || song.uri!.isEmpty) {
+          try {
+            final audioFile = File(song.filePath);
+            if (await audioFile.exists()) {
+              totalBytes += await audioFile.length();
+            }
+          } catch (_) {}
+        }
 
         try {
           if (song.artPath.isNotEmpty) {
@@ -103,7 +117,8 @@ class SettingsScreen extends StatelessWidget {
             decoration: AppTheme.glassCard(),
             padding: const EdgeInsets.all(16),
             child: FutureBuilder<String>(
-              future: _calculateStorageUsage(),
+              key: ValueKey(musicProvider.libraryRootUri),
+              future: _calculateStorageUsage(musicProvider.libraryRootUri),
               builder: (context, snapshot) {
                 final storage = snapshot.data ?? 'Calculando...';
                 return Column(

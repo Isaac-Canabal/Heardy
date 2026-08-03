@@ -236,7 +236,7 @@ void main() {
           _yt('match1', durationSeconds: 214, title: 'Total Eclipse of the Heart', artist: 'Canal Oficial'),
         ];
       final musicProvider = MusicProvider();
-      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db);
+      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db, source: source);
       addTearDown(downloadProvider.dispose);
 
       await pumpImportScreen(
@@ -275,7 +275,7 @@ void main() {
           _yt('match1', durationSeconds: 214, title: 'Coincidencia Buena', artist: 'Canal Oficial'),
         ];
       final musicProvider = MusicProvider();
-      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db);
+      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db, source: source);
       addTearDown(downloadProvider.dispose);
 
       await pumpImportScreen(
@@ -326,7 +326,7 @@ void main() {
           _yt('lejano', durationSeconds: 13, title: 'Cover De Otra Cosa', artist: 'Canal'),
         ];
       final musicProvider = MusicProvider();
-      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db);
+      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db, source: source);
       addTearDown(downloadProvider.dispose);
 
       await pumpImportScreen(
@@ -366,7 +366,7 @@ void main() {
           _yt('mala-yt', durationSeconds: 13, title: 'Otra Cosa', artist: 'Canal B'),
         ];
       final musicProvider = MusicProvider();
-      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db);
+      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db, source: source);
       addTearDown(downloadProvider.dispose);
 
       await pumpImportScreen(
@@ -406,7 +406,7 @@ void main() {
         ..nextError = Exception('URL de Spotify no válida: https://open.spotify.com/track/roto');
       final source = _FakeDownloadSource();
       final musicProvider = MusicProvider();
-      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db);
+      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db, source: source);
       addTearDown(downloadProvider.dispose);
 
       await pumpImportScreen(

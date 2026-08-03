@@ -120,6 +120,12 @@ class YtdlpServerSource implements DownloadSource {
           detail,
           retryAfterSeconds: int.tryParse((retryAfterHeader ?? '').trim()),
         );
+      case 503:
+        // El servidor distingue el muro anti-bot de YouTube de un 502
+        // genérico (ver `AntiBotBlockError` en el servidor) precisamente para
+        // que la cola le dé un trato distinto: minutos de espera real, no el
+        // backoff corto de un 502 cualquiera.
+        throw DownloadSourceException(DownloadSourceErrorKind.antiBotBlocked, detail);
       default:
         throw DownloadSourceException(
           DownloadSourceErrorKind.extraction,

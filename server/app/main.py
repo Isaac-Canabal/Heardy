@@ -74,9 +74,17 @@ def _extraction_error(exc: Exception) -> HTTPException:
     La distinción importa: el cliente reintenta un 502 y descarta un 404. Si
     todo saliera como 502, una canción borrada de YouTube consumiría el
     presupuesto de reintentos entero de la cola en cada arranque de la app.
+
+    El muro anti-bot (`AntiBotBlockError`) es un caso aparte dentro de lo
+    reintentable: sale como 503, no 502, para que el cliente sepa que esto
+    necesita minutos de espera real (20-40+, medido en
+    docs/investigacion_muro_antibot.md) y no el reintento corto que basta
+    para un 502 genérico.
     """
     if isinstance(exc, ytdlp_client.PermanentlyUnavailableError):
         return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
+    if isinstance(exc, ytdlp_client.AntiBotBlockError):
+        return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
     return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
 

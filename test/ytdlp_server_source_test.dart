@@ -204,6 +204,17 @@ void main() {
       );
     });
 
+    test('503 es antiBotBlocked, SÍ se reintenta pero distinto de un 502 genérico', () async {
+      final client = _FakeClient((_) async => _error(503, "Sign in to confirm you're not a bot"));
+      await expectLater(
+        _source(client).resolve('https://youtu.be/x'),
+        throwsA(isA<DownloadSourceException>()
+            .having((e) => e.kind, 'kind', DownloadSourceErrorKind.antiBotBlocked)
+            .having((e) => e.isRetryable, 'isRetryable', isTrue)
+            .having((e) => e.retryAfterSeconds, 'retryAfterSeconds', isNull)),
+      );
+    });
+
     test('429 es quotaExceeded, SÍ se reintenta y trae el Retry-After exacto del servidor', () async {
       final client = _FakeClient((_) async => http.StreamedResponse(
             Stream.value(utf8.encode(jsonEncode({'detail': 'límite alcanzado (per-key)'}))),

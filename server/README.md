@@ -261,30 +261,38 @@ docker compose pull                      # actualiza el sidecar de PO tokens
 docker compose up -d
 ```
 
-### Despliegue oficial (Oracle Cloud, TLS con Caddy)
+### Despliegue oficial (PC propio + Tailscale Funnel)
 
-Todo lo de arriba es exactamente lo mismo para el servidor oficial del
-proyecto — **no hay una segunda implementación**. La única diferencia es un
-tercer servicio, `caddy`, que da HTTPS automático y gratuito (Let's
-Encrypt) delante de `heardy-dl`, y que sólo tiene sentido con una IP pública
-real como la de una VM en la nube — por eso tiene `profiles: [official]` en
-`docker-compose.yml` y **no arranca con un `docker compose up -d` normal**,
-ni para un servidor personal ni por accidente:
+**Actualización 2026-08-03: se abandonó Oracle Cloud** (fricción de
+verificación de cuenta, tanto en Oracle como en Google Cloud — exactamente
+el riesgo que ya nombraba `../docs/arquitectura_servidor_hibrido.md` sección
+9.3). El servidor oficial pasa a correr en un PC de casa, igual que
+cualquier servidor personal — **no hay una segunda implementación, ni
+siquiera una segunda forma de arrancarla**: es el mismo
+`docker compose up -d` de siempre.
+
+Lo único que cambia es cómo se hace público: **Tailscale Funnel** expone el
+puerto `127.0.0.1:8080` de `heardy-dl` a internet con HTTPS automático (TLS
+de Tailscale, no Let's Encrypt/Caddy), sin abrir puertos en el router:
 
 ```bash
 cd server
-cp .env.example .env
-# Poné HEARDY_API_KEY (o HEARDY_API_KEYS con una clave por persona) y
-# HEARDY_OFFICIAL_DOMAIN=tu-hostname.duckdns.org (u otro proveedor de DNS
-# dinámico gratuito) apuntando ya a la IP pública de la VM.
-docker compose --profile official up -d --build
-curl -s https://tu-hostname.duckdns.org/health
+cp .env.example .env     # HEARDY_API_KEYS con una clave por persona, ver arriba
+docker compose up -d --build
+tailscale funnel 8080
 ```
 
-Ver `../docs/arquitectura_servidor_hibrido.md` (secciones 3 y 6) para el
-razonamiento completo: por qué Oracle Cloud Always Free, por qué DuckDNS en
-vez de un dominio propio, y las mitigaciones al hecho de que una IP de
-datacenter se bloquea más rápido que una residencial.
+`tailscale funnel status` muestra el hostname público
+(`https://<máquina>.<tailnet>.ts.net`) — es el mismo hostname para siempre
+mientras no cambies de máquina, así que va directo a
+`lib/services/official_server.dart` como valor por defecto de
+`OfficialServer.url`. `tailscale funnel` corre en el host, no en un
+contenedor — no toca `docker-compose.yml`.
+
+Con esto la IP de salida hacia YouTube es residencial, no de datacenter —
+justo la condición que la sección 1 de `arquitectura_servidor_hibrido.md`
+identifica como la que menos choca con el muro anti-bot. El costo real es
+el que ya se sabía: solo responde mientras el PC esté encendido.
 
 ---
 
@@ -308,11 +316,11 @@ datacenter se bloquea más rápido que una residencial.
 - **La caché baja a `.part-download` y renombra al final**, para que una
   descarga interrumpida no deje un archivo truncado que la siguiente petición
   dé por bueno.
-- **Caddy vive en `docker-compose.yml` con `profiles: [official]`, no en un
-  archivo separado.** Es una sola implementación de backend con dos formas
-  de arrancarla, no dos implementaciones: un servidor personal sigue siendo
-  `docker compose up -d`, exactamente como siempre, y Caddy ni se menciona a
-  menos que se pida el perfil `official` a propósito.
+- **El servidor oficial es exactamente el mismo `docker compose up -d` que
+  cualquier servidor personal.** Ya no hay Caddy ni un perfil `official` en
+  `docker-compose.yml` — la única diferencia entre "personal" y "oficial" es
+  que el segundo además corre `tailscale funnel 8080` en el host para ser
+  público. Una sola implementación de backend, cero ramas de despliegue.
 - **`/search` usa `extract_flat`**, una sola petición para N resultados en vez
   de una por vídeo. El coste es que `artist` sale del nombre del canal, que
   para un canal de recopilaciones no es el artista real. Por eso la app debe

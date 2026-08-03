@@ -96,6 +96,32 @@ class _FakeDownloadService implements DownloadService {
   noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
+/// DownloadSource falso, sólo para lo que necesita [DownloadProvider] fuera
+/// de [_FakeDownloadService]: resolver una URL de la lista de espera.
+class _FakeDownloadSource implements DownloadSource {
+  RemoteTrack? nextTrack;
+  RemotePlaylist? nextPlaylist;
+  DownloadSourceException? resolveError;
+  final List<String> resolvedUrls = [];
+
+  @override
+  Future<RemoteTrack> resolve(String url) async {
+    resolvedUrls.add(url);
+    if (resolveError != null) throw resolveError!;
+    return nextTrack ?? _track('resuelto-de-espera');
+  }
+
+  @override
+  Future<RemotePlaylist> resolvePlaylist(String url) async {
+    resolvedUrls.add(url);
+    if (resolveError != null) throw resolveError!;
+    return nextPlaylist!;
+  }
+
+  @override
+  noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
+}
+
 RemoteTrack _track(String id, {String title = 'Título', String artist = 'Artista'}) {
   return RemoteTrack(
     id: id,
@@ -122,6 +148,7 @@ void main() {
 
   setUp(() async {
     await db.clearDownloadQueue();
+    await db.clearPendingImports();
   });
 
   Future<String> newPlaylist(String name) async {
@@ -133,9 +160,11 @@ void main() {
   DownloadProvider providerFor(
     _FakeDownloadService service, {
     List<String>? completed,
+    DownloadSource? source,
   }) {
     final provider = DownloadProvider(
       service: service,
+      source: source ?? _FakeDownloadSource(),
       db: db,
       onDownloadComplete: (playlistId) async => completed?.add(playlistId),
     );
@@ -181,7 +210,7 @@ void main() {
         // El resolve va bien y la descarga falla, en la misma llamada: el
         // siguiente intento debe arrancar ya con la metadata definitiva.
         ..downloadErrors.add(
-          const DownloadSourceException(DownloadSourceErrorKind.network, 'se cayó la red'),
+          const DownloadSourceException(DownloadSourceErrorKind.extraction, 'IP bloqueada'),
         );
       final playlistId = await newPlaylist('Reintento');
       final provider = providerFor(service);
@@ -196,7 +225,7 @@ void main() {
       await provider.processQueue();
 
       final rows = await db.getDownloadQueue();
-      expect(rows.length, 1, reason: 'un error de red es reintentable, sigue en la cola');
+      expect(rows.length, 1, reason: 'un error de extracción es reintentable, sigue en la cola');
       expect(rows.first['metadataComplete'], 1);
       expect(rows.first['title'], 'Título Real');
       expect(rows.first['artist'], 'Artista Real');
@@ -285,7 +314,7 @@ void main() {
       for (var i = 0; i < 2; i++) {
         final service = _FakeDownloadService()
           ..downloadErrors.add(
-            const DownloadSourceException(DownloadSourceErrorKind.network, 'sin red'),
+            const DownloadSourceException(DownloadSourceErrorKind.extraction, 'IP bloqueada'),
           );
         final provider = providerFor(service);
         if (i == 0) {
@@ -301,7 +330,7 @@ void main() {
       // Tercer arranque: se agota el presupuesto y el trabajo se descarta.
       final service = _FakeDownloadService()
         ..downloadErrors.add(
-          const DownloadSourceException(DownloadSourceErrorKind.network, 'sin red'),
+          const DownloadSourceException(DownloadSourceErrorKind.extraction, 'IP bloqueada'),
         );
       final provider = providerFor(service);
       await provider.processQueue();
@@ -309,6 +338,119 @@ void main() {
       expect(await db.getDownloadQueue(), isEmpty);
       expect(provider.failures.single.permanent, isFalse,
           reason: 'se agotaron los reintentos, pero el vídeo no es imposible');
+    });
+  });
+
+  group('servidor apagado (error de red)', () {
+    test('un error de red no cuenta como intento y se reintenta indefinidamente', () async {
+      final service = _FakeDownloadService()
+        ..downloadErrors.add(
+          const DownloadSourceException(DownloadSourceErrorKind.network, 'no se pudo contactar'),
+        );
+      final playlistId = await newPlaylist('ServidorApagado');
+      final provider = providerFor(service);
+
+      await provider.enqueueTrack(_track('pc-apagada'), playlistId: playlistId, metadataComplete: true);
+      await provider.processQueue();
+
+      final rows = await db.getDownloadQueue();
+      expect(rows.length, 1, reason: 'el trabajo nunca se descarta porque el servidor no respondió');
+      expect(rows.first['attempts'], 0,
+          reason: 'un servidor apagado no es un fallo del trabajo: no debe gastar el presupuesto de reintentos');
+      expect(provider.failures.single.permanent, isFalse);
+      expect(provider.failures.single.retryAfterSeconds, isNotNull);
+    });
+  });
+
+  group('muro anti-bot (503)', () {
+    test('un bloqueo del muro no cuenta como intento y se reintenta con espera larga, no el backoff corto', () async {
+      final service = _FakeDownloadService()
+        ..downloadErrors.add(
+          const DownloadSourceException(DownloadSourceErrorKind.antiBotBlocked, "Sign in to confirm you're not a bot"),
+        );
+      final playlistId = await newPlaylist('MuroAntibot');
+      final provider = providerFor(service);
+
+      await provider.enqueueTrack(_track('bloqueada'), playlistId: playlistId, metadataComplete: true);
+      await provider.processQueue();
+
+      final rows = await db.getDownloadQueue();
+      expect(rows.length, 1, reason: 'el muro anti-bot no descarta la canción, sólo hay que esperar más');
+      expect(rows.first['attempts'], 0,
+          reason: 'igual que quotaExceeded/network, no es un fallo del trabajo: no gasta presupuesto de reintentos');
+      expect(provider.failures.single.permanent, isFalse);
+      expect(provider.failures.single.retryAfterSeconds, 1800,
+          reason: 'espera fija de 30 min, no el backoff de 5/15/45s pensado para un 502 cualquiera');
+      expect(provider.failures.single.message, contains('20 y 40 minutos'));
+
+      // Una segunda pasada inmediata no debe reintentar: sigue dentro de la
+      // ventana de 30 minutos.
+      await provider.processQueue();
+      expect(service.calls.length, 1);
+    });
+  });
+
+  group('lista de espera', () {
+    test('una URL guardada se resuelve, se encola y se descarga en cuanto el servidor responde', () async {
+      final playlistId = await newPlaylist('Espera');
+      final source = _FakeDownloadSource()..nextTrack = _track('resuelta');
+      final service = _FakeDownloadService();
+      final provider = providerFor(service, source: source);
+
+      final added = await provider.addPendingImport(
+        sourceUrl: 'https://youtu.be/resuelta',
+        playlistId: playlistId,
+        isPlaylist: false,
+      );
+      expect(added, isTrue);
+      expect(provider.pendingImports, hasLength(1));
+
+      // retryPendingImports() resuelve, encola Y procesa la cola de punta a
+      // punta — por eso, con el fake de descarga en su modo por defecto (sin
+      // errores configurados), la cola termina vacía: el trabajo no se quedó
+      // esperando, se completó.
+      await provider.retryPendingImports();
+
+      expect(provider.pendingImports, isEmpty, reason: 'ya se resolvió, no debe quedar en espera');
+      expect(await db.getDownloadQueue(), isEmpty, reason: 'la descarga se completó, no quedó pendiente');
+      expect(service.calls.single.track.id, 'resuelta');
+      expect(service.calls.single.resolveFirst, isFalse,
+          reason: '/resolve ya dio la metadata definitiva, no hace falta repetirlo (DD6)');
+    });
+
+    test('si el servidor sigue sin responder, la URL se queda en la lista de espera', () async {
+      final playlistId = await newPlaylist('SigueApagado');
+      final source = _FakeDownloadSource()
+        ..resolveError = const DownloadSourceException(DownloadSourceErrorKind.network, 'sigue apagado');
+      final provider = providerFor(_FakeDownloadService(), source: source);
+
+      await provider.addPendingImport(
+        sourceUrl: 'https://youtu.be/todavia-no',
+        playlistId: playlistId,
+        isPlaylist: false,
+      );
+      await provider.retryPendingImports();
+
+      expect(provider.pendingImports, hasLength(1), reason: 'sigue sin poder resolverse, no se descarta');
+      expect(await db.getDownloadQueue(), isEmpty);
+    });
+
+    test('un fallo definitivo (no de red) se descarta de la lista de espera', () async {
+      final playlistId = await newPlaylist('UrlRota');
+      final source = _FakeDownloadSource()
+        ..resolveError = const DownloadSourceException(DownloadSourceErrorKind.notFound, 'ya no existe');
+      final provider = providerFor(_FakeDownloadService(), source: source);
+
+      await provider.addPendingImport(
+        sourceUrl: 'https://youtu.be/borrado-hace-rato',
+        playlistId: playlistId,
+        isPlaylist: false,
+      );
+      await provider.retryPendingImports();
+
+      expect(provider.pendingImports, isEmpty,
+          reason: 'un 404 no se arregla con que el servidor vuelva: no tiene sentido dejarlo esperando para siempre');
+      expect(provider.failures.single.permanent, isTrue);
     });
   });
 

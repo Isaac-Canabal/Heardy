@@ -51,17 +51,37 @@ class PermanentlyUnavailableError(Exception):
     """
 
 
-#: Para capturar ambos de una vez donde el manejo es común.
+class AntiBotBlockError(ExtractionError):
+    """El muro anti-bot de YouTube específicamente ("sign in to confirm
+    you're not a bot"), no un 502 genérico.
+
+    Sigue siendo temporal — por eso SÍ hereda de [ExtractionError], a
+    diferencia de [PermanentlyUnavailableError]: todo lo que ya atrapa
+    `EXTRACTION_ERRORS` lo sigue haciendo sin tocar nada. La diferencia es la
+    ventana de recuperación: `docs/investigacion_muro_antibot.md` la mide en
+    **20-40+ minutos**, no los segundos que basta esperar tras un corte de
+    red cualquiera. Sale como HTTP 503 (no 502) para que el cliente pueda
+    darle un trato distinto — esperar de verdad, no gastar su presupuesto de
+    reintentos cortos en algo que no va a despejarse en 45 segundos.
+    """
+
+
+#: Para capturar ambos de una vez donde el manejo es común. AntiBotBlockError
+#: ya cae en ExtractionError, así que no hace falta nombrarlo aparte aquí.
 EXTRACTION_ERRORS = (ExtractionError, PermanentlyUnavailableError)
 
+# Frase con la que yt-dlp señala el muro anti-bot específicamente. Se compara
+# en minúsculas, igual que _PERMANENT_MARKERS.
+_ANTIBOT_MARKER = "sign in to confirm you're not a bot"
 
 # Frases con las que yt-dlp señala que el problema es del vídeo y no del
 # momento. Se comparan en minúsculas contra el mensaje completo.
 #
 # Ojo con lo que NO está aquí: "sign in to confirm you're not a bot" es un
-# bloqueo de IP, o sea temporal, y meterlo en esta lista haría que la cola
-# descartara canciones perfectamente descargables. Es justo el error que más
-# se parece a uno permanente sin serlo.
+# bloqueo de IP, o sea temporal (ver _ANTIBOT_MARKER arriba), y meterlo en
+# esta lista haría que la cola descartara canciones perfectamente
+# descargables. Es justo el error que más se parece a uno permanente sin
+# serlo.
 _PERMANENT_MARKERS = (
     "video unavailable",
     "this video is unavailable",
@@ -90,6 +110,8 @@ def _classify(message: str) -> Exception:
     for marker in _PERMANENT_MARKERS:
         if marker in lowered:
             return PermanentlyUnavailableError(message)
+    if _ANTIBOT_MARKER in lowered:
+        return AntiBotBlockError(message)
     return ExtractionError(message)
 
 

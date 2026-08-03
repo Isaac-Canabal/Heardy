@@ -68,6 +68,7 @@ void main() async {
   );
   final downloadProvider = DownloadProvider(
     service: DownloadService(source: downloadSource),
+    source: downloadSource,
     // Así se entera la biblioteca de una descarga nueva sin que
     // DownloadProvider tenga que conocer a MusicProvider.
     onDownloadComplete: (playlistId) async {
@@ -104,6 +105,10 @@ void main() async {
     // vive en SQLite justamente para esto; si está vacía, processQueue sale
     // enseguida sin hacer nada.
     downloadProvider.processQueue();
+    // El servidor oficial vive en un PC de casa, no siempre encendido: cada
+    // arranque en frío es una oportunidad razonable de comprobar si ya volvió
+    // y resolver solo lo que quedó en la lista de espera.
+    downloadProvider.retryPendingImports();
   });
 }
 

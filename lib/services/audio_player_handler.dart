@@ -627,7 +627,21 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
       // usuario deslice la app fuera de recientes — que es exactamente cuando
       // salta este callback. En ese caso reabrir la app daba un reproductor
       // muerto hasta forzar el cierre.
-      await _player.stop();
+      //
+      // **2026-08-03: `stop()` (el método de este handler), no
+      // `_player.stop()` directo.** Llamar sólo al player saltaba
+      // `super.stop()` — el propio `stop()` de audio_service, que es quien
+      // realmente da de baja la sesión de medios y el servicio en foreground
+      // ante Android. Sospecha fundada, no confirmada en un dispositivo real
+      // todavía: sin ese aviso, la sesión de medios puede quedar registrada
+      // como "activa" incluso si el proceso muere después — y si Android no
+      // la limpia a tiempo, el siguiente arranque en frío puede colgarse
+      // esperando a `AudioService.init()` mientras intenta crear una sesión
+      // nueva sobre una que el sistema todavía cree viva. Coincide con el
+      // síntoma reportado: la app se congela al iniciar y sólo se resuelve
+      // forzando el cierre (que sí mata el proceso viejo de verdad) y
+      // reabriendo. Pendiente de confirmar en hardware real.
+      await stop();
     } catch (e) {
       print("Error stopping player on task remove: $e");
     }

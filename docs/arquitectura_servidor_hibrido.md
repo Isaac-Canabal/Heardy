@@ -1,10 +1,47 @@
 # Arquitectura híbrida del servidor de descargas (oficial + personalizado)
 
-> Documento de arquitectura, agosto 2026. No implementado todavía — ver
-> `CLAUDE.md`, sección "YouTube downloads", para el estado real del código
-> en `feature/youtube-downloads` en el momento de escribir esto. Este
-> archivo es la propuesta a validar antes de tocar código; no reemplaza
-> ninguna decisión ya asentada en `CLAUDE.md`.
+> Documento de arquitectura, agosto 2026. Ver `CLAUDE.md`, sección "YouTube
+> downloads", para el estado real del código en `feature/youtube-downloads`.
+
+## Actualización 2026-08-03 — Oracle Cloud descartado, PC propio + Tailscale Funnel en su lugar
+
+Las secciones 2 y 3 de abajo recomendaban Oracle Cloud Always Free y quedan
+como registro de por qué se llegó ahí, pero **no son la decisión vigente**.
+En la práctica no se pudo dar de alta ni Oracle Cloud ni Google Cloud —
+fricción de verificación de cuenta, exactamente el riesgo que la sección
+9.3 ya nombraba antes de intentarlo (*"Oracle es conocido por fricciones de
+verificación"*).
+
+La alternativa elegida es la fila **"Servidor casero + túnel"** de la tabla
+comparativa (sección 2) — descartada en su momento por preferencia de
+"quiero nube, no casero", no por ningún motivo técnico. Con **Tailscale
+Funnel** como mecanismo de túnel (HTTPS público automático, sin abrir
+puertos ni tocar el router; ya recomendado en `server/README.md` para uso
+personal):
+
+- **Es técnicamente mejor contra el hallazgo de la sección 1, no peor.** La
+  IP de salida hacia YouTube pasa a ser residencial — la única categoría
+  que la sección 1 mide sin el problema de bloqueo elevado de las IPs de
+  datacenter. Todas las mitigaciones ahí descritas (rate limiting, caché,
+  PO-provider sincronizado) se quedan, pero ahora atacan un problema que ya
+  era más raro de por sí.
+- **El costo real es el que ya se sabía de entrada:** el servidor oficial
+  solo responde mientras el PC de casa esté encendido. Aceptado
+  explícitamente por decisión del usuario.
+- **Caddy + DuckDNS (sección 3) ya no existen** — `server/docker-compose.yml`
+  no tiene servicio `caddy` ni perfil `official`; el servidor oficial es
+  literalmente el mismo `docker compose up -d` que cualquier servidor
+  personal. Tailscale Funnel corre en el host, no en un contenedor, y da su
+  propio TLS — no hace falta Let's Encrypt ni un hostname de DNS dinámico.
+- **`OfficialServer.url`** (`lib/services/official_server.dart`) apunta al
+  hostname que asigna Tailscale Funnel (`https://<máquina>.<tailnet>.ts.net`,
+  ver `tailscale funnel status`), no a un dominio DuckDNS.
+
+El resto de este documento (secciones 1, 5, 6, 7, 9) sigue vigente sin
+cambios — rate limiting, claves por usuario, y el análisis del muro
+anti-bot no dependen de qué proveedor aloja la VM/PC. Solo las secciones 2
+(comparativa) y 3 (recomendación Oracle+Caddy+DuckDNS) quedan como registro
+histórico de una decisión que no sobrevivió el contacto con la realidad.
 
 ## Contexto
 
@@ -213,6 +250,13 @@ distinguible (mantener el 502 actual, o pasar a 503 para separarlo
 claramente de un 5xx genérico) y que el cliente muestre un rango
 aproximado basado en lo medido ("puede tardar entre 20 y 40 minutos, según
 lo que ya observamos"), nunca una cuenta regresiva exacta.
+
+**Implementado 2026-08-03**, a raíz de una tanda grande (60+ canciones)
+mostrando exactamente el problema que esta sección predecía: `ytdlp_client.
+_classify` reconoce el mensaje del muro y lo separa en `AntiBotBlockError`
+(503); el cliente lo mapea a `DownloadSourceErrorKind.antiBotBlocked` con
+una espera fija de 30 minutos (dentro del rango medido, no una promesa) que
+no gasta `maxAttempts` — ver CLAUDE.md, sección "Download pipeline", punto 6.
 
 ### 5.3 Cambios necesarios, a nivel de diseño (no de código todavía)
 

@@ -113,6 +113,40 @@ class StorageService {
 
   Future<List<SafDocumentFile>> listChildren(String uri) => _safUtil.list(uri);
 
+  /// Suma el tamaño real de todo lo que hay en la carpeta de biblioteca: los
+  /// archivos sueltos en la raíz (a la espera de asignación en la Bandeja)
+  /// más el contenido de cada subcarpeta de playlist. No baja más de un
+  /// nivel — la propia estructura que la app gestiona (`Heardy/<Playlist>/`)
+  /// no tiene más, y [LibraryScanService] tampoco soporta subcarpetas
+  /// anidadas, así que esto no debería contarlas de todas formas.
+  ///
+  /// `dart:io` no puede leer esta carpeta (D1): es `content://`, no un path
+  /// de archivo. Por eso Ajustes no puede simplemente sumar `File(...).length()`
+  /// como hacía antes de la migración a SAF — eso sólo veía las descargas
+  /// heredadas en almacenamiento privado, nunca lo que realmente ocupa
+  /// espacio hoy.
+  Future<int> calculateLibrarySize(String rootUri) async {
+    var total = 0;
+    try {
+      final rootChildren = await _safUtil.list(rootUri);
+      for (final entry in rootChildren) {
+        if (entry.isDir) {
+          try {
+            final children = await _safUtil.list(entry.uri);
+            for (final child in children) {
+              if (!child.isDir && child.length > 0) total += child.length;
+            }
+          } catch (_) {}
+        } else if (entry.length > 0) {
+          total += entry.length;
+        }
+      }
+    } catch (e) {
+      print('StorageService: no se pudo calcular el tamaño de $rootUri: $e');
+    }
+    return total;
+  }
+
   Future<SafDocumentFile?> _findChildDir(String parentUri, String name) async {
     try {
       final child = await _safUtil.child(parentUri, [name]);

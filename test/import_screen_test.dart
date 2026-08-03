@@ -273,7 +273,7 @@ void main() {
 
       final source = _FakeDownloadSource();
       final musicProvider = MusicProvider();
-      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db);
+      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db, source: source);
       addTearDown(downloadProvider.dispose);
 
       await pumpImportScreen(
@@ -294,7 +294,7 @@ void main() {
 
       final source = _FakeDownloadSource();
       final musicProvider = MusicProvider();
-      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db);
+      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db, source: source);
       addTearDown(downloadProvider.dispose);
 
       await pumpImportScreen(
@@ -310,7 +310,7 @@ void main() {
       await setUpEnvironment();
       final source = _FakeDownloadSource()..nextTrack = _track();
       final musicProvider = MusicProvider();
-      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db);
+      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db, source: source);
       addTearDown(downloadProvider.dispose);
 
       await pumpImportScreen(
@@ -338,7 +338,7 @@ void main() {
           entries: [_track(id: 'a'), _track(id: 'b'), _track(id: 'c')],
         );
       final musicProvider = MusicProvider();
-      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db);
+      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db, source: source);
       addTearDown(downloadProvider.dispose);
 
       await pumpImportScreen(
@@ -367,7 +367,7 @@ void main() {
           'Video unavailable',
         );
       final musicProvider = MusicProvider();
-      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db);
+      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db, source: source);
       addTearDown(downloadProvider.dispose);
 
       await pumpImportScreen(
@@ -397,6 +397,7 @@ void main() {
         final downloadProvider = DownloadProvider(
           service: DownloadService(source: source),
           db: db,
+          source: source,
           onDownloadComplete: (id) async {
             await musicProvider.loadPlaylists();
             await musicProvider.loadSongsForPlaylist(id, updateCurrent: false);
@@ -449,7 +450,7 @@ void main() {
       await setUpEnvironment();
       final source = _FakeDownloadSource()..nextTrack = _track(id: 'nueva1');
       final musicProvider = MusicProvider();
-      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db);
+      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db, source: source);
       addTearDown(downloadProvider.dispose);
 
       await pumpImportScreen(
@@ -508,7 +509,7 @@ void main() {
             entries: entries,
           );
         final musicProvider = MusicProvider();
-        final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db);
+        final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db, source: source);
         addTearDown(downloadProvider.dispose);
 
         await pumpImportScreen(
@@ -563,7 +564,7 @@ void main() {
       final playlistId = await newPlaylist('ConCola');
       final source = _FakeDownloadSource();
       final musicProvider = MusicProvider();
-      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db);
+      final downloadProvider = DownloadProvider(service: DownloadService(source: source), db: db, source: source);
       addTearDown(downloadProvider.dispose);
 
       // Encolamos directo por el provider (sin pasar por el flujo de

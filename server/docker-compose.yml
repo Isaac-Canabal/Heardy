@@ -25,34 +25,5 @@ services:
     expose:
       - "4416"
 
-  # TLS gratuito y automático (Let's Encrypt) delante de heardy-dl — sólo
-  # para el despliegue OFICIAL en una VM con IP pública real (Oracle Cloud
-  # Always Free, ver docs/arquitectura_servidor_hibrido.md sección 3). Un
-  # servidor personal en Tailscale/LAN no lo necesita: este servicio tiene
-  # `profiles: [official]` a propósito, así que `docker compose up -d` (el
-  # comando de siempre, para todo el mundo) NUNCA lo arranca por sí solo.
-  # Sólo entra en juego con `docker compose --profile official up -d`.
-  caddy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    profiles: ["official"]
-    environment:
-      # Falla al arrancar si falta, en vez de servir sin dominio: sin esto
-      # Caddy no sabe para qué hostname pedir el certificado.
-      HEARDY_OFFICIAL_DOMAIN: ${HEARDY_OFFICIAL_DOMAIN:?Definí HEARDY_OFFICIAL_DOMAIN en .env (el hostname público, p. ej. de DuckDNS)}
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      - heardy-dl
-
 volumes:
   heardy-cache:
-  # Certificados de Let's Encrypt: sólo se usan (y sólo se crean) con el
-  # perfil "official" activo.
-  caddy-data:
-  caddy-config:

@@ -132,6 +132,7 @@ void main() {
     final provider = DownloadProvider(
       service: DownloadService(source: source),
       db: db,
+      source: source,
       onDownloadComplete: (id) async => completed.add(id),
     );
     addTearDown(provider.dispose);
@@ -223,6 +224,7 @@ void main() {
     final provider = DownloadProvider(
       service: DownloadService(source: source),
       db: db,
+      source: source,
     );
     addTearDown(provider.dispose);
 
