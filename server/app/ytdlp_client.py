@@ -127,6 +127,16 @@ def _base_opts() -> dict:
         "noprogress": True,
         "skip_download": True,
         "extract_flat": False,
+        # Sin esto, yt-dlp carga ~1800 extractores incluido el genérico
+        # (GenericIE), que hace fetch de CUALQUIER URL http(s) — un cliente
+        # autenticado podría usar /resolve o /playlist como proxy SSRF hacia
+        # la red local del servidor (router, otros peers de Tailscale, el
+        # propio proveedor de PO Tokens en loopback). Restringir a los
+        # extractores de YouTube cierra esa vía sin tocar la validación de
+        # host, que es la otra mitad del arreglo.
+        # Regex, no nombres exactos, para no romperse si yt-dlp renombra
+        # extractores en una actualización futura.
+        "allowed_extractors": ["youtube.*"],
         # El sidecar que genera PO Tokens. Sin esto, YouTube devuelve 403 en
         # la mayoría de clientes desde 2025.
         "extractor_args": {
