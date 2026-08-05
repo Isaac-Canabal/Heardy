@@ -8,6 +8,7 @@ import logging
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
@@ -56,9 +57,60 @@ _extraction_semaphore = asyncio.Semaphore(config.MAX_CONCURRENT_EXTRACTIONS)
 
 _VIDEO_ID_RE = re.compile(r"^[A-Za-z0-9_-]{5,32}$")
 
+# Allowlist exacta de hosts, no blocklist de rangos IP: restringir los
+# extractores de yt-dlp (ver ytdlp_client._base_opts) cierra la mitad "qué
+# puede hacer yt-dlp" del SSRF, pero /resolve y /playlist seguían pudiendo
+# recibir cualquier URL http(s) y pasársela sin mirar — confirmado en vivo
+# contra http://127.0.0.1:4416/ping (el proveedor de PO Tokens, en el mismo
+# host) antes de este cambio. Esta es la otra mitad: ninguna URL sale del
+# proceso hacia una red que no sea la de YouTube.
+#
+# Deliberadamente sin resolución DNS ni validación de rangos IP: getaddrinfo
+# es una llamada síncrona que bloquearía el bucle de eventos de FastAPI, y
+# con una allowlist exacta de hosts es redundante — no hay ningún host de
+# esta lista que pueda resolver a una IP privada de forma legítima.
+_ALLOWED_URL_HOSTS = frozenset(
+    {
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "youtu.be",
+        "music.youtube.com",
+        "youtube-nocookie.com",
+        "www.youtube-nocookie.com",
+    }
+)
+
+
+def is_allowed_youtube_url(url: str) -> tuple[bool, str]:
+    """(permitida, motivo). El motivo es solo para el log — nunca se manda
+    al cliente, para no darle un oráculo que distinga "esquema malo" de
+    "host no permitido" de "URL rota"."""
+    try:
+        parsed = urlparse(url)
+    except ValueError as e:
+        return False, f"URL no parseable: {e}"
+    if parsed.scheme not in ("http", "https"):
+        return False, f"esquema no permitido: {parsed.scheme!r}"
+    host = (parsed.hostname or "").lower()
+    if host not in _ALLOWED_URL_HOSTS:
+        return False, f"host no permitido: {host!r}"
+    return True, ""
+
 
 class UrlRequest(BaseModel):
     url: str = Field(min_length=5, max_length=2048)
+
+
+def _require_allowed_url(url: str) -> None:
+    """Aborta con 400 si `url` no apunta a un host de YouTube permitido.
+
+    Corre ANTES de cualquier llamada de red — ni yt-dlp ni httpx ven la URL
+    si esto no la deja pasar."""
+    allowed, reason = is_allowed_youtube_url(url)
+    if not allowed:
+        log.warning("URL rechazada (%s): %s", reason, url)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="URL no válida")
 
 
 async def _run(fn, *args):
@@ -128,6 +180,7 @@ async def health() -> JSONResponse:
 
 @app.post("/resolve")
 async def resolve(body: UrlRequest, identity: str = Depends(enforce_rate_limit)) -> dict:
+    _require_allowed_url(body.url)
     try:
         return await _run(ytdlp_client.resolve, body.url)
     except ytdlp_client.EXTRACTION_ERRORS as e:
@@ -138,6 +191,7 @@ async def resolve(body: UrlRequest, identity: str = Depends(enforce_rate_limit))
 
 @app.post("/playlist")
 async def playlist(body: UrlRequest, identity: str = Depends(enforce_rate_limit)) -> dict:
+    _require_allowed_url(body.url)
     try:
         return await _run(ytdlp_client.resolve_playlist, body.url)
     except ytdlp_client.EXTRACTION_ERRORS as e:
