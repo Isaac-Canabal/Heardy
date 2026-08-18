@@ -15,3 +15,11 @@ yt-dlp
 
 # Plugin que conecta yt-dlp con el sidecar de PO Tokens.
 bgutil-ytdlp-pot-provider
+
+# Resuelve el desafío de firma ("n challenge") de YouTube. Sin este paquete,
+# yt-dlp solo tiene el runtime de JS (ver js_runtimes en ytdlp_client.py) pero
+# no el script que ejecuta con él, y calla el aviso porque el servidor corre
+# con quiet=True — el síntoma es 403 en /audio con /resolve funcionando bien,
+# nunca un error explícito. Sin fijar versión, igual que yt-dlp: tiene que
+# seguirle el ritmo a sus cambios.
+yt-dlp-ejs
