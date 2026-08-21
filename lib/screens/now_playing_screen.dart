@@ -42,8 +42,20 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
     }
 
     try {
+      // El slide-up del mini player a esta pantalla tarda ~300ms (ver
+      // _openNowPlaying en mini_player.dart); si la extracción de paleta
+      // arranca en el primer frame (el post-frame callback que llama a este
+      // método dispara casi al instante), su trabajo de CPU compite con esos
+      // mismos frames animados y se sentía como un tranco/atasco al expandir.
+      // Esperar a que la transición termine antes de decodificar evita el
+      // solapamiento; `size` además le pide a PaletteGenerator una miniatura
+      // en vez de la imagen a resolución completa, que es la otra mitad del
+      // costo.
+      await Future.delayed(const Duration(milliseconds: 320));
+      if (!mounted) return;
       final paletteGenerator = await PaletteGenerator.fromImageProvider(
         FileImage(file),
+        size: const Size(100, 100),
         maximumColorCount: 12,
       );
 
@@ -1158,11 +1170,20 @@ class _SmartAlbumArtState extends State<SmartAlbumArt> {
       return _buildPlaceholder();
     }
 
+    // Sin cacheWidth/cacheHeight, Image.file decodifica la carátula a su
+    // resolución original (puede ser varios cientos de KB de un thumbnail de
+    // YouTube o un embed de ID3) para mostrarla en un cuadro de `size` — ese
+    // decode de más era parte del atasco al abrir esta pantalla desde el mini
+    // player. Pedirle al decoder el tamaño real de destino, en píxeles
+    // físicos, evita el trabajo sobrante.
+    final cacheSize = (widget.size * MediaQuery.of(context).devicePixelRatio).round();
     return Image.file(
       File(widget.artPath),
       fit: BoxFit.cover,
       width: widget.size,
       height: widget.size,
+      cacheWidth: cacheSize,
+      cacheHeight: cacheSize,
       errorBuilder: (_, __, ___) => _buildPlaceholder(),
     );
   }

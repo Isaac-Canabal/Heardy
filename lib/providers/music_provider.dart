@@ -240,10 +240,18 @@ class MusicProvider with ChangeNotifier {
 
   /// Loads tracks inside a specific playlist, making them available to play or view.
   Future<void> loadSongsForPlaylist(String playlistId, {bool updateCurrent = true}) async {
+    // `updateCurrent: false` significa "esta playlist no es la que se está
+    // viendo ahora" (ver DownloadProvider.onDownloadComplete en main.dart):
+    // antes esto sólo protegía _currentPlaylistId, pero _currentPlaylistSongs
+    // se pisaba igual sin condición — así que terminar una descarga hacia
+    // OTRA playlist reemplazaba en el acto las canciones que
+    // PlaylistDetailScreen estaba mostrando, aunque el título de la pantalla
+    // (que sí usa el playlistId correcto) no cambiara. Reportado por un
+    // usuario como "la app salta a la playlist de destino" al terminar una
+    // descarga estando dentro de otra playlist.
+    if (!updateCurrent) return;
     try {
-      if (updateCurrent) {
-        _currentPlaylistId = playlistId;
-      }
+      _currentPlaylistId = playlistId;
       _currentPlaylistSongs = await _dbHelper.getSongsForPlaylist(playlistId);
       notifyListeners();
     } catch (e) {

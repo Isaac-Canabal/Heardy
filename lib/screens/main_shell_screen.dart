@@ -18,8 +18,34 @@ class MainShellScreen extends StatefulWidget {
   State<MainShellScreen> createState() => _MainShellScreenState();
 }
 
-class _MainShellScreenState extends State<MainShellScreen> {
+class _MainShellScreenState extends State<MainShellScreen> with WidgetsBindingObserver {
   int _index = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    // Red de seguridad además del foreground service: si igual se congeló o
+    // mató el proceso mientras la app estaba en segundo plano (el service no
+    // es garantía absoluta en todos los fabricantes/versiones de Android),
+    // volver a primer plano es una señal razonable de "puede que haya que
+    // retomar la cola" — igual que ya se hace en el arranque en frío
+    // (main.dart), sin necesidad de un polling propio.
+    final downloadProvider = context.read<DownloadProvider>();
+    downloadProvider.processQueue();
+    downloadProvider.retryPendingImports();
+  }
 
   @override
   Widget build(BuildContext context) {

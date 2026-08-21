@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../services/database_helper.dart';
+import '../services/download_foreground_service.dart';
 import '../services/download_service.dart';
 import '../services/download_source.dart';
 
@@ -168,6 +169,16 @@ class DownloadProvider extends ChangeNotifier {
   /// red de segundos) esto no cuenta contra `maxAttempts`: el trabajo espera
   /// indefinidamente, igual que uno que espera una cuota.
   static const int _networkRetryWaitSeconds = 60;
+
+  /// Si la próxima pasada programada está más cerca que esto, el foreground
+  /// service (ver [_updateForegroundService]/[_stopForegroundServiceIfIdle])
+  /// se queda prendido en vez de apagarse y volver a prenderse — evita que la
+  /// notificación parpadee entre trabajos de la misma tanda (el backoff más
+  /// largo entre reintentos normales es 45s). Para esperas más largas
+  /// (cuota, muro anti-bot, servidor apagado) no vale la pena mantener vivo
+  /// el proceso sólo para esperar: se apaga y el arranque en frío/la vuelta a
+  /// primer plano ya se encargan de reintentar cuando corresponda.
+  static const Duration _foregroundKeepAliveThreshold = Duration(seconds: 60);
 
   /// Cuánto esperar antes de reintentar un trabajo bloqueado por el muro
   /// anti-bot de YouTube específicamente ([DownloadSourceErrorKind.
@@ -416,6 +427,11 @@ class DownloadProvider extends ChangeNotifier {
     await _db.clearDownloadQueue();
     _retryAfter.clear();
     await refreshQueue();
+    // Si processQueue() sigue corriendo, su propio finally ya la apaga al ver
+    // _cancelRequested; esto cubre el caso en que no había ningún worker
+    // activo (por ejemplo, esperando el backoff) y la notificación de
+    // "esperando para reintentar" se había quedado prendida.
+    unawaited(stopDownloadForegroundNotification());
     // No se espera a que el worker en curso termine: comprueba `_isStale` en
     // cada paso y abandonará solo. Bloquear aquí congelaría la UI durante la
     // transferencia que se acaba de cancelar.
@@ -491,6 +507,16 @@ class DownloadProvider extends ChangeNotifier {
       _phase = DownloadPhase.idle;
       _progress = 0;
       if (!_cancelRequested && sessionId == _sessionId) _scheduleRetryPass();
+
+      final wait = _shortestWait();
+      if (_cancelRequested || wait == null || wait > _foregroundKeepAliveThreshold) {
+        unawaited(stopDownloadForegroundNotification());
+      } else {
+        unawaited(startOrUpdateDownloadForegroundNotification(
+          title: 'Heardy',
+          text: 'Esperando para reintentar…',
+        ));
+      }
       notifyListeners();
     }
   }
@@ -536,6 +562,17 @@ class DownloadProvider extends ChangeNotifier {
     _phase = job.metadataComplete ? DownloadPhase.preparing : DownloadPhase.resolving;
     _progress = -1;
     notifyListeners();
+
+    // Uno por trabajo alcanza: lo que mantiene vivo el proceso es que el
+    // foreground service esté prendido, no que la notificación refleje cada
+    // sub-fase — eso ya lo muestra la UI en pantalla.
+    final remaining = _queue.length;
+    unawaited(startOrUpdateDownloadForegroundNotification(
+      title: 'Descargando en Heardy',
+      text: remaining > 1
+          ? '${job.displayTitle} · $remaining en cola'
+          : job.displayTitle,
+    ));
 
     // La playlist destino puede haber desaparecido mientras el trabajo
     // esperaba: la cola no tiene FK a propósito, para que eso falle como un

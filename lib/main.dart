@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import 'package:audio_service/audio_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 
 import 'services/database_helper.dart';
 import 'services/audio_player_handler.dart';
@@ -20,7 +21,14 @@ import 'theme/app_theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
+  // Requisito de flutter_foreground_task para poder mandar/recibir datos
+  // entre el isolate del servicio y la UI — no se usa ese canal acá (el
+  // TaskHandler de descargas no hace nada por sí mismo, ver
+  // download_foreground_service.dart), pero hay que llamarlo igual antes de
+  // arrancar cualquier servicio.
+  FlutterForegroundTask.initCommunicationPort();
+
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
     DeviceOrientation.portraitDown,

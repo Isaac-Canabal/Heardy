@@ -8,6 +8,7 @@ import '../services/download_source.dart';
 import '../models/playlist.dart';
 import '../models/song.dart';
 import '../widgets/song_tile.dart';
+import '../widgets/mini_player.dart';
 import '../theme/app_theme.dart';
 
 /// Entradas de [remote] cuyo `sourceUrl` todavía no está entre las canciones
@@ -235,12 +236,14 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       ),
       body: Container(
         decoration: AppTheme.gradientScaffold(),
-        child: Column(
+        child: Stack(
           children: [
-            // Sleek premium search field
-            if (allSongs.isNotEmpty) _buildSearchField(),
-            // Playlist songs list
-            Expanded(
+            Column(
+              children: [
+                // Sleek premium search field
+                if (allSongs.isNotEmpty) _buildSearchField(),
+                // Playlist songs list
+                Expanded(
               child: allSongs.isEmpty
                   ? _buildEmptyState()
                   : filteredSongs.isEmpty
@@ -363,6 +366,14 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                                 );
                               },
                             ),
+                ),
+              ],
+            ),
+            const Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: MiniPlayer(),
             ),
           ],
         ),
