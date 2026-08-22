@@ -844,6 +844,49 @@ class DatabaseHelper {
     );
   }
 
+  /// Sustituye el objetivo de un trabajo de la cola por otro vídeo — el
+  /// original falló de forma definitiva (agotó reintentos, o un error no
+  /// reintentable) y se encontró un reemplazo por búsqueda (ver
+  /// `DownloadProvider._tryFallbackSearch`, motivado por los tracks de
+  /// canales "- Topic" que YouTube bloquea a nivel de contenido: casi
+  /// siempre existe el "Music Clip" oficial de la misma canción).
+  ///
+  /// `metadataComplete` se deja en 0 a propósito, aunque el trabajo original
+  /// ya estuviera resuelto: el reemplazo viene de una búsqueda
+  /// (`extract_flat`), así que `artist` es el nombre del canal, no el
+  /// artista real — necesita el mismo paso de /resolve (DD6) que cualquier
+  /// resultado de búsqueda. `attempts` se reinicia: es, a todos los efectos,
+  /// un trabajo nuevo con su propio presupuesto de reintentos.
+  Future<void> retargetDownloadQueueJob(
+    int queueId, {
+    required String sourceId,
+    required String sourceUrl,
+    required String title,
+    required String artist,
+    String? album,
+    required int durationSeconds,
+    required String thumbnailUrl,
+  }) async {
+    final db = await database;
+    await db.update(
+      'download_queue',
+      {
+        'sourceId': sourceId,
+        'sourceUrl': sourceUrl,
+        'title': title,
+        'artist': artist,
+        'album': album,
+        'durationSeconds': durationSeconds,
+        'thumbnailUrl': thumbnailUrl,
+        'metadataComplete': 0,
+        'attempts': 0,
+        'lastError': null,
+      },
+      where: 'id = ?',
+      whereArgs: [queueId],
+    );
+  }
+
   /// La cola en orden de inserción, que para una playlist es su orden real.
   Future<List<Map<String, dynamic>>> getDownloadQueue() async {
     final db = await database;

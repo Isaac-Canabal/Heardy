@@ -6,6 +6,7 @@ import '../services/database_helper.dart';
 import '../services/download_foreground_service.dart';
 import '../services/download_service.dart';
 import '../services/download_source.dart';
+import '../services/spotify_match.dart' show maxMatchToleranceSeconds, pickClosestByDuration;
 
 /// Un trabajo pendiente, tal como lo ve la UI.
 class DownloadJob {
@@ -228,6 +229,13 @@ class DownloadProvider extends ChangeNotifier {
   /// está en la base. Perder el backoff al reiniciar es lo deseable — si el
   /// usuario reabre la app, quiere que se reintente ya.
   final Map<int, DateTime> _retryAfter = {};
+
+  /// `queueId`s para los que ya se intentó el fallback por búsqueda (ver
+  /// [_tryFallbackSearch]) — como máximo una vez por trabajo, para no
+  /// encadenar búsquedas si el reemplazo también falla. Sólo en memoria a
+  /// propósito, igual que [_retryAfter]: perderlo al reiniciar cuesta como
+  /// mucho un intento de más, nunca un bucle infinito dentro de una sesión.
+  final Set<int> _fallbackAttempted = {};
 
   /// Programa la siguiente pasada cuando sólo quedan trabajos esperando su
   /// backoff. Ver [processQueue] para por qué no se duerme dentro del bucle.
@@ -687,6 +695,10 @@ class DownloadProvider extends ChangeNotifier {
     // reintentos en un vídeo borrado es tiempo y presupuesto de IP tirados, y
     // encima retrasa las canciones que sí se pueden bajar.
     if (!error.isRetryable) {
+      if (await _tryFallbackSearch(job)) {
+        await refreshQueue();
+        return;
+      }
       await _db.removeFromDownloadQueue(job.queueId);
       _retryAfter.remove(job.queueId);
       _recordFailure(job, error.userMessage, permanent: true);
@@ -697,6 +709,10 @@ class DownloadProvider extends ChangeNotifier {
     final attempts = job.attempts + 1;
 
     if (attempts >= maxAttempts) {
+      if (await _tryFallbackSearch(job)) {
+        await refreshQueue();
+        return;
+      }
       await _db.removeFromDownloadQueue(job.queueId);
       _retryAfter.remove(job.queueId);
       _recordFailure(job, error.userMessage, permanent: false);
@@ -706,6 +722,72 @@ class DownloadProvider extends ChangeNotifier {
     final delay = _backoff[(attempts - 1).clamp(0, _backoff.length - 1)];
     _retryAfter[job.queueId] = DateTime.now().add(delay);
     await refreshQueue();
+  }
+
+  /// Antes de dar un trabajo por perdido, busca en YouTube el mismo tema por
+  /// artista+título y, si encuentra un candidato con duración parecida,
+  /// redirige el trabajo hacia ese vídeo en vez de descartarlo.
+  ///
+  /// Motivado por un caso medido, no supuesto: YouTube bloquea a nivel de
+  /// contenido los tracks de canales auto-generados "- Topic" (audio
+  /// oficial con licencia) para clientes de reproducción programáticos —
+  /// probado contra los 6 tipos de cliente de yt-dlp, los 6 fallan igual, y
+  /// confirmado con la API de YouTube directamente (sin nuestro servidor de
+  /// por medio). En una playlist real de 68 vídeos, 36 de 37 tracks "- Topic"
+  /// fallaron así; 0 de 31 "Music Clip" del mismo canal fallaron — y casi
+  /// cada track "- Topic" bloqueado tiene su "Music Clip" oficial de la
+  /// misma canción en la propia playlist. Reintentar el MISMO vídeo nunca
+  /// arregla esto (es determinista, no un bloqueo de IP pasajero como
+  /// [DownloadSourceErrorKind.antiBotBlocked]); lo único que funciona es
+  /// bajar un vídeo distinto.
+  ///
+  /// Reutiliza la misma regla de emparejamiento del puente de Spotify
+  /// ([pickClosestByDuration]) — nunca por similitud de título/artista, sólo
+  /// por duración — y el mismo margen de tolerancia
+  /// ([maxMatchToleranceSeconds]), para no sustituir por una versión en vivo,
+  /// cover o remix sin que quede claro que es una sustitución razonable.
+  Future<bool> _tryFallbackSearch(DownloadJob job) async {
+    if (_fallbackAttempted.contains(job.queueId)) return false;
+    _fallbackAttempted.add(job.queueId);
+
+    // Sin duración conocida no hay nada fiable que comparar — y
+    // [pickClosestByDuration] compararía todo candidato contra 0, así que
+    // cualquier resultado corto (un short, un anuncio) "encajaría" dentro
+    // de la tolerancia sin que eso signifique nada.
+    if (job.durationSeconds <= 0) return false;
+
+    final query = '${job.artist} ${job.title}'.trim();
+    if (query.isEmpty) return false;
+
+    List<RemoteTrack> results;
+    try {
+      results = await _source.search(query, limit: 8);
+    } catch (_) {
+      return false;
+    }
+
+    final candidates = results.where((r) => r.id != job.sourceId).toList();
+    final match = pickClosestByDuration(candidates, job.durationSeconds);
+    if (match == null) return false;
+    if ((match.durationSeconds - job.durationSeconds).abs() > maxMatchToleranceSeconds) {
+      return false;
+    }
+
+    await _db.retargetDownloadQueueJob(
+      job.queueId,
+      sourceId: match.id,
+      sourceUrl: match.sourceUrl,
+      title: match.title,
+      artist: match.artist,
+      album: match.album,
+      durationSeconds: match.durationSeconds,
+      thumbnailUrl: match.thumbnailUrl,
+    );
+    debugPrint(
+      'DownloadProvider: "${job.displayTitle}" no se pudo bajar; '
+      'sustituida por "${match.title}" (mismo tema, vídeo distinto)',
+    );
+    return true;
   }
 
   void _recordFailure(

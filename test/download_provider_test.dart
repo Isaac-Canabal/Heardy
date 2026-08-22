@@ -104,6 +104,11 @@ class _FakeDownloadSource implements DownloadSource {
   DownloadSourceException? resolveError;
   final List<String> resolvedUrls = [];
 
+  /// Resultados que devuelve [search], para probar el fallback de
+  /// [DownloadProvider._tryFallbackSearch].
+  List<RemoteTrack> searchResults = [];
+  final List<String> searchQueries = [];
+
   @override
   Future<RemoteTrack> resolve(String url) async {
     resolvedUrls.add(url);
@@ -116,6 +121,12 @@ class _FakeDownloadSource implements DownloadSource {
     resolvedUrls.add(url);
     if (resolveError != null) throw resolveError!;
     return nextPlaylist!;
+  }
+
+  @override
+  Future<List<RemoteTrack>> search(String query, {int limit = 20}) async {
+    searchQueries.add(query);
+    return searchResults;
   }
 
   @override
@@ -338,6 +349,99 @@ void main() {
       expect(await db.getDownloadQueue(), isEmpty);
       expect(provider.failures.single.permanent, isFalse,
           reason: 'se agotaron los reintentos, pero el vídeo no es imposible');
+    });
+  });
+
+  group('fallback por búsqueda cuando un vídeo está bloqueado', () {
+    // Motivado por un caso medido: YouTube bloquea a nivel de contenido los
+    // tracks de canales "- Topic" (audio oficial con licencia) para
+    // cualquier cliente de reproducción programático — 36 de 37 en una
+    // playlist real, 0 de 31 "Music Clip" del mismo canal. Reintentar el
+    // MISMO vídeo nunca lo arregla; lo único que funciona es bajar uno
+    // distinto, casi siempre presente en la propia playlist.
+    test('sin reintentos disponibles (404) pero con reemplazo de duración parecida: sustituye en vez de descartar',
+        () async {
+      final service = _FakeDownloadService()
+        ..downloadErrors.add(
+          const DownloadSourceException(DownloadSourceErrorKind.notFound, 'Video unavailable'),
+        );
+      final source = _FakeDownloadSource()
+        ..searchResults = [_track('reemplazo', title: 'Título', artist: 'Canal Oficial')];
+      final playlistId = await newPlaylist('Bloqueados');
+      final provider = providerFor(service, source: source);
+
+      await provider.enqueueTrack(
+        _track('bloqueada', title: 'Título', artist: 'Artista'),
+        playlistId: playlistId,
+        metadataComplete: true,
+      );
+      await provider.processQueue();
+
+      expect(service.calls.length, 2, reason: 'un intento con el original, otro con el reemplazo');
+      expect(service.calls[1].track.id, 'reemplazo');
+      expect(source.searchQueries, ['Artista Título']);
+      expect(await db.getDownloadQueue(), isEmpty, reason: 'el reemplazo se descargó, no quedó pendiente');
+      expect(provider.failures, isEmpty, reason: 'el fallback tuvo éxito, no es un fallo');
+    });
+
+    test('sin ningún candidato de duración parecida: se descarta como antes, sin reemplazo forzado', () async {
+      final service = _FakeDownloadService()
+        ..downloadErrors.add(
+          const DownloadSourceException(DownloadSourceErrorKind.notFound, 'Video unavailable'),
+        );
+      final source = _FakeDownloadSource()
+        // 400s de diferencia con el original (100s) — muy por encima de los
+        // 30s de tolerancia: podría ser un cover, un remix, un directo.
+        ..searchResults = [
+          RemoteTrack(
+            id: 'parecido-pero-no',
+            title: 'Título',
+            artist: 'Canal',
+            album: null,
+            durationSeconds: 500,
+            thumbnailUrl: '',
+            sourceUrl: 'https://www.youtube.com/watch?v=parecido-pero-no',
+          ),
+        ];
+      final playlistId = await newPlaylist('SinReemplazo');
+      final provider = providerFor(service, source: source);
+
+      await provider.enqueueTrack(
+        _track('bloqueada2', title: 'Título', artist: 'Artista'),
+        playlistId: playlistId,
+        metadataComplete: true,
+      );
+      await provider.processQueue();
+
+      expect(await db.getDownloadQueue(), isEmpty);
+      expect(service.calls.length, 1, reason: 'nunca se llegó a intentar el candidato malo');
+      expect(provider.failures.single.permanent, isTrue);
+    });
+
+    test('si el reemplazo también falla, no se encadena una segunda búsqueda', () async {
+      final service = _FakeDownloadService()
+        ..downloadErrors.add(
+          const DownloadSourceException(DownloadSourceErrorKind.notFound, 'Video unavailable'),
+        )
+        ..downloadErrors.add(
+          const DownloadSourceException(DownloadSourceErrorKind.notFound, 'Video unavailable'),
+        );
+      final source = _FakeDownloadSource()
+        ..searchResults = [_track('tambien-bloqueado', title: 'Título', artist: 'Canal')];
+      final playlistId = await newPlaylist('DobleBloqueo');
+      final provider = providerFor(service, source: source);
+
+      await provider.enqueueTrack(
+        _track('bloqueada3', title: 'Título', artist: 'Artista'),
+        playlistId: playlistId,
+        metadataComplete: true,
+      );
+      await provider.processQueue();
+
+      expect(service.calls.length, 2, reason: 'original + un reemplazo, nunca un segundo reemplazo');
+      expect(source.searchQueries.length, 1, reason: 'la búsqueda de fallback sólo se intenta una vez por trabajo');
+      expect(await db.getDownloadQueue(), isEmpty);
+      expect(provider.failures.single.permanent, isTrue);
     });
   });
 

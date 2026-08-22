@@ -83,21 +83,26 @@ _ANTIBOT_MARKER = "sign in to confirm you're not a bot"
 # descargables. Es justo el error que más se parece a uno permanente sin
 # serlo.
 #
-# Tampoco están "video unavailable" / "this video is unavailable" (quitados
-# 2026-08-22, estaban aquí antes) — es el mensaje GENÉRICO que yt-dlp devuelve
-# cuando la respuesta del reproductor de YouTube no trae un motivo específico,
-# y eso incluye el caso de no conseguir un PO Token a tiempo bajo el proveedor
-# en modo script (Render). Medido contra una playlist real de 68 vídeos
-# comprobados a mano en YouTube: 36 fallaron con exactamente este mensaje en
-# la primera racha de peticiones (~1.7s cada uno, mucho más rápido que una
-# extracción real) y las últimas 24 peticiones seguidas no fallaron ninguna;
-# el mismo vídeo que falló dentro del lote funcionó perfecto probado suelto
-# después. O sea: bajo carga, "video unavailable" es un falso positivo
-# mucho más frecuente que un vídeo genuinamente borrado. Los marcadores más
-# específicos de abajo (privado, eliminado, cuenta cerrada...) siguen
-# cubriendo los casos realmente permanentes; este era el catch-all genérico
-# y demasiado amplio.
+# "video unavailable" / "this video is unavailable" SÍ están abajo, con
+# historia: se sacaron el 2026-08-22 pensando que era un falso positivo
+# transitorio del proveedor de PO Tokens bajo carga, y se repusieron el mismo
+# día tras investigar más — no es transitorio. Es el bloqueo de YouTube a
+# nivel de CONTENIDO sobre los tracks de canales auto-generados "- Topic"
+# (audio oficial con licencia): reintentar el MISMO vídeo 20 veces seguidas
+# en 8 minutos falló las 20, con los 6 tipos de cliente que prueba yt-dlp
+# (visionos/web/android/ios/tv/web_embedded), y confirmado contra la API de
+# YouTube directamente sin este servidor de por medio. Medido contra una
+# playlist real de 68 vídeos: 36 de 37 tracks "- Topic" fallaron así; 0 de 31
+# "Music Clip" del mismo canal. El arreglo real vive del lado del cliente
+# (`DownloadProvider._tryFallbackSearch`, lib/providers/download_provider.dart):
+# cuando un vídeo da por perdido sus reintentos, busca el mismo tema por
+# artista+título y sustituye por un candidato de duración parecida — casi
+# siempre el "Music Clip" oficial existe. Clasificarlo aquí como permanente
+# (404, sin gastar reintentos) es lo que hace que ese fallback se dispare
+# rápido en vez de esperar ~65s de reintentos inútiles contra el mismo id.
 _PERMANENT_MARKERS = (
+    "video unavailable",
+    "this video is unavailable",
     "private video",
     "this video is private",
     "has been removed",
