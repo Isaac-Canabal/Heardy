@@ -5,7 +5,9 @@ servicio en vez de un extractor embebido en la app.
 """
 import asyncio
 import logging
+import os
 import re
+import shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
@@ -23,6 +25,41 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("heardy")
 
 
+def _prepare_writable_cookies() -> None:
+    """Deja COOKIES_FILE apuntando a una copia ESCRIBIBLE, si hace falta.
+
+    yt-dlp se usa con `with YoutubeDL(...)`, y su `__exit__` reescribe el
+    archivo de cookies para guardar las que YouTube rota durante la sesión. Si
+    el archivo es de solo lectura, esa escritura falla y la sesión se queda
+    congelada en las cookies originales, que YouTube invalida enseguida.
+
+    Es exactamente el caso de los "Secret Files" de Render (y del `secrets` de
+    Docker/Kubernetes): se montan de solo lectura. Copiarlas a la caché las
+    hace escribibles.
+
+    Aviso que no se puede arreglar desde aquí: en un disco efímero la copia se
+    pierde en cada reinicio y se vuelve a partir de las cookies originales, ya
+    envejecidas. Con almacenamiento persistente esto no pasa.
+    """
+    if not config.COOKIES_FILE:
+        return
+    source = Path(config.COOKIES_FILE)
+    if not source.is_file():
+        log.warning("HEARDY_COOKIES_FILE apunta a %s, que no existe: se ignora", source)
+        config.COOKIES_FILE = ""
+        return
+    if os.access(source, os.W_OK):
+        log.info("cookies: %s (escribible)", source)
+        return
+    target = config.CACHE_DIR.parent / "cookies-rw.txt"
+    try:
+        shutil.copyfile(source, target)
+        config.COOKIES_FILE = str(target)
+        log.info("cookies: %s era de solo lectura, se usa la copia %s", source, target)
+    except OSError as e:
+        log.warning("no se pudo hacer una copia escribible de %s: %s", source, e)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     if not config.API_KEYS and not config.ALLOW_NO_AUTH:
@@ -32,6 +69,7 @@ async def lifespan(_: FastAPI):
             "loopback. Ver server/README.md."
         )
     config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    _prepare_writable_cookies()
     log.info("yt-dlp %s", ytdlp_client.version())
     log.info("proveedor de PO tokens: %s", config.POT_PROVIDER_URL)
     log.info("caché: %s", config.CACHE_DIR)
@@ -180,6 +218,10 @@ async def health() -> JSONResponse:
                 "detail": pot_detail,
             },
             "cache": {"files": cached_files, "maxBytes": config.CACHE_MAX_BYTES},
+            # Diagnóstico del experimento de cookies: sin esto, la única forma
+            # de saber si se cargaron es leer los logs de arranque. No se
+            # expone el contenido ni la ruta completa, sólo si están activas.
+            "cookies": {"enabled": bool(config.COOKIES_FILE)},
             # Puramente informativo — la app no necesita leer esto para
             # funcionar, es diagnóstico para quien administra el servidor.
             "rateLimiting": {
