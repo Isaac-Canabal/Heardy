@@ -209,6 +209,31 @@ Same non-negotiable rule as the pivot: every stage ends with the app compiling a
     - **`DownloadProvider` gained a required `DownloadSource source` constructor parameter** (previously it only held a `DownloadService`, which doesn't expose `resolve`/`resolvePlaylist` directly) — `main.dart` already builds `downloadSource` before `DownloadProvider`, so this was a same-object wiring change, not a new dependency. Every test constructing `DownloadProvider` needed the same parameter; all of them already had a `DownloadSource` fake in scope for `DownloadService(source: source)`, so it was a mechanical addition everywhere except `download_provider_test.dart`, which gained its own minimal `_FakeDownloadSource`.
     - **UI placement, confirmed with the user before building:** inside the existing "Añadir" tab, not a new bottom-nav tab — a `_buildPendingImportsSection()` under the live download queue, listing each waiting URL with its target playlist name and a per-row cancel, plus the "Reintentar ahora" button. No sixth permanent tab for something that, working as intended, is usually empty.
     - **Validation:** 4 new tests in `download_provider_test.dart` (`servidor apagado (error de red)` group: the new indefinite-retry behavior; `lista de espera` group: resolve-and-download end to end, stays queued while still unreachable, discarded on a genuine 404) — project total 99. `flutter analyze` clean (same 5 pre-existing infos). No widget-level test added for `ImportScreen`'s new banner button or waiting-list section — same pre-existing gap as the rest of `ImportScreen`'s interactive widget coverage, not a new one introduced here.
+12. **Funcionalidades de app + i18n + temas — done 2026-08-21/22** (commit `8ec49a3`). Siete cambios pedidos en bloque, todos en `feature/youtube-downloads`:
+    - **Cola "reproducir a continuación"** (`AudioPlayerHandler.insertPlayNext`): deslizar una canción a la derecha en `playlist_detail_screen.dart` la coloca tras la actual, en orden FIFO entre sí (`_playNextInsertIndex`, que se resetea en `currentIndexStream`). **El bug que casi lo deja inservible, corregido después:** el chequeo anti-duplicados descartaba en silencio cualquier canción que YA estuviera en la cola — que es el caso normal, porque se desliza una canción de la misma playlist que suena. Ahora, si ya está, se **mueve** con `moveQueueItem` en vez de ignorarse.
+    - **Repetición cuenta como segunda escucha**: `_hasRecordedCurrentTrack` sólo se reseteaba en `_startTracking`, que sólo corre cuando cambia `currentIndex` — así que `LoopMode.one` nunca contaba una segunda vuelta. Se re-arma en `processingStateStream` cuando el loop es `one`, y en `seek()` cuando el usuario rebobina cerca del inicio habiendo ya contado.
+    - **i18n ES/EN**: `flutter_localizations` + ARB (`lib/l10n/`, `l10n.yaml`), `AppLanguage` en `SettingsProvider`, y toda la UI migrada. Los `.arb` se versionan; `app_localizations*.dart` es generado y está en `.gitignore`.
+    - **Traducción de letras**: `translation_service.dart` (MyMemory, sin API key, caché en disco junto al `.lrc`). **Cuidado si se toca `LyricsBottomSheet`:** el resaltado sincronizado usa un `StreamSubscription` con `_activeIndex` como estado, NO un `StreamBuilder` envolviendo la lista — envolverla reconstruía todas las líneas en cada tick de posición y el resaltado se sentía desincronizado (regresión real introducida y luego corregida al añadir la traducción, que duplicaba el costo por línea).
+    - **Temas**: presets verde/naranja/rojo + modo `custom` con color principal/secundario elegidos por el usuario y toggle de degradado combinado (`AppTheme._customPalette` deriva fondo y superficie del matiz, nunca negro puro). `snackBarTheme` e `inputDecorationTheme.fillColor` pasaron a salir de `AppTheme` — antes tenían colores fijos que ignoraban el preset.
+    - **Menú de mantener pulsado** en canciones (mover/copiar/cambiar posición) y **cabecera "Reproduciendo desde ⟨playlist⟩"** pulsable, que necesitó estampar `playlist_id` en `extras` en los 3 sitios que construían `MediaItem` sin él.
+    - **Responsividad**: la carátula de `now_playing_screen.dart` tenía 300px fijos (desbordaba a lo ancho en pantallas de 360dp y a lo alto en pantallas bajas); ahora sale de un `LayoutBuilder`. **No verificado en hardware real** — no había dispositivo Android en el entorno.
+
+### Próxima sesión — retomar aquí
+
+**Estado:** la app está terminada y con APK de release compilado. Lo que queda abierto es **dónde vive el servidor oficial**, y hay un experimento a medias.
+
+**Lo que se midió el 2026-08-22 (no hace falta repetirlo):**
+- **Render quedó descartado**, pero no por lo que se creía. Se desplegó de verdad (free, Docker, servicio único con el proveedor en script mode) y **la plataforma funcionó bien**: build OK, `/health` en 0.6s, `/search` en 1.9s — el 0.1 vCPU sí aguanta. Lo que falló es **la IP**: `Sign in to confirm you're not a bot` en la primera descarga. Mismo pool de IPs en los planes de pago ⇒ ningún plan lo arregla.
+- **La cifra de "12-24 peticiones por IP" de `docs/investigacion_muro_antibot.md` NO describe este servidor** — es del 2026-07-28, mide el extractor viejo sin PO Tokens, y no menciona yt-dlp ni una vez. En residencial, con bgutil funcionando, **no hay techo práctico**: Isaac descarga durante horas sin bloqueo. Ver la amenidad del 2026-08-22 en `docs/arquitectura_servidor_hibrido.md`.
+- **El bloqueo del GVS PO Token (2026-08-17) está resuelto** por yt-dlp 2026.08.19. Verificado con descarga real.
+- **El camino Docker estaba roto** (le faltaba Node para el "n challenge") y ahora funciona, verificado de punta a punta en Render. Además existe el **script mode** opt-in (`HEARDY_POT_PROVIDER_SCRIPT_HOME`) para plataformas de un solo servicio; el `docker-compose.yml` no lo define, así que el sidecar HTTP sigue siendo el camino por defecto.
+
+**Lo que quedó a medias — el experimento de cookies:**
+El servidor de Render (`heardy.onrender.com`) sigue desplegado y listo. Falta que Isaac exporte cookies de YouTube de una **cuenta secundaria** y las suba como *Secret File*, con `HEARDY_COOKIES_FILE=/etc/secrets/cookies.txt`. El código ya está preparado: si el archivo es de solo lectura (lo son los Secret Files) se copia a una ruta escribible al arrancar, porque yt-dlp reescribe el fichero para guardar las cookies rotadas. `/health` expone `cookies.enabled` para verificarlo sin mirar logs.
+- Procedimiento crítico al exportar: perfil de navegador aparte (o incógnito con la extensión habilitada) → login → abrir `youtube.com/robots.txt` en esa pestaña → exportar → **no cerrar sesión nunca ni volver a abrir YouTube en ese perfil**. Cerrar sesión invalida la sesión; navegar la rota.
+- Expectativa realista: duran **3-5 días** aunque se haga bien, y en Render *free* menos, porque el disco efímero pierde la copia con las cookies renovadas en cada reinicio.
+
+**Si las cookies no convencen (o caducan demasiado rápido), la recomendación es cerrar el tema así:** cualquier equipo barato **siempre encendido en casa** (Raspberry Pi, portátil viejo, móvil Android con Termux) manteniendo Tailscale Funnel. Cumple el requisito original de Isaac ("que no dependa de mi computador") **sin perder la IP residencial**, que resultó ser lo único que de verdad importaba. Mudarse a la nube cambia un problema de disponibilidad por uno de bloqueo permanente.
 
 ## Commands
 
@@ -269,7 +294,9 @@ lib/
 │   ├── audio_player_handler.dart    # audio_service/just_audio bridge: queue, background playback, lock-screen
 │   │                                 # controls, play-history recording, playback-state persistence
 │   ├── playback_state_service.dart  # SharedPreferences read/write for "resume where I left off"
-│   └── lyrics_service.dart          # fetches/caches synced .lrc lyrics from LRCLIB
+│   ├── lyrics_service.dart          # fetches/caches synced .lrc lyrics from LRCLIB
+│   └── translation_service.dart     # traduce las letras línea a línea vía MyMemory (sin API key),
+│                                     # con caché en disco junto al .lrc
 ├── screens/                         # one file per screen/tab, StatefulWidget + Provider consumers directly
 │   ├── main_shell_screen.dart       # bottom-nav shell + persistent MiniPlayer
 │   ├── home_screen.dart             # playlist library: create/rename/reorder/delete
@@ -284,7 +311,10 @@ lib/
 │                                     # URL/key (download branch)
 ├── widgets/                         # glass_card, mini_player, song_tile, playlist_target_sheet,
 │                                     # download_progress_card (download branch)
-└── theme/app_theme.dart             # navy/violet/rose presets + gradient scaffold decoration
+├── l10n/                            # app_es.arb + app_en.arb (se versionan); AppLocalizations es
+│                                     # generado por `flutter gen-l10n` y está en .gitignore
+└── theme/app_theme.dart             # presets navy/violet/rose/verde/naranja/rojo + modo `custom`
+                                      # (color principal y secundario elegidos por el usuario)
 
 server/                              # (download branch only) FastAPI + yt-dlp microservice — see server/README.md
 ```
@@ -400,5 +430,6 @@ Pure-logic pieces (no server, no network, no widgets) are covered directly: `tes
 - **`saf_util` + `saf_stream`** — Storage Access Framework: tree picking, persisted permissions, batched directory listing, byte-range reads, and *(download branch)* writing downloaded files into the picked tree.
 - **`audio_metadata_reader`** — pure-Dart ID3v1/v2 + MP4/M4A tag reading, and *(download branch)* writing (so a downloaded file is self-describing on disk, not just in SQLite).
 - **`provider`** — sole state-management dependency; low ceremony over Bloc/Riverpod for a small, single-maintainer codebase.
+- *(añadido 2026-08-21)* **`flutter_localizations` + `intl`** — i18n español/inglés vía ARB y `flutter gen-l10n`. Las claves nuevas se añaden a **los dos** `lib/l10n/*.arb`; el `AppLocalizations` generado no se versiona, se reconstruye en cada `flutter pub get`.
 - *(download branch, added 2026-08-21)* **`flutter_foreground_task`** — backs the download queue's own Android foreground service (`dataSync` type), separate from `audio_service`'s `mediaPlayback` one, so the queue keeps running while the app is backgrounded. Its `TaskHandler` is a deliberate no-op — see "Background downloads" above.
 - *(download branch, `server/` only, not a Flutter dependency)* **`yt-dlp`** — the actual YouTube extraction engine, deliberately unpinned in `server/requirements.txt` unlike everything else there; see `server/README.md`.
