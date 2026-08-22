@@ -82,9 +82,22 @@ _ANTIBOT_MARKER = "sign in to confirm you're not a bot"
 # esta lista haría que la cola descartara canciones perfectamente
 # descargables. Es justo el error que más se parece a uno permanente sin
 # serlo.
+#
+# Tampoco están "video unavailable" / "this video is unavailable" (quitados
+# 2026-08-22, estaban aquí antes) — es el mensaje GENÉRICO que yt-dlp devuelve
+# cuando la respuesta del reproductor de YouTube no trae un motivo específico,
+# y eso incluye el caso de no conseguir un PO Token a tiempo bajo el proveedor
+# en modo script (Render). Medido contra una playlist real de 68 vídeos
+# comprobados a mano en YouTube: 36 fallaron con exactamente este mensaje en
+# la primera racha de peticiones (~1.7s cada uno, mucho más rápido que una
+# extracción real) y las últimas 24 peticiones seguidas no fallaron ninguna;
+# el mismo vídeo que falló dentro del lote funcionó perfecto probado suelto
+# después. O sea: bajo carga, "video unavailable" es un falso positivo
+# mucho más frecuente que un vídeo genuinamente borrado. Los marcadores más
+# específicos de abajo (privado, eliminado, cuenta cerrada...) siguen
+# cubriendo los casos realmente permanentes; este era el catch-all genérico
+# y demasiado amplio.
 _PERMANENT_MARKERS = (
-    "video unavailable",
-    "this video is unavailable",
     "private video",
     "this video is private",
     "has been removed",
