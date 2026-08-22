@@ -695,7 +695,11 @@ class DownloadProvider extends ChangeNotifier {
     // reintentos en un vídeo borrado es tiempo y presupuesto de IP tirados, y
     // encima retrasa las canciones que sí se pueden bajar.
     if (!error.isRetryable) {
-      if (await _tryFallbackSearch(job)) {
+      // `notConfigured` es local, no del vídeo (sin carpeta elegida, o su
+      // permiso SAF ya no es válido) — buscar un reemplazo no arregla nada
+      // aquí, y como TODO trabajo fallaría por la misma razón, sería una
+      // búsqueda desperdiciada por cada canción de la tanda.
+      if (error.kind != DownloadSourceErrorKind.notConfigured && await _tryFallbackSearch(job)) {
         await refreshQueue();
         return;
       }

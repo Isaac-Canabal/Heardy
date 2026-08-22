@@ -62,9 +62,34 @@ class MusicProvider with ChangeNotifier {
   /// Re-reads the persisted root — only needed at startup. Once loaded,
   /// mutate it via [setLibraryRootUri] instead of round-tripping through
   /// storage again.
+  ///
+  /// Validates the SAF grant before trusting the stored uri. Android revokes
+  /// a tree's persisted permission on uninstall — always, unconditionally —
+  /// but `SharedPreferences` (and the rest of the SQLite db) can come back
+  /// on a reinstall via Android's own Auto Backup, which is enabled by
+  /// default (`android:allowBackup` defaults to `true`, and nothing in this
+  /// manifest overrides it). So the app can "remember" a root uri it no
+  /// longer has permission for, and every downstream SAF call on it — scan,
+  /// playback, a download's paste-into-folder step — would throw a raw
+  /// `SecurityException` ("...requires that you obtain access using
+  /// ACTION_OPEN_DOCUMENT") instead of the friendly re-pick prompt this
+  /// project already built for "the root is gone" (`LibraryRootUnavailableException`,
+  /// wired into `inbox_screen.dart`). `StorageService.hasValidPermission`
+  /// already existed for exactly this check — it just was never called
+  /// anywhere. Reported live on a real device: reinstalling the APK kept
+  /// the stats (Auto Backup restoring the db) while every SAF operation
+  /// started throwing (the grant itself gone) — same root cause, both
+  /// symptoms.
   Future<void> refreshLibraryRootUri() async {
     try {
-      _libraryRootUri = await _storageService.getLibraryRootUri();
+      final uri = await _storageService.getLibraryRootUri();
+      if (uri != null && !await _storageService.hasValidPermission(uri)) {
+        await _storageService.clearLibraryRootUri();
+        _libraryRootUri = null;
+        notifyListeners();
+        return;
+      }
+      _libraryRootUri = uri;
       notifyListeners();
     } catch (e) {
       print("Error refreshing library root uri: $e");

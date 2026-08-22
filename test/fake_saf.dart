@@ -34,6 +34,11 @@ class FakeSafBackend {
   final Map<String, FakeDir> dirs = {};
   final Map<String, FakeFile> files = {};
   final Set<String> deletedUris = {};
+  // Uris para las que hasPersistedPermission debe simular que Android ya
+  // revocó el grant (p. ej. tras una desinstalación) — el resto se
+  // comporta como si el permiso siguiera vigente, que es lo que todo el
+  // resto de esta suite ya asumía antes de que este chequeo existiera.
+  final Set<String> revokedPermissionUris = {};
   // Static, not per-instance: several tests each create their own backend but
   // share the one real sqflite_common_ffi database, so uris must stay unique
   // across backends too, or a fresh test's file can collide with a leftover
@@ -116,6 +121,15 @@ class FakeSafUtil extends SafUtilPlatform {
     final dir = backend.dirs[uri];
     if (dir == null) return [];
     return dir.childUris.map(_docOf).toList();
+  }
+
+  @override
+  Future<bool> hasPersistedPermission(
+    String uri, {
+    bool checkRead = true,
+    bool checkWrite = false,
+  }) async {
+    return !backend.revokedPermissionUris.contains(uri);
   }
 
   @override

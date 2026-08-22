@@ -331,6 +331,23 @@ void main() {
     expect(leftovers, isEmpty);
   });
 
+  test(
+      'con carpeta guardada pero el permiso SAF ya revocado (p. ej. tras reinstalar), '
+      'el error es accionable y no un SecurityException crudo', () async {
+    final source = _FakeSource({'vid006': _buildM4a(Uint8List.fromList(List.filled(4000, 1)))});
+    // Android revoca el grant al desinstalar la app. La uri sigue guardada
+    // (setUp ya la puso vía SharedPreferences.setMockInitialValues) porque
+    // el Auto Backup de Android puede restaurarla en la reinstalación —
+    // pero el permiso real sobre ella, no.
+    backend.revokedPermissionUris.add(root.uri);
+
+    await expectLater(
+      serviceFor(source).download(_track(id: 'vid006')),
+      throwsA(isA<DownloadSourceException>()
+          .having((e) => e.kind, 'kind', DownloadSourceErrorKind.notConfigured)),
+    );
+  });
+
   test('sin carpeta de biblioteca elegida el error es accionable, no un fallo genérico', () async {
     SharedPreferences.setMockInitialValues({});
     final source = _FakeSource({'vid005': _buildM4a(Uint8List.fromList(List.filled(4000, 1)))});

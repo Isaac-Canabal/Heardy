@@ -98,6 +98,21 @@ class DownloadService {
         'Elegí primero una carpeta de biblioteca en Ajustes',
       );
     }
+    // Android revoca el permiso SAF de la carpeta al desinstalar la app —
+    // siempre, incondicionalmente — pero la uri guardada puede sobrevivir a
+    // una reinstalación si el Auto Backup de Android restauró
+    // SharedPreferences (activado por defecto, ver MusicProvider.
+    // refreshLibraryRootUri). Sin este chequeo, `resolvePlaylistFolder`/
+    // `pasteLocalFile` más abajo lanzarían un SecurityException crudo que
+    // la cola trataría como un error de extracción reintentable — inútil
+    // para algo que ningún reintento (ni una búsqueda de reemplazo) puede
+    // arreglar; hace falta volver a elegir la carpeta en Ajustes.
+    if (!await _storage.hasValidPermission(rootUri)) {
+      throw const DownloadSourceException(
+        DownloadSourceErrorKind.notConfigured,
+        'El permiso de la carpeta de biblioteca ya no es válido. Elegí la carpeta de nuevo en Ajustes.',
+      );
+    }
 
     if (resolveFirst) {
       _throwIfCancelled(isCancelled);
