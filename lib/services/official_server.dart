@@ -12,21 +12,23 @@ library;
 /// tiempo de build con `--dart-define=HEARDY_OFFICIAL_SERVER_API_KEY=...`
 /// y queda vacía en un build de desarrollo normal.
 ///
-/// **Actualización 2026-08-03:** el servidor oficial ya no va en Oracle
-/// Cloud (fricción de verificación de cuenta, ver `server/README.md` →
-/// "Despliegue oficial"). Corre en el PC de casa de Isaac y se publica con
-/// Tailscale Funnel (`tailscale funnel --bg 8080`), que le da este hostname
-/// estable mientras no cambie de máquina — confirmado con
-/// `tailscale funnel status` y probado con `/health` real desde fuera de la
-/// red local el 2026-08-03. Si el servidor se muda de PC, este valor es lo
-/// único que hay que actualizar (ver `tailscale funnel status` en la máquina
-/// nueva).
+/// **Actualización 2026-08-22:** el servidor oficial pasó a Render
+/// (`heardy.onrender.com`), con el experimento de cookies de sesión de
+/// YouTube activo (`HEARDY_COOKIES_FILE`, ver CLAUDE.md → "Lo que quedó a
+/// medias — el experimento de cookies") para esquivar el bloqueo anti-bot
+/// que antes hacía inviable una IP de datacenter. Deja de depender de que
+/// el PC de Isaac esté encendido — el costo es que las cookies expiran cada
+/// pocos días y hay que renovarlas a mano; hay una rutina diaria vigilando
+/// `/health` que avisa cuando pase. El hostname de Tailscale
+/// (`laptop-vmiof47a.tail939abb.ts.net`) sigue siendo el servidor local de
+/// desarrollo — se configura a mano en Ajustes avanzados, ya no es el
+/// default.
 class OfficialServer {
   const OfficialServer._();
 
   static const String url = String.fromEnvironment(
     'HEARDY_OFFICIAL_SERVER_URL',
-    defaultValue: 'https://laptop-vmiof47a.tail939abb.ts.net',
+    defaultValue: 'https://heardy.onrender.com',
   );
 
   static const String apiKey = String.fromEnvironment(

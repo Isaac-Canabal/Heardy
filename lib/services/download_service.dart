@@ -12,6 +12,7 @@ import 'audio_identity.dart';
 import 'database_helper.dart';
 import 'download_source.dart';
 import 'lyrics_service.dart';
+import 'mp4_chunk_offset_fix.dart';
 import 'storage_service.dart';
 
 /// Qué pasó con una descarga, para que la UI diga algo útil.
@@ -279,6 +280,11 @@ class DownloadService {
 
   Future<void> _writeTags(File file, RemoteTrack track, Uint8List? cover) async {
     try {
+      // `audio_metadata_reader` reescribe moov/ilst sin recalcular stco, así
+      // que hay que guardar el archivo tal cual antes de tocarlo para poder
+      // calcular cuánto se desplazó mdat después — ver mp4_chunk_offset_fix.dart.
+      final originalBytes = file.readAsBytesSync();
+
       updateMetadata(file, (metadata) {
         metadata.setTitle(track.title);
         metadata.setArtist(track.artist);
@@ -289,6 +295,8 @@ class DownloadService {
           ]);
         }
       });
+
+      repairMp4ChunkOffsetsAfterTagWrite(file, originalBytes);
     } catch (e) {
       // No fatal: la metadata sigue viviendo en la fila de `songs`. Solo se
       // pierde la propiedad de que el archivo se describa a sí mismo.
