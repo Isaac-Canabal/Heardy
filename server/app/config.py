@@ -82,6 +82,20 @@ API_KEYS = parse_api_keys(os.environ.get("HEARDY_API_KEYS", ""), API_KEY)
 # docker-compose lo cambia a http://bgutil-pot:4416 (nombre del servicio).
 POT_PROVIDER_URL = os.environ.get("HEARDY_POT_PROVIDER_URL", "http://127.0.0.1:4416").strip()
 
+# Alternativa al sidecar HTTP de arriba: el "script mode" del proveedor, que
+# genera cada token invocando un subproceso Node en vez de hablar con un
+# servidor siempre encendido. Vacío = modo HTTP (el de siempre); con valor =
+# ruta al directorio `server/` del proveedor ya compilado (el que contiene
+# `build/generate_once.js`).
+#
+# Existe por las PaaS gratuitas, que sólo dan UN servicio: dos servicios que se
+# duermen por separado se rompen entre sí, porque la API despierta, llama al
+# proveedor dormido y la petición expira antes de que arranque. El costo real,
+# documentado por el propio proveedor: es más lento (levanta un proceso Node
+# por token) y lleva mal la concurrencia alta — por eso NO es el valor por
+# defecto y un servidor propio debería seguir con el sidecar HTTP.
+POT_PROVIDER_SCRIPT_HOME = os.environ.get("HEARDY_POT_PROVIDER_SCRIPT_HOME", "").strip()
+
 # Caché LRU en disco: un reintento tras un corte de red no debe volver a
 # golpear a YouTube. El presupuesto de IP es el recurso escaso, no el disco.
 CACHE_DIR = Path(os.environ.get("HEARDY_CACHE_DIR") or (SERVER_ROOT / ".cache"))

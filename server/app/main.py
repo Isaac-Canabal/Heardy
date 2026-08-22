@@ -146,13 +146,25 @@ async def health() -> JSONResponse:
     distinguir 'servidor apagado' de 'clave incorrecta' antes de tener clave."""
     pot_reachable = False
     pot_detail = "no comprobado"
-    try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            response = await client.get(f"{config.POT_PROVIDER_URL}/ping")
-            pot_reachable = response.status_code < 500
-            pot_detail = f"HTTP {response.status_code}"
-    except Exception as e:  # noqa: BLE001 — es un diagnóstico, cualquier fallo es informativo
-        pot_detail = f"inalcanzable: {type(e).__name__}"
+    pot_target = config.POT_PROVIDER_URL
+    if config.POT_PROVIDER_SCRIPT_HOME:
+        # En script mode no hay nada a lo que hacer ping: el proveedor es un
+        # subproceso que se levanta por token. Comprobar el HTTP igual daría
+        # siempre "inalcanzable", y la app lo enseña como advertencia — un
+        # falso positivo peor que no comprobar. Lo verificable acá es que el
+        # script exista; que genere tokens sólo se sabe al descargar.
+        script = Path(config.POT_PROVIDER_SCRIPT_HOME) / "build" / "generate_once.js"
+        pot_target = str(script)
+        pot_reachable = script.is_file()
+        pot_detail = "script listo" if pot_reachable else "falta build/generate_once.js"
+    else:
+        try:
+            async with httpx.AsyncClient(timeout=3.0) as client:
+                response = await client.get(f"{config.POT_PROVIDER_URL}/ping")
+                pot_reachable = response.status_code < 500
+                pot_detail = f"HTTP {response.status_code}"
+        except Exception as e:  # noqa: BLE001 — es un diagnóstico, cualquier fallo es informativo
+            pot_detail = f"inalcanzable: {type(e).__name__}"
 
     cached_files = len(list(config.CACHE_DIR.glob("*.m4a"))) if config.CACHE_DIR.is_dir() else 0
 
@@ -162,7 +174,8 @@ async def health() -> JSONResponse:
             "ytdlpVersion": ytdlp_client.version(),
             "authRequired": bool(config.API_KEYS) and not config.ALLOW_NO_AUTH,
             "potProvider": {
-                "url": config.POT_PROVIDER_URL,
+                "mode": "script" if config.POT_PROVIDER_SCRIPT_HOME else "http",
+                "url": pot_target,
                 "reachable": pot_reachable,
                 "detail": pot_detail,
             },

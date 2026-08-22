@@ -137,9 +137,16 @@ def _base_opts() -> dict:
         # Regex, no nombres exactos, para no romperse si yt-dlp renombra
         # extractores en una actualización futura.
         "allowed_extractors": ["youtube.*"],
-        # El sidecar que genera PO Tokens. Sin esto, YouTube devuelve 403 en
-        # la mayoría de clientes desde 2025.
+        # Quien genera los PO Tokens. Sin esto, YouTube devuelve 403 en la
+        # mayoría de clientes desde 2025. Dos implementaciones posibles del
+        # mismo proveedor, y hay que elegir UNA: el sidecar HTTP siempre
+        # encendido (por defecto, más rápido) o el script invocado por token
+        # (para plataformas que sólo dan un servicio). Ver POT_PROVIDER_SCRIPT_HOME.
         "extractor_args": {
+            "youtubepot-bgutilscript": {"server_home": [config.POT_PROVIDER_SCRIPT_HOME]},
+        }
+        if config.POT_PROVIDER_SCRIPT_HOME
+        else {
             "youtubepot-bgutilhttp": {"base_url": [config.POT_PROVIDER_URL]},
         },
         # yt-dlp solo habilita "deno" por defecto para el desafío de firma
