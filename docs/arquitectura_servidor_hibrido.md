@@ -3,6 +3,48 @@
 > Documento de arquitectura, agosto 2026. Ver `CLAUDE.md`, sección "YouTube
 > downloads", para el estado real del código en `feature/youtube-downloads`.
 
+## Actualización 2026-08-22 — Render probado y descartado por medición; la cifra "12-24" de la sección 1 estaba mal atribuida
+
+Se desplegó el servidor **de verdad** en Render (tier gratis, Docker, servicio
+único con el proveedor de PO tokens en script mode) y se midió. Dos
+conclusiones, una de ellas correctiva.
+
+**1. Render funciona como plataforma; lo que falla es su IP.**
+Todo lo que se temía del tier gratis resultó no ser el problema: el build
+multi-etapa compiló el proveedor en la versión exacta del plugin, `/health`
+respondió en 0.6 s y **`/search` en 1.9 s** — o sea que 0.1 vCPU **sí** aguanta
+la extracción. Lo que falló fue `/audio`: `Sign in to confirm you're not a bot`
+en la **primera** descarga, y a partir de ahí hasta `/resolve` empezó a dar lo
+mismo. Reintento y otro vídeo, igual. Como el pool de IPs es el mismo en los
+planes de pago, **ningún plan de Render arregla esto**, y lo mismo vale para
+cualquier PaaS/VPS de nube.
+
+**2. La cifra de "~12-24 manifests por IP" que cita la sección 1 NO describe
+el servidor actual.** Viene de `docs/investigacion_muro_antibot.md`, que es del
+**2026-07-28**, cuatro días antes de que existiera el servidor yt-dlp, y mide
+el extractor viejo dentro de la app (`youtube_explode`, `youtube_service.dart`,
+sin PO Tokens) — justo el que DD1 abandonó por no saber generarlos. Ese
+documento no menciona yt-dlp ni bgutil ni una sola vez.
+
+**El dato real del montaje de hoy, con el mismo código y la misma versión de
+yt-dlp:** en IP residencial se descarga **durante horas sin bloqueo alguno**
+(uso sostenido real de Isaac). En Render se cae a la primera petición. La
+diferencia la hace **sólo la IP**, y en residencial no hay techo práctico.
+
+**Consecuencia para la decisión de hosting:** el problema a resolver nunca fue
+"necesito la nube", sino "depende de que un PC concreto esté encendido". Con
+residencial sin límite real, la solución es cualquier equipo barato **siempre
+encendido en casa** (Raspberry Pi, portátil viejo, NAS) manteniendo Tailscale
+Funnel — no mudarse a la nube, que cambia un problema de disponibilidad por uno
+de bloqueo permanente.
+
+**Palanca aún sin probar** si algún día se quisiera nube igual: cookies de una
+cuenta logueada (`HEARDY_COOKIES_FILE`, ya soportado) o un proxy residencial
+delante del tráfico saliente. La primera ata las descargas a una cuenta de
+Google que puede quedar marcada al usarse desde datacenter.
+
+---
+
 ## Actualización 2026-08-03 — Oracle Cloud descartado, PC propio + Tailscale Funnel en su lugar
 
 Las secciones 2 y 3 de abajo recomendaban Oracle Cloud Always Free y quedan
