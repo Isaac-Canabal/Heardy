@@ -22,6 +22,13 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   Duration _trackingMaxPosition = Duration.zero;
   bool _hasRecordedCurrentTrack = false;
 
+  // "Reproducir a continuación": posición donde cae la próxima inserción vía
+  // insertPlayNext. null = sin lote en curso, se recalcula desde el índice
+  // actual. Se incrementa tras cada inserción para que las canciones
+  // encoladas mantengan orden FIFO entre sí (no cada una salta a currentIndex+1,
+  // sino que se van agregando al final del tramo ya encolado).
+  int? _playNextInsertIndex;
+
   AudioPlayer get player => _player;
 
   // --- SLEEP TIMER ---
@@ -195,6 +202,9 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
       } else {
         _resetTracking();
       }
+      // La canción actual cambió: el próximo lote de "reproducir a
+      // continuación" vuelve a calcularse desde aquí.
+      _playNextInsertIndex = null;
     });
 
     // Force playbackState update when SHUFFLE mode changes (just_audio doesn't emit PlaybackEvent for this)
@@ -216,7 +226,14 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
         }
         await _finalizePlay();
 
-        // LoopMode.one is handled internally by just_audio (it repeats automatically).
+        // LoopMode.one is handled internally by just_audio (it repeats automatically,
+        // sin cambiar currentIndex — así que currentIndexStream nunca vuelve a llamar
+        // _startTracking). Re-armamos el tracking manualmente para que una repetición
+        // que vuelva a pasar del 50% cuente como una escucha nueva.
+        if (_player.loopMode == LoopMode.one && _trackingMediaItem != null) {
+          _startTracking(_trackingMediaItem!);
+        }
+
         // LoopMode.all: wrap around to first track after the last one.
         // LoopMode.off: stop naturally at end.
         if (_player.loopMode == LoopMode.all) {
@@ -305,7 +322,18 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   }
 
   @override
-  Future<void> seek(Duration position) => _player.seek(position);
+  Future<void> seek(Duration position) {
+    // Si ya contamos esta canción como escuchada y el usuario rebobina
+    // manualmente cerca del inicio, re-armamos el tracking: una repetición
+    // manual que vuelva a pasar del 50% también cuenta como escucha nueva.
+    if (_hasRecordedCurrentTrack &&
+        position.inSeconds < 3 &&
+        _trackingMaxPosition.inSeconds > 10) {
+      _trackingMaxPosition = position;
+      _hasRecordedCurrentTrack = false;
+    }
+    return _player.seek(position);
+  }
 
   Future<void> seekRelative(Duration offset) async {
     final duration = _player.duration ?? Duration.zero;
@@ -576,6 +604,64 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
       }
     } catch (e) {
       print('Error agregando items a la queue: $e');
+    }
+  }
+
+  /// Inserta [item] para que se reproduzca justo después de la canción
+  /// actual, o después de la última canción ya insertada de esta forma
+  /// (cola FIFO: lo primero que se encola es lo primero en sonar de las
+  /// "próximas", no siempre pega un salto a la posición actual+1).
+  Future<void> insertPlayNext(MediaItem item) async {
+    try {
+      final path = item.extras?['filePath'] as String? ?? '';
+      if (path.isEmpty || !await _isPlayable(path)) {
+        print('Error: item no reproducible para insertPlayNext: ${item.id}');
+        return;
+      }
+
+      final currentQueue = queue.value;
+      if (_playlistSource == null || currentQueue.isEmpty) {
+        // Nada sonando ahora mismo: "reproducir después de la actual" no
+        // aplica, así que directamente la reproducimos.
+        await playPlaylist([item], item.id);
+        return;
+      }
+
+      final currentIndex = _player.currentIndex;
+      final existingIndex = currentQueue.indexWhere((existing) => existing.id == item.id);
+
+      // Ya es la canción actual: no hay "después de la actual" que aplicar.
+      if (existingIndex != -1 && existingIndex == currentIndex) return;
+
+      _playNextInsertIndex ??= (currentIndex ?? -1) + 1;
+      final target = _playNextInsertIndex!.clamp(0, currentQueue.length);
+
+      if (existingIndex != -1) {
+        // Caso normal: la canción deslizada ya está en la playlist que se
+        // está reproduciendo (es la MISMA cola) — antes esto se descartaba
+        // en silencio por el chequeo de duplicados, que era el bug real:
+        // "reproducir a continuación" nunca hacía nada sobre una canción de
+        // la propia playlist. Se MUEVE a la posición calculada en vez de
+        // insertar un duplicado; moveQueueItem ya resuelve el ajuste de
+        // índice cuando existingIndex < target (misma convención que
+        // ReorderableListView.onReorder).
+        await moveQueueItem(existingIndex, target);
+        _playNextInsertIndex = existingIndex < target ? target : target + 1;
+        return;
+      }
+
+      final newQueue = List<MediaItem>.from(currentQueue)..insert(target, item);
+      queue.add(newQueue);
+
+      try {
+        await _playlistSource!.insert(target, AudioSource.uri(_sourceUriFor(path), tag: item));
+        _playNextInsertIndex = target + 1;
+      } on PlatformException catch (e) {
+        print('Error PlatformException en insertPlayNext: ${e.message}');
+        queue.add(currentQueue);
+      }
+    } catch (e) {
+      print('Error insertando "reproducir a continuación": $e');
     }
   }
 

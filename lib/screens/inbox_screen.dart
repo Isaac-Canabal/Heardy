@@ -9,6 +9,7 @@ import '../services/database_helper.dart';
 import '../services/storage_service.dart';
 import '../services/library_scan_service.dart';
 import '../theme/app_theme.dart';
+import '../l10n/app_localizations.dart';
 
 /// Batch triage for songs imported loose in the library root, with no
 /// playlist assigned yet (D6). Never a per-song dialog — select as many as
@@ -64,7 +65,7 @@ class _InboxScreenState extends State<InboxScreen> {
       context.read<MusicProvider>().setLibraryRootUri(rootUri);
     } catch (e) {
       if (!mounted) return;
-      _showSnack('No se pudo elegir la carpeta: $e', isError: true);
+      _showSnack(AppLocalizations.of(context)!.settingsFolderPickError(e.toString()), isError: true);
     }
   }
 
@@ -84,10 +85,10 @@ class _InboxScreenState extends State<InboxScreen> {
       musicProvider.notifyLibraryChanged();
       await _load();
       if (!mounted) return;
+      final l10n = AppLocalizations.of(context)!;
       _showSnack(
-        'Nuevas: ${result.inserted} · Movidas: ${result.moved} · '
-        'Actualizadas: ${result.updated} · Sin cambios: ${result.unchanged}'
-        '${result.missing > 0 ? ' · Faltantes: ${result.missing}' : ''}',
+        l10n.inboxScanSummaryBase(result.inserted, result.moved, result.updated, result.unchanged) +
+            (result.missing > 0 ? l10n.inboxScanMissingSuffix(result.missing) : ''),
       );
     } on LibraryRootUnavailableException {
       // The scanner already tombstoned every previously-imported song
@@ -100,18 +101,19 @@ class _InboxScreenState extends State<InboxScreen> {
       await context.read<MusicProvider>().refreshInboxCount();
       await _load();
       if (!mounted) return;
+      final l10n = AppLocalizations.of(context)!;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: const Text('La carpeta de tu biblioteca ya no está disponible. Elegí una de nuevo.'),
+          content: Text(l10n.inboxRootUnavailable),
           backgroundColor: Colors.red.withValues(alpha: 0.8),
           behavior: SnackBarBehavior.floating,
           duration: const Duration(seconds: 6),
-          action: SnackBarAction(label: 'Elegir carpeta', onPressed: _pickFolder),
+          action: SnackBarAction(label: l10n.settingsChooseFolder, onPressed: _pickFolder),
         ),
       );
     } catch (e) {
       if (!mounted) return;
-      _showSnack('Error al escanear: $e', isError: true);
+      _showSnack(AppLocalizations.of(context)!.inboxScanError(e.toString()), isError: true);
     } finally {
       if (mounted) setState(() => _scanning = false);
     }
@@ -149,7 +151,7 @@ class _InboxScreenState extends State<InboxScreen> {
     if (!mounted) return;
     await context.read<MusicProvider>().refreshInboxCount();
     if (!mounted) return;
-    _showSnack('${ids.length} ${ids.length == 1 ? "canción ignorada" : "canciones ignoradas"}');
+    _showSnack(AppLocalizations.of(context)!.inboxIgnoredCountSnack(ids.length));
   }
 
   /// Reverses [_ignoreSelected] — a dismiss must never be a dead end.
@@ -162,7 +164,7 @@ class _InboxScreenState extends State<InboxScreen> {
     if (!mounted) return;
     await context.read<MusicProvider>().refreshInboxCount();
     if (!mounted) return;
-    _showSnack('${ids.length} ${ids.length == 1 ? "canción restaurada" : "canciones restauradas"} a la bandeja');
+    _showSnack(AppLocalizations.of(context)!.inboxRestoredCountSnack(ids.length));
   }
 
   Future<void> _assignSelected() async {
@@ -196,13 +198,14 @@ class _InboxScreenState extends State<InboxScreen> {
     await musicProvider.refreshInboxCount();
     await _load();
     if (!mounted) return;
-    _showSnack('${ids.length} ${ids.length == 1 ? "canción asignada" : "canciones asignadas"}');
+    _showSnack(AppLocalizations.of(context)!.inboxAssignedCountSnack(ids.length));
   }
 
   @override
   Widget build(BuildContext context) {
     final hasSelection = _selectedIds.isNotEmpty;
     final libraryRootUri = context.watch<MusicProvider>().libraryRootUri;
+    final l10n = AppLocalizations.of(context)!;
 
     return SafeArea(
       child: Column(
@@ -216,9 +219,9 @@ class _InboxScreenState extends State<InboxScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'Bandeja de entrada',
-                        style: TextStyle(
+                      Text(
+                        l10n.inboxTitle,
+                        style: const TextStyle(
                           color: Colors.white,
                           fontSize: 28,
                           fontWeight: FontWeight.w800,
@@ -227,7 +230,7 @@ class _InboxScreenState extends State<InboxScreen> {
                       ),
                       if (_activeSongs.isNotEmpty)
                         Text(
-                          _showIgnored ? 'Ignoradas — se pueden restaurar' : 'Archivos sueltos sin playlist',
+                          _showIgnored ? l10n.inboxSubtitleIgnored : l10n.inboxSubtitleLoose,
                           style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
                         ),
                     ],
@@ -247,13 +250,13 @@ class _InboxScreenState extends State<InboxScreen> {
               child: Row(
                 children: [
                   ChoiceChip(
-                    label: Text('Bandeja (${_songs.length})'),
+                    label: Text(l10n.inboxTabActive(_songs.length)),
                     selected: !_showIgnored,
                     onSelected: (_) => _switchTab(false),
                   ),
                   const SizedBox(width: 8),
                   ChoiceChip(
-                    label: Text('Ignoradas (${_ignoredSongs.length})'),
+                    label: Text(l10n.inboxTabIgnored(_ignoredSongs.length)),
                     selected: _showIgnored,
                     onSelected: (_) => _switchTab(true),
                   ),
@@ -273,11 +276,13 @@ class _InboxScreenState extends State<InboxScreen> {
                           : Icons.check_box_outline_blank_rounded,
                       size: 18,
                     ),
-                    label: Text(_selectedIds.length == _activeSongs.length ? 'Ninguna' : 'Seleccionar todo'),
+                    label: Text(_selectedIds.length == _activeSongs.length ? l10n.inboxSelectNone : l10n.inboxSelectAll),
                   ),
                   const Spacer(),
                   Text(
-                    _showIgnored ? '${_activeSongs.length} ignoradas' : '${_activeSongs.length} sin asignar',
+                    _showIgnored
+                        ? l10n.inboxCountIgnoredSuffix(_activeSongs.length)
+                        : l10n.inboxCountUnassignedSuffix(_activeSongs.length),
                     style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12),
                   ),
                 ],
@@ -330,7 +335,7 @@ class _InboxScreenState extends State<InboxScreen> {
                             shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                           ),
                           icon: const Icon(Icons.restore_rounded, size: 18),
-                          label: Text('Restaurar a la bandeja (${_selectedIds.length})'),
+                          label: Text(l10n.inboxRestoreButton(_selectedIds.length)),
                           onPressed: _restoreSelected,
                         ),
                       )
@@ -345,7 +350,7 @@ class _InboxScreenState extends State<InboxScreen> {
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                               ),
                               icon: const Icon(Icons.visibility_off_rounded, size: 18),
-                              label: Text('Ignorar (${_selectedIds.length})'),
+                              label: Text(l10n.inboxIgnoreButton(_selectedIds.length)),
                               onPressed: _ignoreSelected,
                             ),
                           ),
@@ -360,7 +365,7 @@ class _InboxScreenState extends State<InboxScreen> {
                                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                               ),
                               icon: const Icon(Icons.playlist_add_rounded, size: 18),
-                              label: Text('Asignar a… (${_selectedIds.length})'),
+                              label: Text(l10n.inboxAssignButton(_selectedIds.length)),
                               onPressed: _assignSelected,
                             ),
                           ),
@@ -374,6 +379,7 @@ class _InboxScreenState extends State<InboxScreen> {
   }
 
   Widget _buildNoFolderState() {
+    final l10n = AppLocalizations.of(context)!;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -382,14 +388,14 @@ class _InboxScreenState extends State<InboxScreen> {
           children: [
             Icon(Icons.folder_off_rounded, size: 56, color: Colors.white.withValues(alpha: 0.3)),
             const SizedBox(height: 16),
-            const Text(
-              'Todavía no elegiste una carpeta',
-              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+            Text(
+              l10n.inboxNoFolderTitle,
+              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 8),
             Text(
-              'Elegí dónde vive tu música para poder escanearla.',
+              l10n.inboxNoFolderBody,
               style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
               textAlign: TextAlign.center,
             ),
@@ -401,7 +407,7 @@ class _InboxScreenState extends State<InboxScreen> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
               icon: const Icon(Icons.folder_rounded, size: 18),
-              label: const Text('Elegir carpeta'),
+              label: Text(l10n.settingsChooseFolder),
               onPressed: _pickFolder,
             ),
           ],
@@ -411,6 +417,7 @@ class _InboxScreenState extends State<InboxScreen> {
   }
 
   Widget _buildEmptyState() {
+    final l10n = AppLocalizations.of(context)!;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -419,13 +426,13 @@ class _InboxScreenState extends State<InboxScreen> {
           children: [
             Icon(Icons.inbox_rounded, size: 56, color: Colors.white.withValues(alpha: 0.3)),
             const SizedBox(height: 16),
-            const Text(
-              'Todo organizado',
-              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+            Text(
+              l10n.inboxEmptyTitle,
+              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 8),
             Text(
-              'Metés archivos en la carpeta desde fuera de la app y tocás recargar acá arriba.',
+              l10n.inboxEmptyBody,
               style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
               textAlign: TextAlign.center,
             ),
@@ -436,6 +443,7 @@ class _InboxScreenState extends State<InboxScreen> {
   }
 
   Widget _buildNoIgnoredState() {
+    final l10n = AppLocalizations.of(context)!;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -444,13 +452,13 @@ class _InboxScreenState extends State<InboxScreen> {
           children: [
             Icon(Icons.visibility_off_rounded, size: 56, color: Colors.white.withValues(alpha: 0.3)),
             const SizedBox(height: 16),
-            const Text(
-              'No ignoraste ninguna canción',
-              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+            Text(
+              l10n.inboxNoIgnoredTitle,
+              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
             ),
             const SizedBox(height: 8),
             Text(
-              'Las que descartés desde la bandeja aparecen acá, y podés traerlas de vuelta cuando quieras.',
+              l10n.inboxNoIgnoredBody,
               style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
               textAlign: TextAlign.center,
             ),
@@ -561,6 +569,7 @@ class _AssignToPlaylistsSheetState extends State<_AssignToPlaylistsSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     final newName = _newPlaylistController.text.trim();
     final canConfirm = _selected.isNotEmpty || newName.isNotEmpty;
 
@@ -570,11 +579,11 @@ class _AssignToPlaylistsSheetState extends State<_AssignToPlaylistsSheet> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(20, 20, 20, 8),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
               child: Text(
-                'Asignar a…',
-                style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700),
+                l10n.inboxAssignSheetTitle,
+                style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700),
               ),
             ),
             if (widget.playlists.isNotEmpty)
@@ -600,9 +609,9 @@ class _AssignToPlaylistsSheetState extends State<_AssignToPlaylistsSheet> {
                 controller: _newPlaylistController,
                 onChanged: (_) => setState(() {}),
                 style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  hintText: 'Crear nueva playlist…',
-                  prefixIcon: Icon(Icons.add_rounded),
+                decoration: InputDecoration(
+                  hintText: l10n.commonCreateNewPlaylistHint,
+                  prefixIcon: const Icon(Icons.add_rounded),
                 ),
               ),
             ),
@@ -623,7 +632,7 @@ class _AssignToPlaylistsSheetState extends State<_AssignToPlaylistsSheet> {
                             _AssignResult(_selected.toList(), newName.isEmpty ? null : newName),
                           )
                       : null,
-                  child: const Text('Confirmar'),
+                  child: Text(l10n.commonConfirm),
                 ),
               ),
             ),

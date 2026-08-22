@@ -245,14 +245,6 @@ class DownloadProvider extends ChangeNotifier {
   /// servidor está bajando el vídeo y todavía no hay bytes que contar.
   double get progress => _progress;
 
-  String get phaseLabel => switch (_phase) {
-        DownloadPhase.idle => '',
-        DownloadPhase.resolving => 'Obteniendo datos…',
-        DownloadPhase.preparing => 'Preparando en el servidor…',
-        DownloadPhase.downloading => 'Descargando…',
-        DownloadPhase.saving => 'Guardando en la biblioteca…',
-      };
-
   // --- Encolar ---
 
   /// Encola una pista. [metadataComplete] debe ser true sólo si [track] viene

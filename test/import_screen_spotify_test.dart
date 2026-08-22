@@ -14,6 +14,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart';
 import 'package:path_provider_platform_interface/path_provider_platform_interface.dart';
@@ -34,6 +35,7 @@ import 'package:heardy/services/download_service.dart';
 import 'package:heardy/services/download_source.dart';
 import 'package:heardy/services/spotify_service.dart';
 import 'package:heardy/theme/app_theme.dart';
+import 'package:heardy/l10n/app_localizations.dart';
 
 import 'fake_saf.dart';
 
@@ -208,6 +210,14 @@ void main() {
         ],
         child: MaterialApp(
           theme: AppTheme.dark(),
+          locale: settingsProvider.locale,
+          localizationsDelegates: const [
+            AppLocalizations.delegate,
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          supportedLocales: AppLocalizations.supportedLocales,
           home: Scaffold(body: ImportScreen(spotifyService: spotify)),
         ),
       ),
@@ -376,7 +386,7 @@ void main() {
       await tester.tap(find.byKey(const Key('analyze_button')));
       await _settle(tester);
 
-      expect(find.text('Descargar 1 canciones'), findsOneWidget);
+      expect(find.text('Descargar 1 canción'), findsOneWidget);
 
       await tester.tap(find.byKey(const Key('download_spotify_button')));
       await _settle(tester);

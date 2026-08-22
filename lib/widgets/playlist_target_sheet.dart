@@ -5,6 +5,7 @@ import 'package:uuid/uuid.dart';
 import '../models/playlist.dart';
 import '../providers/music_provider.dart';
 import '../theme/app_theme.dart';
+import '../l10n/app_localizations.dart';
 
 /// Resultado del selector: o una playlist existente, o el nombre de una que
 /// hay que crear. Compartido entre ImportScreen y SearchScreen — cualquier
@@ -18,8 +19,17 @@ class PlaylistChoice {
 }
 
 /// Abre el selector y devuelve la elección del usuario (`null` si canceló).
-Future<PlaylistChoice?> pickTargetPlaylist(BuildContext context, {String? suggestedName}) {
-  final playlists = context.read<MusicProvider>().playlists;
+/// [excludePlaylistId] oculta esa playlist de la lista — para "mover"/"copiar"
+/// una canción, no tiene sentido ofrecer la playlist en la que ya está.
+Future<PlaylistChoice?> pickTargetPlaylist(
+  BuildContext context, {
+  String? suggestedName,
+  String? excludePlaylistId,
+}) {
+  var playlists = context.read<MusicProvider>().playlists;
+  if (excludePlaylistId != null) {
+    playlists = playlists.where((p) => p.id != excludePlaylistId).toList();
+  }
   return showModalBottomSheet<PlaylistChoice>(
     context: context,
     backgroundColor: AppTheme.surface,
@@ -75,6 +85,7 @@ class _PlaylistTargetSheetState extends State<PlaylistTargetSheet> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     final newName = _newNameController.text.trim();
     final canConfirm = _selectedId != null || newName.isNotEmpty;
 
@@ -84,11 +95,11 @@ class _PlaylistTargetSheetState extends State<PlaylistTargetSheet> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(20, 20, 20, 8),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
               child: Text(
-                '¿A qué playlist?',
-                style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700),
+                l10n.playlistTargetSheetTitle,
+                style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700),
               ),
             ),
             if (widget.playlists.isNotEmpty)
@@ -119,9 +130,9 @@ class _PlaylistTargetSheetState extends State<PlaylistTargetSheet> {
                   if (_newNameController.text.trim().isNotEmpty) _selectedId = null;
                 }),
                 style: const TextStyle(color: Colors.white),
-                decoration: const InputDecoration(
-                  hintText: 'Crear nueva playlist…',
-                  prefixIcon: Icon(Icons.add_rounded),
+                decoration: InputDecoration(
+                  hintText: l10n.commonCreateNewPlaylistHint,
+                  prefixIcon: const Icon(Icons.add_rounded),
                 ),
               ),
             ),
@@ -145,7 +156,7 @@ class _PlaylistTargetSheetState extends State<PlaylistTargetSheet> {
                                 : PlaylistChoice.newPlaylist(newName),
                           )
                       : null,
-                  child: const Text('Confirmar'),
+                  child: Text(l10n.commonConfirm),
                 ),
               ),
             ),

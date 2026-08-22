@@ -1,4 +1,6 @@
+import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -6,7 +8,10 @@ import 'package:audio_service/audio_service.dart';
 import 'package:palette_generator/palette_generator.dart';
 import '../services/audio_player_handler.dart';
 import '../services/lyrics_service.dart';
+import '../services/translation_service.dart';
+import '../providers/settings_provider.dart';
 import '../theme/app_theme.dart';
+import '../l10n/app_localizations.dart';
 
 class NowPlayingScreen extends StatefulWidget {
   const NowPlayingScreen({super.key});
@@ -59,7 +64,8 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
         maximumColorCount: 12,
       );
 
-      final extractedColor = paletteGenerator.dominantColor?.color ??
+      final extractedColor =
+          paletteGenerator.dominantColor?.color ??
           paletteGenerator.darkMutedColor?.color ??
           paletteGenerator.darkVibrantColor?.color ??
           const Color(0xFF1E1E1E);
@@ -82,6 +88,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
   @override
   Widget build(BuildContext context) {
     final audioHandler = Provider.of<AudioPlayerHandler>(context);
+    final l10n = AppLocalizations.of(context)!;
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -90,12 +97,41 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
         backgroundColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
-          icon: const Icon(Icons.keyboard_arrow_down, size: 30, color: Colors.white),
+          icon: const Icon(
+            Icons.keyboard_arrow_down,
+            size: 30,
+            color: Colors.white,
+          ),
           onPressed: () => Navigator.of(context).pop(),
         ),
-        title: const Text(
-          'Reproduciendo',
-          style: TextStyle(color: Colors.white70, fontSize: 14, letterSpacing: 1.1),
+        title: StreamBuilder<MediaItem?>(
+          stream: audioHandler.mediaItem,
+          builder: (context, snapshot) {
+            final item = snapshot.data;
+            final playlistId = item?.extras?['playlist_id'] as String?;
+            final playlistName = item?.album ?? '';
+            final label = playlistName.isNotEmpty
+                ? 'Reproduciendo desde $playlistName'
+                : 'Reproduciendo';
+            final text = Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white70,
+                fontSize: 14,
+                letterSpacing: 1.1,
+              ),
+            );
+            if (playlistId == null || playlistId.isEmpty) return text;
+            return InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: () => Navigator.of(
+                context,
+              ).pushNamed('/playlist', arguments: playlistId),
+              child: text,
+            );
+          },
         ),
         centerTitle: true,
         actions: [
@@ -103,15 +139,20 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
             stream: audioHandler.playbackState,
             builder: (context, stateSnapshot) {
               final state = stateSnapshot.data;
-              final isShuffleActive = state?.shuffleMode == AudioServiceShuffleMode.all;
+              final isShuffleActive =
+                  state?.shuffleMode == AudioServiceShuffleMode.all;
               final isRepeatActive =
-                  (state?.repeatMode ?? AudioServiceRepeatMode.none) != AudioServiceRepeatMode.none;
+                  (state?.repeatMode ?? AudioServiceRepeatMode.none) !=
+                  AudioServiceRepeatMode.none;
 
               return StreamBuilder<Duration?>(
                 stream: audioHandler.sleepTimerStream,
                 initialData: audioHandler.sleepTimerRemainingNow,
                 builder: (context, sleepSnapshot) {
-                  final isActive = isShuffleActive || isRepeatActive || sleepSnapshot.data != null;
+                  final isActive =
+                      isShuffleActive ||
+                      isRepeatActive ||
+                      sleepSnapshot.data != null;
 
                   return IconButton(
                     icon: Stack(
@@ -133,7 +174,8 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                           ),
                       ],
                     ),
-                    onPressed: () => _showOptionsBottomSheet(context, audioHandler),
+                    onPressed: () =>
+                        _showOptionsBottomSheet(context, audioHandler),
                   );
                 },
               );
@@ -146,10 +188,10 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
         builder: (context, mediaSnapshot) {
           final mediaItem = mediaSnapshot.data;
           if (mediaItem == null) {
-            return const Center(
+            return Center(
               child: Text(
-                'No hay música seleccionada',
-                style: TextStyle(color: Colors.white54),
+                l10n.nowPlayingNoMusic,
+                style: const TextStyle(color: Colors.white54),
               ),
             );
           }
@@ -175,193 +217,272 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
               ),
             ),
             child: SafeArea(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  // 1. Prominent album cover
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 32.0),
-                    child: Card(
-                      elevation: 16,
-                      shadowColor: _dominantColor.withValues(alpha: 0.3),
-                      shape: RoundedRectangleBorder(
-                        borderRadius: BorderRadius.circular(20),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  // El arte fijo a 300px podía desbordar: horizontalmente en
+                  // pantallas angostas (300 + 64 de padding = 364, más ancho
+                  // que muchos Android reales de 360dp) y verticalmente en
+                  // pantallas bajas, donde esta Column con spaceEvenly no
+                  // tenía margen para acomodarlo. Se limita al menor entre el
+                  // máximo original y lo que realmente entra en esta pantalla.
+                  final artSize = math.min(
+                    300.0,
+                    math.min(
+                      constraints.maxWidth - 64,
+                      constraints.maxHeight * 0.38,
+                    ),
+                  );
+                  return Column(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      // 1. Prominent album cover
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 32.0),
+                        child: Card(
+                          elevation: 16,
+                          shadowColor: _dominantColor.withValues(alpha: 0.3),
+                          shape: RoundedRectangleBorder(
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(20),
+                            child: _buildAlbumArt(mediaItem, artSize),
+                          ),
+                        ),
                       ),
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(20),
-                        child: _buildAlbumArt(mediaItem),
-                      ),
-                    ),
-                  ),
 
-                  // 2. Track information
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                    child: Column(
-                      children: [
-                        Text(
-                          mediaItem.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          textAlign: TextAlign.center,
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 22,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          mediaItem.artist ?? 'Artista desconocido',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          textAlign: TextAlign.center,
-                          style: TextStyle(
-                            color: Colors.grey[400],
-                            fontSize: 16,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  // 3. Quick Action Buttons
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        ElevatedButton.icon(
-                          icon: const Icon(Icons.lyrics_outlined, size: 18, color: Colors.white),
-                          label: const Text('Letra', style: TextStyle(color: Colors.white, fontSize: 13)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.white.withValues(alpha: 0.08),
-                            elevation: 0,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                          ),
-                          onPressed: () => _showLyricsBottomSheet(context, audioHandler, mediaItem),
-                        ),
-                        const SizedBox(width: 16),
-                        ElevatedButton.icon(
-                          icon: const Icon(Icons.queue_music, size: 18, color: Colors.white),
-                          label: const Text('Cola', style: TextStyle(color: Colors.white, fontSize: 13)),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.white.withValues(alpha: 0.08),
-                            elevation: 0,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-                            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                          ),
-                          onPressed: () => _showQueueBottomSheet(context, audioHandler),
-                        ),
-                      ],
-                    ),
-                  ),
-
-                  // 4. Seek Bar
-                  StreamBuilder<Duration>(
-                    stream: audioHandler.player.positionStream,
-                    builder: (context, posSnapshot) {
-                      final position = posSnapshot.data ?? Duration.zero;
-                      final duration = mediaItem.duration ?? Duration.zero;
-
-                      return SeekBar(
-                        position: position,
-                        duration: duration,
-                        onChangeEnd: (newPosition) {
-                          audioHandler.seek(newPosition);
-                        },
-                      );
-                    },
-                  ),
-
-                  // 5. Central Playback Controls
-                  StreamBuilder<PlaybackState>(
-                    stream: audioHandler.playbackState,
-                    builder: (context, stateSnapshot) {
-                      final state = stateSnapshot.data;
-                      final playing = state?.playing ?? false;
-
-                      return Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      // 2. Track information
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                        child: Column(
                           children: [
-                            // Every control sits in a 68-tall box (matching the play/pause
-                            // circle) so the Row centers all five on the exact same line —
-                            // IconButton's own minimum tap target height varies with iconSize
-                            // (26 vs 36), which otherwise throws off the optical center.
-                            SizedBox(
-                              height: 68,
-                              child: Center(
-                                child: IconButton(
-                                  icon: const Icon(Icons.replay_5, color: Colors.white70, size: 26),
-                                  tooltip: 'Retroceder 5 s',
-                                  onPressed: () => audioHandler.seekRelative(
-                                    const Duration(seconds: -5),
-                                  ),
-                                ),
-                              ),
-                            ),
-                            SizedBox(
-                              height: 68,
-                              child: Center(
-                                child: IconButton(
-                                  icon: const Icon(Icons.skip_previous, color: Colors.white, size: 36),
-                                  onPressed: () => audioHandler.skipToPrevious(),
-                                ),
-                              ),
-                            ),
-                            Container(
-                              width: 68,
-                              height: 68,
-                              decoration: const BoxDecoration(
-                                shape: BoxShape.circle,
+                            Text(
+                              mediaItem.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                              style: const TextStyle(
                                 color: Colors.white,
-                              ),
-                              child: IconButton(
-                                icon: Icon(
-                                  playing ? Icons.pause : Icons.play_arrow,
-                                  color: Colors.black,
-                                  size: 36,
-                                ),
-                                onPressed: () {
-                                  if (playing) {
-                                    audioHandler.pause();
-                                  } else {
-                                    audioHandler.play();
-                                  }
-                                },
+                                fontSize: 22,
+                                fontWeight: FontWeight.bold,
                               ),
                             ),
-                            SizedBox(
-                              height: 68,
-                              child: Center(
-                                child: IconButton(
-                                  icon: const Icon(Icons.skip_next, color: Colors.white, size: 36),
-                                  onPressed: () => audioHandler.skipToNext(),
-                                ),
-                              ),
-                            ),
-                            SizedBox(
-                              height: 68,
-                              child: Center(
-                                child: IconButton(
-                                  icon: const Icon(Icons.forward_5, color: Colors.white70, size: 26),
-                                  tooltip: 'Adelantar 5 s',
-                                  onPressed: () => audioHandler.seekRelative(
-                                    const Duration(seconds: 5),
-                                  ),
-                                ),
+                            const SizedBox(height: 6),
+                            Text(
+                              mediaItem.artist ?? l10n.commonUnknownArtist,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                              style: TextStyle(
+                                color: Colors.grey[400],
+                                fontSize: 16,
                               ),
                             ),
                           ],
                         ),
-                      );
-                    },
-                  ),
-                  const SizedBox(height: 10),
-                ],
+                      ),
+
+                      // 3. Quick Action Buttons
+                      Padding(
+                        padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            ElevatedButton.icon(
+                              icon: const Icon(
+                                Icons.lyrics_outlined,
+                                size: 18,
+                                color: Colors.white,
+                              ),
+                              label: Text(
+                                l10n.nowPlayingLyricsButton,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.white.withValues(
+                                  alpha: 0.08,
+                                ),
+                                elevation: 0,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 10,
+                                ),
+                              ),
+                              onPressed: () => _showLyricsBottomSheet(
+                                context,
+                                audioHandler,
+                                mediaItem,
+                                _dominantColor,
+                              ),
+                            ),
+                            const SizedBox(width: 16),
+                            ElevatedButton.icon(
+                              icon: const Icon(
+                                Icons.queue_music,
+                                size: 18,
+                                color: Colors.white,
+                              ),
+                              label: Text(
+                                l10n.nowPlayingQueueButton,
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 13,
+                                ),
+                              ),
+                              style: ElevatedButton.styleFrom(
+                                backgroundColor: Colors.white.withValues(
+                                  alpha: 0.08,
+                                ),
+                                elevation: 0,
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(20),
+                                ),
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 20,
+                                  vertical: 10,
+                                ),
+                              ),
+                              onPressed: () =>
+                                  _showQueueBottomSheet(context, audioHandler),
+                            ),
+                          ],
+                        ),
+                      ),
+
+                      // 4. Seek Bar
+                      StreamBuilder<Duration>(
+                        stream: audioHandler.player.positionStream,
+                        builder: (context, posSnapshot) {
+                          final position = posSnapshot.data ?? Duration.zero;
+                          final duration = mediaItem.duration ?? Duration.zero;
+
+                          return SeekBar(
+                            position: position,
+                            duration: duration,
+                            onChangeEnd: (newPosition) {
+                              audioHandler.seek(newPosition);
+                            },
+                          );
+                        },
+                      ),
+
+                      // 5. Central Playback Controls
+                      StreamBuilder<PlaybackState>(
+                        stream: audioHandler.playbackState,
+                        builder: (context, stateSnapshot) {
+                          final state = stateSnapshot.data;
+                          final playing = state?.playing ?? false;
+
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 16.0,
+                            ),
+                            child: Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                              children: [
+                                // Every control sits in a 68-tall box (matching the play/pause
+                                // circle) so the Row centers all five on the exact same line —
+                                // IconButton's own minimum tap target height varies with iconSize
+                                // (26 vs 36), which otherwise throws off the optical center.
+                                SizedBox(
+                                  height: 68,
+                                  child: Center(
+                                    child: IconButton(
+                                      icon: const Icon(
+                                        Icons.replay_5,
+                                        color: Colors.white70,
+                                        size: 26,
+                                      ),
+                                      tooltip: l10n.nowPlayingRewind5,
+                                      onPressed: () =>
+                                          audioHandler.seekRelative(
+                                            const Duration(seconds: -5),
+                                          ),
+                                    ),
+                                  ),
+                                ),
+                                SizedBox(
+                                  height: 68,
+                                  child: Center(
+                                    child: IconButton(
+                                      icon: const Icon(
+                                        Icons.skip_previous,
+                                        color: Colors.white,
+                                        size: 36,
+                                      ),
+                                      onPressed: () =>
+                                          audioHandler.skipToPrevious(),
+                                    ),
+                                  ),
+                                ),
+                                Container(
+                                  width: 68,
+                                  height: 68,
+                                  decoration: const BoxDecoration(
+                                    shape: BoxShape.circle,
+                                    color: Colors.white,
+                                  ),
+                                  child: IconButton(
+                                    icon: Icon(
+                                      playing ? Icons.pause : Icons.play_arrow,
+                                      color: Colors.black,
+                                      size: 36,
+                                    ),
+                                    onPressed: () {
+                                      if (playing) {
+                                        audioHandler.pause();
+                                      } else {
+                                        audioHandler.play();
+                                      }
+                                    },
+                                  ),
+                                ),
+                                SizedBox(
+                                  height: 68,
+                                  child: Center(
+                                    child: IconButton(
+                                      icon: const Icon(
+                                        Icons.skip_next,
+                                        color: Colors.white,
+                                        size: 36,
+                                      ),
+                                      onPressed: () =>
+                                          audioHandler.skipToNext(),
+                                    ),
+                                  ),
+                                ),
+                                SizedBox(
+                                  height: 68,
+                                  child: Center(
+                                    child: IconButton(
+                                      icon: const Icon(
+                                        Icons.forward_5,
+                                        color: Colors.white70,
+                                        size: 26,
+                                      ),
+                                      tooltip: l10n.nowPlayingForward5,
+                                      onPressed: () =>
+                                          audioHandler.seekRelative(
+                                            const Duration(seconds: 5),
+                                          ),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 10),
+                    ],
+                  );
+                },
               ),
             ),
           );
@@ -370,14 +491,15 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
     );
   }
 
-  String _repeatModeLabel(AudioServiceRepeatMode mode) {
+  String _repeatModeLabel(BuildContext context, AudioServiceRepeatMode mode) {
+    final l10n = AppLocalizations.of(context)!;
     switch (mode) {
       case AudioServiceRepeatMode.one:
-        return 'Una canción';
+        return l10n.nowPlayingRepeatOneLabel;
       case AudioServiceRepeatMode.all:
-        return 'Todas';
+        return l10n.nowPlayingRepeatAllLabel;
       default:
-        return 'Desactivado';
+        return l10n.nowPlayingOffLabel;
     }
   }
 
@@ -387,7 +509,11 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
     return '$minutes:${seconds.toString().padLeft(2, '0')}';
   }
 
-  void _showOptionsBottomSheet(BuildContext context, AudioPlayerHandler audioHandler) {
+  void _showOptionsBottomSheet(
+    BuildContext context,
+    AudioPlayerHandler audioHandler,
+  ) {
+    final l10n = AppLocalizations.of(context)!;
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
@@ -403,46 +529,71 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                 stream: audioHandler.playbackState,
                 builder: (context, snapshot) {
                   final state = snapshot.data;
-                  final isShuffle = state?.shuffleMode == AudioServiceShuffleMode.all;
-                  final repeatMode = state?.repeatMode ?? AudioServiceRepeatMode.none;
-                  final isRepeatActive = repeatMode != AudioServiceRepeatMode.none;
+                  final isShuffle =
+                      state?.shuffleMode == AudioServiceShuffleMode.all;
+                  final repeatMode =
+                      state?.repeatMode ?? AudioServiceRepeatMode.none;
+                  final isRepeatActive =
+                      repeatMode != AudioServiceRepeatMode.none;
 
                   return Column(
                     children: [
                       ListTile(
                         leading: Icon(
                           Icons.shuffle,
-                          color: isShuffle ? const Color(0xFF8C9EFF) : Colors.white54,
+                          color: isShuffle
+                              ? const Color(0xFF8C9EFF)
+                              : Colors.white54,
                         ),
-                        title: const Text('Aleatorio', style: TextStyle(color: Colors.white)),
+                        title: Text(
+                          l10n.nowPlayingShuffleTitle,
+                          style: const TextStyle(color: Colors.white),
+                        ),
                         trailing: Text(
-                          isShuffle ? 'Activado' : 'Desactivado',
+                          isShuffle
+                              ? l10n.nowPlayingOnLabel
+                              : l10n.nowPlayingOffLabel,
                           style: TextStyle(
-                            color: isShuffle ? const Color(0xFF8C9EFF) : Colors.white38,
+                            color: isShuffle
+                                ? const Color(0xFF8C9EFF)
+                                : Colors.white38,
                           ),
                         ),
                         onTap: () {
                           audioHandler.setShuffleMode(
-                            isShuffle ? AudioServiceShuffleMode.none : AudioServiceShuffleMode.all,
+                            isShuffle
+                                ? AudioServiceShuffleMode.none
+                                : AudioServiceShuffleMode.all,
                           );
                         },
                       ),
                       ListTile(
                         leading: Icon(
-                          repeatMode == AudioServiceRepeatMode.one ? Icons.repeat_one : Icons.repeat,
-                          color: isRepeatActive ? const Color(0xFF8C9EFF) : Colors.white54,
+                          repeatMode == AudioServiceRepeatMode.one
+                              ? Icons.repeat_one
+                              : Icons.repeat,
+                          color: isRepeatActive
+                              ? const Color(0xFF8C9EFF)
+                              : Colors.white54,
                         ),
-                        title: const Text('Repetir', style: TextStyle(color: Colors.white)),
+                        title: Text(
+                          l10n.nowPlayingRepeatTitle,
+                          style: const TextStyle(color: Colors.white),
+                        ),
                         trailing: Text(
-                          _repeatModeLabel(repeatMode),
+                          _repeatModeLabel(context, repeatMode),
                           style: TextStyle(
-                            color: isRepeatActive ? const Color(0xFF8C9EFF) : Colors.white38,
+                            color: isRepeatActive
+                                ? const Color(0xFF8C9EFF)
+                                : Colors.white38,
                           ),
                         ),
                         onTap: () {
                           final next = switch (repeatMode) {
-                            AudioServiceRepeatMode.none => AudioServiceRepeatMode.all,
-                            AudioServiceRepeatMode.all => AudioServiceRepeatMode.one,
+                            AudioServiceRepeatMode.none =>
+                              AudioServiceRepeatMode.all,
+                            AudioServiceRepeatMode.all =>
+                              AudioServiceRepeatMode.one,
                             _ => AudioServiceRepeatMode.none,
                           };
                           audioHandler.setRepeatMode(next);
@@ -460,24 +611,38 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                   final remaining = snapshot.data;
                   if (remaining != null) {
                     return ListTile(
-                      leading: const Icon(Icons.bedtime, color: Color(0xFF8C9EFF)),
-                      title: const Text('Temporizador de pausa', style: TextStyle(color: Colors.white)),
+                      leading: const Icon(
+                        Icons.bedtime,
+                        color: Color(0xFF8C9EFF),
+                      ),
+                      title: Text(
+                        l10n.nowPlayingSleepTimerTitle,
+                        style: const TextStyle(color: Colors.white),
+                      ),
                       subtitle: Text(
-                        'Quedan ${_formatRemaining(remaining)}',
+                        l10n.nowPlayingSleepTimerRemaining(
+                          _formatRemaining(remaining),
+                        ),
                         style: const TextStyle(color: Colors.white54),
                       ),
                       trailing: TextButton(
                         onPressed: () => audioHandler.cancelSleepTimer(),
-                        child: const Text('Cancelar'),
+                        child: Text(l10n.commonCancel),
                       ),
                     );
                   }
                   return ListTile(
-                    leading: const Icon(Icons.bedtime_outlined, color: Colors.white54),
-                    title: const Text('Temporizador de pausa', style: TextStyle(color: Colors.white)),
-                    subtitle: const Text(
-                      'Pausa la reproducción automáticamente',
-                      style: TextStyle(color: Colors.white38),
+                    leading: const Icon(
+                      Icons.bedtime_outlined,
+                      color: Colors.white54,
+                    ),
+                    title: Text(
+                      l10n.nowPlayingSleepTimerTitle,
+                      style: const TextStyle(color: Colors.white),
+                    ),
+                    subtitle: Text(
+                      l10n.nowPlayingSleepTimerBody,
+                      style: const TextStyle(color: Colors.white38),
                     ),
                     onTap: () {
                       Navigator.of(sheetContext).pop();
@@ -498,7 +663,11 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
     );
   }
 
-  void _showSleepTimerPicker(BuildContext context, AudioPlayerHandler audioHandler) {
+  void _showSleepTimerPicker(
+    BuildContext context,
+    AudioPlayerHandler audioHandler,
+  ) {
+    final l10n = AppLocalizations.of(context)!;
     showModalBottomSheet(
       context: context,
       backgroundColor: const Color(0xFF1A1A1A),
@@ -513,9 +682,13 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Text(
-                  'Temporizador de pausa',
-                  style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold),
+                Text(
+                  l10n.nowPlayingSleepTimerTitle,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 16,
+                    fontWeight: FontWeight.bold,
+                  ),
                 ),
                 const SizedBox(height: 16),
                 Wrap(
@@ -524,10 +697,15 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                   children: [
                     ...[15, 30, 45, 60].map((minutes) {
                       return ActionChip(
-                        label: Text('$minutes min', style: const TextStyle(color: Colors.white)),
+                        label: Text(
+                          '$minutes min',
+                          style: const TextStyle(color: Colors.white),
+                        ),
                         backgroundColor: Colors.white.withValues(alpha: 0.08),
                         onPressed: () {
-                          audioHandler.startSleepTimer(Duration(minutes: minutes));
+                          audioHandler.startSleepTimer(
+                            Duration(minutes: minutes),
+                          );
                           Navigator.of(sheetContext).pop();
                         },
                       );
@@ -535,14 +713,27 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                     // Peer chip, not a buried link below the presets — same visual
                     // weight so a custom duration is just as discoverable.
                     ActionChip(
-                      avatar: const Icon(Icons.edit_outlined, size: 16, color: Color(0xFF8C9EFF)),
-                      label: const Text('Personalizado', style: TextStyle(color: Color(0xFF8C9EFF))),
-                      backgroundColor: const Color(0xFF8C9EFF).withValues(alpha: 0.12),
+                      avatar: const Icon(
+                        Icons.edit_outlined,
+                        size: 16,
+                        color: Color(0xFF8C9EFF),
+                      ),
+                      label: Text(
+                        l10n.nowPlayingCustomChip,
+                        style: const TextStyle(color: Color(0xFF8C9EFF)),
+                      ),
+                      backgroundColor: const Color(
+                        0xFF8C9EFF,
+                      ).withValues(alpha: 0.12),
                       onPressed: () async {
                         Navigator.of(sheetContext).pop();
-                        final customMinutes = await _promptCustomMinutes(context);
+                        final customMinutes = await _promptCustomMinutes(
+                          context,
+                        );
                         if (customMinutes != null) {
-                          audioHandler.startSleepTimer(Duration(minutes: customMinutes));
+                          audioHandler.startSleepTimer(
+                            Duration(minutes: customMinutes),
+                          );
                         }
                       },
                     ),
@@ -557,9 +748,11 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
   }
 
   Future<int?> _promptCustomMinutes(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     final controller = TextEditingController();
     const minMinutes = 1;
-    const maxMinutes = 720; // 12 h — generous upper bound against fat-finger input
+    const maxMinutes =
+        720; // 12 h — generous upper bound against fat-finger input
     return showDialog<int>(
       context: context,
       builder: (dialogContext) {
@@ -568,14 +761,17 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
           builder: (dialogContext, setState) {
             return AlertDialog(
               backgroundColor: const Color(0xFF1A1A1A),
-              title: const Text('Minutos', style: TextStyle(color: Colors.white)),
+              title: Text(
+                l10n.nowPlayingMinutesDialogTitle,
+                style: const TextStyle(color: Colors.white),
+              ),
               content: TextField(
                 controller: controller,
                 keyboardType: TextInputType.number,
                 autofocus: true,
                 style: const TextStyle(color: Colors.white),
                 decoration: InputDecoration(
-                  hintText: 'Entre $minMinutes y $maxMinutes',
+                  hintText: l10n.nowPlayingMinutesHint(minMinutes, maxMinutes),
                   hintStyle: const TextStyle(color: Colors.white38),
                   errorText: errorText,
                 ),
@@ -583,20 +779,25 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
               actions: [
                 TextButton(
                   onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: const Text('Cancelar'),
+                  child: Text(l10n.commonCancel),
                 ),
                 TextButton(
                   onPressed: () {
                     final value = int.tryParse(controller.text.trim());
-                    if (value == null || value < minMinutes || value > maxMinutes) {
+                    if (value == null ||
+                        value < minMinutes ||
+                        value > maxMinutes) {
                       setState(() {
-                        errorText = 'Ingresá un número entre $minMinutes y $maxMinutes';
+                        errorText = l10n.nowPlayingMinutesError(
+                          minMinutes,
+                          maxMinutes,
+                        );
                       });
                       return;
                     }
                     Navigator.of(dialogContext).pop(value);
                   },
-                  child: const Text('Aceptar'),
+                  child: Text(l10n.commonAccept),
                 ),
               ],
             );
@@ -606,23 +807,35 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
     );
   }
 
-  Widget _buildAlbumArt(MediaItem item) {
+  Widget _buildAlbumArt(MediaItem item, double size) {
     final artPath = item.extras?['artPath'] as String? ?? '';
-    return SmartAlbumArt(artPath: artPath, title: item.title, size: 300);
+    return SmartAlbumArt(artPath: artPath, title: item.title, size: size);
   }
 
-  void _showLyricsBottomSheet(BuildContext context, AudioPlayerHandler audioHandler, MediaItem mediaItem) {
+  void _showLyricsBottomSheet(
+    BuildContext context,
+    AudioPlayerHandler audioHandler,
+    MediaItem mediaItem,
+    Color dominantColor,
+  ) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (context) {
-        return LyricsBottomSheet(mediaItem: mediaItem, audioHandler: audioHandler);
+        return LyricsBottomSheet(
+          mediaItem: mediaItem,
+          audioHandler: audioHandler,
+          dominantColor: dominantColor,
+        );
       },
     );
   }
 
-  void _showQueueBottomSheet(BuildContext context, AudioPlayerHandler audioHandler) {
+  void _showQueueBottomSheet(
+    BuildContext context,
+    AudioPlayerHandler audioHandler,
+  ) {
     showModalBottomSheet(
       context: context,
       isScrollControlled: true,
@@ -638,11 +851,13 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
 class LyricsBottomSheet extends StatefulWidget {
   final MediaItem mediaItem;
   final AudioPlayerHandler audioHandler;
+  final Color dominantColor;
 
   const LyricsBottomSheet({
     super.key,
     required this.mediaItem,
     required this.audioHandler,
+    required this.dominantColor,
   });
 
   @override
@@ -654,21 +869,55 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
   String? _lyricsText;
   List<LyricLine> _parsedLines = [];
   int _activeIndex = -1;
+  bool _showTranslation = false;
+  bool _isTranslating = false;
+  List<String>? _translatedLines;
   final ScrollController _scrollController = ScrollController();
   final List<GlobalKey> _lyricKeys = [];
-  late final Stream<Duration> _positionStream;
+  StreamSubscription<Duration>? _positionSub;
   bool _userScrolling = false;
   DateTime _lastScrollTime = DateTime.now();
 
   @override
   void initState() {
     super.initState();
-    _positionStream = widget.audioHandler.player.positionStream;
+    // Antes esto vivía en un StreamBuilder<Duration> envolviendo TODA la
+    // ListView de letras, así que cada tick de posición (varias veces por
+    // segundo) reconstruía las líneas visibles enteras — con la traducción
+    // sumando un segundo Text por línea, el costo se duplicaba y el
+    // resaltado se sentía trabado/desincronizado. `_activeIndex` ahora es
+    // estado real: sólo dispara `setState` cuando la línea activa cambia de
+    // verdad (una vez cada tantos segundos), no en cada tick de posición.
+    _positionSub = widget.audioHandler.player.positionStream.listen(
+      _onPosition,
+    );
     _fetchLyrics();
+  }
+
+  void _onPosition(Duration position) {
+    if (_parsedLines.isEmpty) return;
+    int newActiveIndex = -1;
+    for (int i = 0; i < _parsedLines.length; i++) {
+      final lineTime = _parsedLines[i].time;
+      final nextLineTime = i < _parsedLines.length - 1
+          ? _parsedLines[i + 1].time
+          : const Duration(hours: 1);
+      if (position >= lineTime && position < nextLineTime) {
+        newActiveIndex = i;
+        break;
+      }
+    }
+    if (newActiveIndex != _activeIndex && newActiveIndex != -1) {
+      setState(() => _activeIndex = newActiveIndex);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollToActiveLine(_activeIndex);
+      });
+    }
   }
 
   @override
   void dispose() {
+    _positionSub?.cancel();
     _scrollController.dispose();
     super.dispose();
   }
@@ -713,10 +962,46 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
     }
   }
 
+  Future<void> _toggleTranslation() async {
+    if (_lyricsText == null) return;
+    if (_showTranslation) {
+      setState(() => _showTranslation = false);
+      return;
+    }
+    if (_translatedLines != null) {
+      setState(() => _showTranslation = true);
+      return;
+    }
+
+    setState(() => _isTranslating = true);
+    final targetLang = context.read<SettingsProvider>().language.name;
+    final sourceLines = _parsedLines.isNotEmpty
+        ? _parsedLines.map((l) => l.text).toList()
+        : _lyricsText!.split('\n');
+    try {
+      final translated = await TranslationService.instance.translateLines(
+        songId: widget.mediaItem.id,
+        lines: sourceLines,
+        targetLang: targetLang,
+      );
+      if (mounted) {
+        setState(() {
+          _translatedLines = translated;
+          _showTranslation = true;
+          _isTranslating = false;
+        });
+      }
+    } catch (e) {
+      print('Error traduciendo letra: $e');
+      if (mounted) setState(() => _isTranslating = false);
+    }
+  }
+
   void _scrollToActiveLine(int index) {
     if (index < 0 || index >= _lyricKeys.length) return;
 
-    if (_userScrolling && DateTime.now().difference(_lastScrollTime).inSeconds < 3) {
+    if (_userScrolling &&
+        DateTime.now().difference(_lastScrollTime).inSeconds < 3) {
       return;
     }
 
@@ -742,9 +1027,20 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
       child: Container(
         height: media.size.height * 0.85,
         decoration: BoxDecoration(
-          color: Colors.black.withValues(alpha: 0.75),
+          gradient: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              widget.dominantColor.withValues(alpha: 0.4),
+              Colors.black.withValues(alpha: 0.82),
+            ],
+            stops: const [0.0, 0.6],
+          ),
           borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.08), width: 0.5),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.08),
+            width: 0.5,
+          ),
         ),
         child: Column(
           children: [
@@ -759,7 +1055,10 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
             ),
             const SizedBox(height: 8),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 8.0),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 20.0,
+                vertical: 8.0,
+              ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
@@ -771,9 +1070,34 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                  IconButton(
-                    icon: const Icon(Icons.close, color: Colors.white70),
-                    onPressed: () => Navigator.of(context).pop(),
+                  Row(
+                    children: [
+                      if (_isTranslating)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 12),
+                          child: SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          ),
+                        )
+                      else
+                        IconButton(
+                          icon: Icon(
+                            Icons.translate_rounded,
+                            color: _showTranslation
+                                ? const Color(0xFF8C9EFF)
+                                : Colors.white70,
+                          ),
+                          onPressed: _lyricsText == null
+                              ? null
+                              : _toggleTranslation,
+                        ),
+                      IconButton(
+                        icon: const Icon(Icons.close, color: Colors.white70),
+                        onPressed: () => Navigator.of(context).pop(),
+                      ),
+                    ],
                   ),
                 ],
               ),
@@ -787,96 +1111,171 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
                       ),
                     )
                   : _lyricsText == null
-                      ? const Center(
-                          child: Text(
-                            'Letra no disponible',
-                            style: TextStyle(color: Colors.white38, fontSize: 16),
-                          ),
-                        )
-                      : NotificationListener<ScrollNotification>(
-                          onNotification: (notification) {
-                            if (notification is UserScrollNotification) {
-                              _userScrolling = true;
-                              _lastScrollTime = DateTime.now();
-                            }
-                            return false;
-                          },
-                          child: isSynced
-                              ? StreamBuilder<Duration>(
-                                  stream: _positionStream,
-                                  builder: (context, posSnapshot) {
-                                    final position = posSnapshot.data ?? Duration.zero;
+                  ? Center(
+                      child: Text(
+                        AppLocalizations.of(context)!.lyricsUnavailable,
+                        style: const TextStyle(
+                          color: Colors.white38,
+                          fontSize: 16,
+                        ),
+                      ),
+                    )
+                  : NotificationListener<ScrollNotification>(
+                      onNotification: (notification) {
+                        if (notification is UserScrollNotification) {
+                          _userScrolling = true;
+                          _lastScrollTime = DateTime.now();
+                        }
+                        return false;
+                      },
+                      child: isSynced
+                          ? ListView.builder(
+                              controller: _scrollController,
+                              itemCount: _parsedLines.length,
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 24,
+                                vertical: 20,
+                              ),
+                              itemBuilder: (context, index) {
+                                final line = _parsedLines[index];
+                                final isActive = index == _activeIndex;
 
-                                    int newActiveIndex = -1;
-                                    for (int i = 0; i < _parsedLines.length; i++) {
-                                      final lineTime = _parsedLines[i].time;
-                                      final nextLineTime = i < _parsedLines.length - 1
-                                          ? _parsedLines[i + 1].time
-                                          : const Duration(hours: 1);
-                                      if (position >= lineTime && position < nextLineTime) {
-                                        newActiveIndex = i;
-                                        break;
-                                      }
-                                    }
-
-                                    if (newActiveIndex != _activeIndex && newActiveIndex != -1) {
-                                      _activeIndex = newActiveIndex;
-                                      WidgetsBinding.instance.addPostFrameCallback((_) {
-                                        _scrollToActiveLine(_activeIndex);
-                                      });
-                                    }
-
-                                    return ListView.builder(
-                                      controller: _scrollController,
-                                      itemCount: _parsedLines.length,
-                                      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-                                      itemBuilder: (context, index) {
-                                        final line = _parsedLines[index];
-                                        final isActive = index == _activeIndex;
-
-                                        return GestureDetector(
-                                          key: _lyricKeys[index],
-                                          onTap: () {
-                                            widget.audioHandler.seek(line.time);
-                                            setState(() {
-                                              _activeIndex = index;
-                                              _userScrolling = false;
-                                            });
-                                            _scrollToActiveLine(index);
-                                          },
-                                          child: AnimatedDefaultTextStyle(
-                                            duration: const Duration(milliseconds: 200),
-                                            style: TextStyle(
-                                              color: isActive ? Colors.white : Colors.white38,
-                                              fontSize: isActive ? 21 : 18,
-                                              fontWeight: isActive ? FontWeight.bold : FontWeight.w500,
-                                              height: 1.5,
-                                            ),
-                                            child: Padding(
-                                              padding: const EdgeInsets.symmetric(vertical: 10.0),
+                                return GestureDetector(
+                                  key: _lyricKeys[index],
+                                  onTap: () {
+                                    widget.audioHandler.seek(line.time);
+                                    setState(() {
+                                      _activeIndex = index;
+                                      _userScrolling = false;
+                                    });
+                                    _scrollToActiveLine(index);
+                                  },
+                                  child: AnimatedDefaultTextStyle(
+                                    duration: const Duration(milliseconds: 200),
+                                    style: TextStyle(
+                                      color: isActive
+                                          ? Colors.white
+                                          : Colors.white38,
+                                      fontSize: isActive ? 21 : 18,
+                                      fontWeight: isActive
+                                          ? FontWeight.bold
+                                          : FontWeight.w500,
+                                      height: 1.5,
+                                    ),
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        vertical: 10.0,
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            line.text,
+                                            textAlign: TextAlign.left,
+                                          ),
+                                          if (_showTranslation &&
+                                              _translatedLines != null &&
+                                              index <
+                                                  _translatedLines!.length &&
+                                              _translatedLines![index]
+                                                  .trim()
+                                                  .isNotEmpty)
+                                            Padding(
+                                              padding: const EdgeInsets.only(
+                                                top: 4,
+                                              ),
                                               child: Text(
-                                                line.text,
+                                                _translatedLines![index],
                                                 textAlign: TextAlign.left,
+                                                style: TextStyle(
+                                                  color: Colors.white
+                                                      .withValues(alpha: 0.4),
+                                                  fontSize:
+                                                      (isActive ? 21 : 18) - 4,
+                                                  fontStyle: FontStyle.italic,
+                                                  fontWeight: FontWeight.w400,
+                                                ),
                                               ),
                                             ),
-                                          ),
-                                        );
-                                      },
-                                    );
-                                  },
-                                )
-                              : SingleChildScrollView(
-                                  padding: const EdgeInsets.all(24.0),
-                                  child: Text(
-                                    _lyricsText!,
-                                    style: const TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 18,
-                                      height: 1.6,
+                                        ],
+                                      ),
                                     ),
                                   ),
-                                ),
-                        ),
+                                );
+                              },
+                            )
+                          : SingleChildScrollView(
+                              padding: const EdgeInsets.all(24.0),
+                              child:
+                                  _showTranslation && _translatedLines != null
+                                  ? Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: List.generate(
+                                        _lyricsText!.split('\n').length,
+                                        (index) {
+                                          final plainLines = _lyricsText!.split(
+                                            '\n',
+                                          );
+                                          final original = plainLines[index];
+                                          final translation =
+                                              index < _translatedLines!.length
+                                              ? _translatedLines![index]
+                                              : '';
+                                          return Padding(
+                                            padding: const EdgeInsets.only(
+                                              bottom: 10,
+                                            ),
+                                            child: Column(
+                                              crossAxisAlignment:
+                                                  CrossAxisAlignment.start,
+                                              children: [
+                                                Text(
+                                                  original,
+                                                  style: const TextStyle(
+                                                    color: Colors.white70,
+                                                    fontSize: 18,
+                                                    height: 1.6,
+                                                  ),
+                                                ),
+                                                if (translation
+                                                    .trim()
+                                                    .isNotEmpty)
+                                                  Padding(
+                                                    padding:
+                                                        const EdgeInsets.only(
+                                                          top: 2,
+                                                        ),
+                                                    child: Text(
+                                                      translation,
+                                                      style: TextStyle(
+                                                        color: Colors.white
+                                                            .withValues(
+                                                              alpha: 0.4,
+                                                            ),
+                                                        fontSize: 14,
+                                                        fontStyle:
+                                                            FontStyle.italic,
+                                                      ),
+                                                    ),
+                                                  ),
+                                              ],
+                                            ),
+                                          );
+                                        },
+                                      ),
+                                    )
+                                  : Text(
+                                      _lyricsText!,
+                                      style: const TextStyle(
+                                        color: Colors.white70,
+                                        fontSize: 18,
+                                        height: 1.6,
+                                      ),
+                                    ),
+                            ),
+                    ),
             ),
           ],
         ),
@@ -889,10 +1288,7 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
 class QueueBottomSheet extends StatefulWidget {
   final AudioPlayerHandler audioHandler;
 
-  const QueueBottomSheet({
-    super.key,
-    required this.audioHandler,
-  });
+  const QueueBottomSheet({super.key, required this.audioHandler});
 
   @override
   State<QueueBottomSheet> createState() => _QueueBottomSheetState();
@@ -909,6 +1305,7 @@ class _QueueBottomSheetState extends State<QueueBottomSheet> {
   @override
   Widget build(BuildContext context) {
     final media = MediaQuery.of(context);
+    final l10n = AppLocalizations.of(context)!;
 
     return BackdropFilter(
       filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
@@ -917,7 +1314,10 @@ class _QueueBottomSheetState extends State<QueueBottomSheet> {
         decoration: BoxDecoration(
           color: Colors.black.withValues(alpha: 0.75),
           borderRadius: const BorderRadius.vertical(top: Radius.circular(24)),
-          border: Border.all(color: Colors.white.withValues(alpha: 0.08), width: 0.5),
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.08),
+            width: 0.5,
+          ),
         ),
         child: Column(
           children: [
@@ -932,13 +1332,16 @@ class _QueueBottomSheetState extends State<QueueBottomSheet> {
             ),
             const SizedBox(height: 8),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 8.0),
+              padding: const EdgeInsets.symmetric(
+                horizontal: 20.0,
+                vertical: 8.0,
+              ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text(
-                    'Cola de reproducción',
-                    style: TextStyle(
+                  Text(
+                    l10n.queueTitle,
+                    style: const TextStyle(
                       color: Colors.white,
                       fontSize: 20,
                       fontWeight: FontWeight.bold,
@@ -958,10 +1361,13 @@ class _QueueBottomSheetState extends State<QueueBottomSheet> {
                 builder: (context, queueSnapshot) {
                   final list = queueSnapshot.data ?? [];
                   if (list.isEmpty) {
-                    return const Center(
+                    return Center(
                       child: Text(
-                        'Cola vacía',
-                        style: TextStyle(color: Colors.white38, fontSize: 16),
+                        l10n.queueEmpty,
+                        style: const TextStyle(
+                          color: Colors.white38,
+                          fontSize: 16,
+                        ),
                       ),
                     );
                   }
@@ -988,14 +1394,19 @@ class _QueueBottomSheetState extends State<QueueBottomSheet> {
                               alignment: Alignment.centerRight,
                               padding: const EdgeInsets.only(right: 20.0),
                               color: Colors.redAccent.withValues(alpha: 0.8),
-                              child: const Icon(Icons.delete, color: Colors.white),
+                              child: const Icon(
+                                Icons.delete,
+                                color: Colors.white,
+                              ),
                             ),
                             onDismissed: (_) {
                               widget.audioHandler.removeQueueItem(item);
                             },
                             child: Material(
                               key: ValueKey('tile_${item.id}'),
-                              color: isPlaying ? Colors.white.withValues(alpha: 0.06) : Colors.transparent,
+                              color: isPlaying
+                                  ? Colors.white.withValues(alpha: 0.06)
+                                  : Colors.transparent,
                               child: ListTile(
                                 leading: ClipRRect(
                                   borderRadius: BorderRadius.circular(6),
@@ -1006,17 +1417,25 @@ class _QueueBottomSheetState extends State<QueueBottomSheet> {
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
-                                    color: isPlaying ? const Color(0xFF8C9EFF) : Colors.white,
-                                    fontWeight: isPlaying ? FontWeight.bold : FontWeight.normal,
+                                    color: isPlaying
+                                        ? const Color(0xFF8C9EFF)
+                                        : Colors.white,
+                                    fontWeight: isPlaying
+                                        ? FontWeight.bold
+                                        : FontWeight.normal,
                                     fontSize: 15,
                                   ),
                                 ),
                                 subtitle: Text(
-                                  '${item.artist ?? 'Artista desconocido'} • ${_formatDuration(item.duration)}',
+                                  '${item.artist ?? l10n.commonUnknownArtist} • ${_formatDuration(item.duration)}',
                                   maxLines: 1,
                                   overflow: TextOverflow.ellipsis,
                                   style: TextStyle(
-                                    color: isPlaying ? const Color(0xFF8C9EFF).withValues(alpha: 0.7) : Colors.white38,
+                                    color: isPlaying
+                                        ? const Color(
+                                            0xFF8C9EFF,
+                                          ).withValues(alpha: 0.7)
+                                        : Colors.white38,
                                     fontSize: 13,
                                   ),
                                 ),
@@ -1024,7 +1443,10 @@ class _QueueBottomSheetState extends State<QueueBottomSheet> {
                                   index: index,
                                   child: const Padding(
                                     padding: EdgeInsets.all(8.0),
-                                    child: Icon(Icons.drag_handle, color: Colors.white38),
+                                    child: Icon(
+                                      Icons.drag_handle,
+                                      color: Colors.white38,
+                                    ),
                                   ),
                                 ),
                                 onTap: () {
@@ -1106,7 +1528,9 @@ class _SeekBarState extends State<SeekBar> {
             min: 0,
             max: hasDuration ? maxMs : 1,
             value: hasDuration ? value : 0,
-            onChanged: hasDuration ? (v) => setState(() => _dragValue = v) : null,
+            onChanged: hasDuration
+                ? (v) => setState(() => _dragValue = v)
+                : null,
             onChangeEnd: hasDuration
                 ? (v) {
                     widget.onChangeEnd(Duration(milliseconds: v.toInt()));
@@ -1120,8 +1544,14 @@ class _SeekBarState extends State<SeekBar> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text(_formatDuration(widget.position), style: const TextStyle(color: Colors.white54, fontSize: 12)),
-              Text(_formatDuration(widget.duration), style: const TextStyle(color: Colors.white54, fontSize: 12)),
+              Text(
+                _formatDuration(widget.position),
+                style: const TextStyle(color: Colors.white54, fontSize: 12),
+              ),
+              Text(
+                _formatDuration(widget.duration),
+                style: const TextStyle(color: Colors.white54, fontSize: 12),
+              ),
             ],
           ),
         ),
@@ -1152,7 +1582,8 @@ class _SmartAlbumArtState extends State<SmartAlbumArt> {
   // square crop via BoxFit.cover. No per-image aspect-ratio branching needed.
   late bool _hasError = _isMissing(widget.artPath);
 
-  static bool _isMissing(String path) => path.isEmpty || !File(path).existsSync();
+  static bool _isMissing(String path) =>
+      path.isEmpty || !File(path).existsSync();
 
   @override
   void didUpdateWidget(covariant SmartAlbumArt oldWidget) {
@@ -1176,7 +1607,8 @@ class _SmartAlbumArtState extends State<SmartAlbumArt> {
     // decode de más era parte del atasco al abrir esta pantalla desde el mini
     // player. Pedirle al decoder el tamaño real de destino, en píxeles
     // físicos, evita el trabajo sobrante.
-    final cacheSize = (widget.size * MediaQuery.of(context).devicePixelRatio).round();
+    final cacheSize = (widget.size * MediaQuery.of(context).devicePixelRatio)
+        .round();
     return Image.file(
       File(widget.artPath),
       fit: BoxFit.cover,
@@ -1192,7 +1624,9 @@ class _SmartAlbumArtState extends State<SmartAlbumArt> {
     return Container(
       width: widget.size,
       height: widget.size,
-      decoration: BoxDecoration(gradient: AppTheme.gradientForTitle(widget.title)),
+      decoration: BoxDecoration(
+        gradient: AppTheme.gradientForTitle(widget.title),
+      ),
       child: Icon(
         Icons.music_note,
         color: Colors.white70,

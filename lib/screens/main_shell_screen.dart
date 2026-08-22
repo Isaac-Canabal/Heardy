@@ -5,6 +5,7 @@ import '../providers/music_provider.dart';
 import '../providers/settings_provider.dart';
 import '../theme/app_theme.dart';
 import '../widgets/mini_player.dart';
+import '../l10n/app_localizations.dart';
 import 'home_screen.dart';
 import 'import_screen.dart';
 import 'inbox_screen.dart';
@@ -49,8 +50,9 @@ class _MainShellScreenState extends State<MainShellScreen> with WidgetsBindingOb
 
   @override
   Widget build(BuildContext context) {
-    // Suscribirse a SettingsProvider para redibujar instantáneamente cuando cambie el tema
+    // Suscribirse a SettingsProvider para redibujar instantáneamente cuando cambie el tema/idioma
     Provider.of<SettingsProvider>(context);
+    final l10n = AppLocalizations.of(context)!;
     final inboxCount = context.watch<MusicProvider>().inboxCount;
     // pendingCount ya cuenta el trabajo que se está descargando ahora mismo:
     // sigue en download_queue (la fila SQLite) hasta que termina, y el
@@ -91,9 +93,9 @@ class _MainShellScreenState extends State<MainShellScreen> with WidgetsBindingOb
         height: 68,
         destinations: [
           NavigationDestination(
-            icon: Icon(Icons.library_music_outlined),
-            selectedIcon: Icon(Icons.library_music_rounded),
-            label: 'Mis playlists',
+            icon: const Icon(Icons.library_music_outlined),
+            selectedIcon: const Icon(Icons.library_music_rounded),
+            label: l10n.homeTitle,
           ),
           NavigationDestination(
             icon: Badge(
@@ -106,7 +108,7 @@ class _MainShellScreenState extends State<MainShellScreen> with WidgetsBindingOb
               label: Text('$inboxCount'),
               child: const Icon(Icons.inbox_rounded),
             ),
-            label: 'Bandeja',
+            label: l10n.navInbox,
           ),
           NavigationDestination(
             icon: Badge(
@@ -119,17 +121,17 @@ class _MainShellScreenState extends State<MainShellScreen> with WidgetsBindingOb
               label: Text('$downloadCount'),
               child: const Icon(Icons.cloud_download_rounded),
             ),
-            label: 'Añadir',
+            label: l10n.navAdd,
           ),
           NavigationDestination(
-            icon: Icon(Icons.search_outlined),
-            selectedIcon: Icon(Icons.search_rounded),
-            label: 'Buscar',
+            icon: const Icon(Icons.search_outlined),
+            selectedIcon: const Icon(Icons.search_rounded),
+            label: l10n.searchTitle,
           ),
           NavigationDestination(
-            icon: Icon(Icons.settings_outlined),
-            selectedIcon: Icon(Icons.settings_rounded),
-            label: 'Ajustes',
+            icon: const Icon(Icons.settings_outlined),
+            selectedIcon: const Icon(Icons.settings_rounded),
+            label: l10n.settingsTitle,
           ),
         ],
       ),

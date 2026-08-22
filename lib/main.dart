@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'l10n/app_localizations.dart';
 import 'package:provider/provider.dart';
 import 'package:audio_service/audio_service.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -128,10 +130,23 @@ class HeardyApp extends StatelessWidget {
     return Consumer<SettingsProvider>(
       builder: (context, settings, _) {
         AppTheme.applyPreset(settings.preset);
+        AppTheme.applyCustomColors(
+          primary: settings.customPrimary,
+          secondary: settings.customSecondary,
+          combined: settings.customCombined,
+        );
         return MaterialApp(
           title: 'Heardy',
           debugShowCheckedModeBanner: false,
           theme: AppTheme.dark(),
+          locale: settings.locale,
+          localizationsDelegates: const [
+            AppLocalizations.delegate,
+            GlobalMaterialLocalizations.delegate,
+            GlobalWidgetsLocalizations.delegate,
+            GlobalCupertinoLocalizations.delegate,
+          ],
+          supportedLocales: AppLocalizations.supportedLocales,
           initialRoute: '/',
           onGenerateRoute: RouteGenerator.generateRoute,
         );

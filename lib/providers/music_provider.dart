@@ -335,7 +335,7 @@ class MusicProvider with ChangeNotifier {
     if (songs.isEmpty) return;
     final playlist = await _dbHelper.getPlaylistById(playlistId);
     final name = playlist?.name ?? '';
-    await _playSongList(audioHandler, songs, songs.first, name);
+    await _playSongList(audioHandler, songs, songs.first, name, playlistId: playlistId);
     _currentPlaylistId = playlistId;
     _currentPlaylistSongs = songs;
     notifyListeners();
@@ -349,7 +349,7 @@ class MusicProvider with ChangeNotifier {
     final songs = await _dbHelper.getSongsForPlaylist(playlistId);
     if (songs.isEmpty) return;
     final playlist = await _dbHelper.getPlaylistById(playlistId);
-    await _playSongList(audioHandler, songs, target, playlist?.name ?? '');
+    await _playSongList(audioHandler, songs, target, playlist?.name ?? '', playlistId: playlistId);
     _currentPlaylistId = playlistId;
     _currentPlaylistSongs = songs;
     notifyListeners();
@@ -357,22 +357,26 @@ class MusicProvider with ChangeNotifier {
 
   /// Plays a tapped result from local search, queuing the rest of the
   /// current result set so next/previous stay within it — not tied to any
-  /// playlist, so it doesn't touch `_currentPlaylistId`/`_currentPlaylistSongs`.
+  /// playlist, so it doesn't touch `_currentPlaylistId`/`_currentPlaylistSongs`
+  /// and is passed no `playlistId` (the "playing from" header has nothing to
+  /// link to for a search-originated queue).
   Future<void> playSearchResults(
     List<Song> results,
     Song target,
     AudioPlayerHandler audioHandler,
+    String albumLabel,
   ) async {
     if (results.isEmpty) return;
-    await _playSongList(audioHandler, results, target, 'Búsqueda');
+    await _playSongList(audioHandler, results, target, albumLabel);
   }
 
   Future<void> _playSongList(
     AudioPlayerHandler audioHandler,
     List<Song> songs,
     Song target,
-    String playlistName,
-  ) async {
+    String playlistName, {
+    String? playlistId,
+  }) async {
     final items = songs
         .map(
           (song) => MediaItem(
@@ -385,6 +389,7 @@ class MusicProvider with ChangeNotifier {
             extras: {
               'filePath': song.playablePath,
               'artPath': song.artPath,
+              'playlist_id': playlistId,
             },
           ),
         )
@@ -475,11 +480,12 @@ class MusicProvider with ChangeNotifier {
               extras: {
                 'filePath': song.playablePath,
                 'artPath': song.artPath,
+                'playlist_id': _currentPlaylistId,
               },
             ),
           )
           .toList();
-      
+
       // Find the index of the current song
       final currentIndex = currentSongId != null 
           ? items.indexWhere((item) => item.id == currentSongId)
@@ -519,6 +525,33 @@ class MusicProvider with ChangeNotifier {
       }
     } catch (e) {
       print("Error deleting all songs for playlist $playlistId: $e");
+    }
+  }
+
+  /// Moves a song from one playlist to another (removed from source, appended
+  /// to target). File on disk is never touched.
+  Future<void> moveSongToPlaylist(
+    String songId,
+    String fromPlaylistId,
+    String toPlaylistId,
+  ) async {
+    try {
+      await _dbHelper.moveSongToPlaylist(songId, fromPlaylistId, toPlaylistId);
+      if (_currentPlaylistId == fromPlaylistId) {
+        await loadSongsForPlaylist(fromPlaylistId);
+      }
+    } catch (e) {
+      print("Error moving song $songId from $fromPlaylistId to $toPlaylistId: $e");
+    }
+  }
+
+  /// Copies a song into another playlist, appended at the end. Source
+  /// playlist is left untouched.
+  Future<void> copySongToPlaylist(String songId, String toPlaylistId) async {
+    try {
+      await _dbHelper.assignSongsToPlaylists([songId], [toPlaylistId]);
+    } catch (e) {
+      print("Error copying song $songId to $toPlaylistId: $e");
     }
   }
 

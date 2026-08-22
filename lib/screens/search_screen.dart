@@ -13,6 +13,7 @@ import '../services/download_source.dart';
 import '../theme/app_theme.dart';
 import '../widgets/playlist_target_sheet.dart';
 import '../widgets/song_tile.dart';
+import '../l10n/app_localizations.dart';
 
 /// Local o remoto: qué colección está mirando la pestaña de búsqueda.
 enum _SearchScope { local, youtube }
@@ -79,7 +80,8 @@ class _SearchScreenState extends State<SearchScreen> {
 
   Future<void> _play(Song song, List<Song> results) async {
     final audioHandler = context.read<AudioPlayerHandler>();
-    await context.read<MusicProvider>().playSearchResults(results, song, audioHandler);
+    final albumLabel = AppLocalizations.of(context)!.searchResultsAlbumLabel;
+    await context.read<MusicProvider>().playSearchResults(results, song, audioHandler, albumLabel);
   }
 
   void _onQueryChanged(String value) {
@@ -126,7 +128,7 @@ class _SearchScreenState extends State<SearchScreen> {
       setState(() => _youtubeError = e.userMessage);
     } catch (e) {
       if (!mounted || generation != _searchGeneration) return;
-      setState(() => _youtubeError = 'No se pudo buscar: $e');
+      setState(() => _youtubeError = AppLocalizations.of(context)!.searchFailedGeneric(e.toString()));
     } finally {
       if (mounted && generation == _searchGeneration) {
         setState(() => _youtubeLoading = false);
@@ -153,9 +155,10 @@ class _SearchScreenState extends State<SearchScreen> {
     if (!mounted) return;
     provider.processQueue();
 
+    final l10n = AppLocalizations.of(context)!;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(added ? '"${track.title}" agregada a la cola' : 'Esa canción ya estaba en la cola'),
+        content: Text(added ? l10n.searchAddedToQueueSnack(track.title) : l10n.searchAlreadyQueuedSnack),
         behavior: SnackBarBehavior.floating,
         duration: const Duration(seconds: 3),
       ),
@@ -167,6 +170,7 @@ class _SearchScreenState extends State<SearchScreen> {
     final maxResults = context.watch<SettingsProvider>().maxSearchResults;
     final audioHandler = context.watch<AudioPlayerHandler>();
     final libraryVersion = context.watch<MusicProvider>().librarySongsVersion;
+    final l10n = AppLocalizations.of(context)!;
     if (_loadedVersion != libraryVersion) {
       _loadedVersion = libraryVersion;
       _load();
@@ -177,11 +181,11 @@ class _SearchScreenState extends State<SearchScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 12, 20, 0),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
             child: Text(
-              'Buscar',
-              style: TextStyle(
+              l10n.searchTitle,
+              style: const TextStyle(
                 color: Colors.white,
                 fontSize: 28,
                 fontWeight: FontWeight.w800,
@@ -192,13 +196,13 @@ class _SearchScreenState extends State<SearchScreen> {
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
             child: SegmentedButton<_SearchScope>(
-              segments: const [
+              segments: [
                 ButtonSegment(
                   value: _SearchScope.local,
-                  icon: Icon(Icons.folder_rounded, size: 16),
-                  label: Text('Mi biblioteca'),
+                  icon: const Icon(Icons.folder_rounded, size: 16),
+                  label: Text(l10n.searchLocalTab),
                 ),
-                ButtonSegment(
+                const ButtonSegment(
                   value: _SearchScope.youtube,
                   icon: Icon(Icons.cloud_rounded, size: 16),
                   label: Text('YouTube'),
@@ -216,7 +220,7 @@ class _SearchScreenState extends State<SearchScreen> {
               onChanged: _onQueryChanged,
               style: const TextStyle(color: Colors.white),
               decoration: InputDecoration(
-                hintText: _scope == _SearchScope.local ? 'Buscar en tu biblioteca' : 'Buscar en YouTube',
+                hintText: _scope == _SearchScope.local ? l10n.searchLocalHint : l10n.searchYoutubeHint,
                 prefixIcon: Icon(Icons.search_rounded, color: AppTheme.primaryLight),
                 suffixIcon: _controller.text.isNotEmpty
                     ? IconButton(
@@ -242,11 +246,12 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Widget _buildLocalContent(List<Song> results, AudioPlayerHandler audioHandler) {
+    final l10n = AppLocalizations.of(context)!;
     if (_query.isEmpty) {
-      return _buildHint(Icons.search_rounded, 'Buscá tu música', 'Escribí el título o el artista');
+      return _buildHint(Icons.search_rounded, l10n.searchLocalEmptyTitle, l10n.searchLocalEmptySubtitle);
     }
     if (results.isEmpty) {
-      return _buildHint(Icons.music_note_outlined, 'Sin resultados', 'No encontramos nada con "$_query"');
+      return _buildHint(Icons.music_note_outlined, l10n.playlistNoResultsTitle, l10n.searchNoResultsSubtitle(_query));
     }
     return StreamBuilder<MediaItem?>(
       stream: audioHandler.mediaItem,
@@ -269,24 +274,25 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Widget _buildYoutubeContent() {
+    final l10n = AppLocalizations.of(context)!;
     if (!context.watch<SettingsProvider>().hasDownloadServer) {
       return _buildHint(
         Icons.dns_outlined,
-        'No hay servidor de descargas configurado',
-        'Configuralo en Ajustes → Servidor de descargas',
+        l10n.searchNoServerTitle,
+        l10n.searchNoServerSubtitle,
       );
     }
     if (_query.isEmpty) {
-      return _buildHint(Icons.cloud_outlined, 'Buscá en YouTube', 'Escribí para buscar sin salir de la app');
+      return _buildHint(Icons.cloud_outlined, l10n.searchYoutubeEmptyTitle, l10n.searchYoutubeEmptySubtitle);
     }
     if (_youtubeLoading && _youtubeResults.isEmpty) {
       return const Center(child: CircularProgressIndicator());
     }
     if (_youtubeError != null) {
-      return _buildHint(Icons.error_outline_rounded, 'No se pudo buscar', _youtubeError!);
+      return _buildHint(Icons.error_outline_rounded, l10n.searchFailedTitle, _youtubeError!);
     }
     if (_youtubeResults.isEmpty) {
-      return _buildHint(Icons.music_note_outlined, 'Sin resultados', 'No encontramos nada con "$_query"');
+      return _buildHint(Icons.music_note_outlined, l10n.playlistNoResultsTitle, l10n.searchNoResultsSubtitle(_query));
     }
     return ListView.builder(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 90),

@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
+import '../providers/download_provider.dart';
+import '../l10n/app_localizations.dart';
 
 /// The active-download panel for [ImportScreen].
 ///
 /// Adapted from the pre-pivot download UI (see `youtube-downloader-final`)
 /// for the new [DownloadProvider] shape — same ring/percentage/gradient-bar
-/// look, but driven by [phaseLabel] and a [progress] that can be **negative
+/// look, but driven by [phase] and a [progress] that can be **negative
 /// for "indeterminate"**: `/audio` blocks while the server downloads the
 /// video server-side (DD1), so there are a few seconds with nothing to show
 /// a byte count for. The elapsed-time readout from the original card was
@@ -14,7 +16,7 @@ import '../theme/app_theme.dart';
 class DownloadProgressCard extends StatelessWidget {
   final String title;
   final String subtitle;
-  final String phaseLabel;
+  final DownloadPhase phase;
 
   /// 0..1 while downloading; negative means indeterminate.
   final double progress;
@@ -29,7 +31,7 @@ class DownloadProgressCard extends StatelessWidget {
     super.key,
     required this.title,
     required this.subtitle,
-    required this.phaseLabel,
+    required this.phase,
     required this.progress,
     required this.queueRemaining,
     required this.onCancel,
@@ -39,8 +41,17 @@ class DownloadProgressCard extends StatelessWidget {
   bool get _determinate => progress >= 0;
   int get _percent => _determinate ? (progress.clamp(0.0, 1.0) * 100).round() : 0;
 
+  String _phaseLabel(AppLocalizations l10n) => switch (phase) {
+        DownloadPhase.idle => '',
+        DownloadPhase.resolving => l10n.downloadPhaseResolving,
+        DownloadPhase.preparing => l10n.downloadPhasePreparing,
+        DownloadPhase.downloading => l10n.downloadPhaseDownloading,
+        DownloadPhase.saving => l10n.downloadPhaseSaving,
+      };
+
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     return Container(
       decoration: AppTheme.glassCard(highlighted: true),
       padding: const EdgeInsets.all(20),
@@ -65,7 +76,7 @@ class DownloadProgressCard extends StatelessWidget {
                         ),
                         const SizedBox(width: 6),
                         Text(
-                          'Descargando',
+                          l10n.downloadCardTitle,
                           style: TextStyle(
                             color: AppTheme.primaryLight,
                             fontWeight: FontWeight.w700,
@@ -79,14 +90,14 @@ class DownloadProgressCard extends StatelessWidget {
                           padding: EdgeInsets.zero,
                           constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
                           icon: Icon(Icons.close_rounded, color: Colors.redAccent.shade100, size: 22),
-                          tooltip: 'Cancelar esta canción',
+                          tooltip: l10n.downloadCardCancelThisTooltip,
                           onPressed: onCancel,
                         ),
                       ],
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      title.isEmpty ? 'Preparando…' : title,
+                      title.isEmpty ? l10n.downloadCardPreparing : title,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600, fontSize: 14),
@@ -145,7 +156,7 @@ class DownloadProgressCard extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
                   Text(
-                    phaseLabel,
+                    _phaseLabel(l10n),
                     style: TextStyle(
                       color: AppTheme.accent,
                       fontSize: 12,
@@ -154,7 +165,7 @@ class DownloadProgressCard extends StatelessWidget {
                   ),
                   if (queueRemaining > 0)
                     Text(
-                      '+$queueRemaining en cola',
+                      l10n.downloadCardQueuedSuffix(queueRemaining),
                       style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 11),
                     ),
                 ],
@@ -181,7 +192,7 @@ class DownloadProgressCard extends StatelessWidget {
               child: TextButton.icon(
                 onPressed: onCancelAll,
                 icon: const Icon(Icons.playlist_remove_rounded, size: 16),
-                label: const Text('Cancelar toda la tanda'),
+                label: Text(l10n.downloadCardCancelAllButton),
                 style: TextButton.styleFrom(foregroundColor: Colors.white.withValues(alpha: 0.6)),
               ),
             ),

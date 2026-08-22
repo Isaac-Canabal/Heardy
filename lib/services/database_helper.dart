@@ -738,6 +738,36 @@ class DatabaseHelper {
     });
   }
 
+  /// Traspasa una canción de una playlist a otra dentro de una única
+  /// transacción (inserta en destino antes de borrar de origen) para que
+  /// nunca quede huérfana en caso de fallo a mitad de camino — la canción en
+  /// sí y su archivo en disco no se tocan (D3/DD3: mover entre playlists
+  /// nunca toca el disco).
+  Future<void> moveSongToPlaylist(
+    String songId,
+    String fromPlaylistId,
+    String toPlaylistId,
+  ) async {
+    final db = await database;
+    await db.transaction((txn) async {
+      final maxOrderResult = await txn.rawQuery(
+        'SELECT MAX(orderIndex) as maxOrder FROM playlist_songs WHERE playlistId = ?',
+        [toPlaylistId],
+      );
+      final nextOrder = (maxOrderResult.first['maxOrder'] as int?) ?? -1;
+      await txn.insert(
+        'playlist_songs',
+        {'playlistId': toPlaylistId, 'songId': songId, 'orderIndex': nextOrder + 1},
+        conflictAlgorithm: ConflictAlgorithm.replace,
+      );
+      await txn.delete(
+        'playlist_songs',
+        where: 'playlistId = ? AND songId = ?',
+        whereArgs: [fromPlaylistId, songId],
+      );
+    });
+  }
+
   // --- DOWNLOAD QUEUE (rama de descargas, schema v11) ---
 
   /// Encola un trabajo. Devuelve false si ya estaba encolado para esa misma
@@ -1037,6 +1067,36 @@ class DatabaseHelper {
 
     if (result.isEmpty) return null;
     return result.first;
+  }
+
+  Future<List<Map<String, dynamic>>> getTopArtistsThisWeek({int limit = 5}) async {
+    final db = await database;
+    final startOfWeek = _getStartOfWeek();
+
+    return await db.rawQuery('''
+      SELECT s.artist, COUNT(*) as playCount
+      FROM play_history ph
+      JOIN songs s ON s.id = ph.songId
+      WHERE ph.playDate >= ?
+      GROUP BY s.artist
+      ORDER BY playCount DESC
+      LIMIT ?
+    ''', [startOfWeek, limit]);
+  }
+
+  Future<List<Map<String, dynamic>>> getTopArtistsThisMonth({int limit = 5}) async {
+    final db = await database;
+    final oneMonthAgo = DateTime.now().subtract(Duration(days: 30)).toIso8601String();
+
+    return await db.rawQuery('''
+      SELECT s.artist, COUNT(*) as playCount
+      FROM play_history ph
+      JOIN songs s ON s.id = ph.songId
+      WHERE ph.playDate >= ?
+      GROUP BY s.artist
+      ORDER BY playCount DESC
+      LIMIT ?
+    ''', [oneMonthAgo, limit]);
   }
 
   // Delete all songs belonging to a playlist (files + DB rows).

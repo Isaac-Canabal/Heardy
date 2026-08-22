@@ -7,6 +7,7 @@ class SongTile extends StatelessWidget {
   final Song song;
   final VoidCallback onTap;
   final VoidCallback? onDelete;
+  final VoidCallback? onLongPress;
   final bool isPlaying;
   final int? index;
 
@@ -15,6 +16,7 @@ class SongTile extends StatelessWidget {
     required this.song,
     required this.onTap,
     this.onDelete,
+    this.onLongPress,
     this.isPlaying = false,
     this.index,
   });
@@ -35,6 +37,7 @@ class SongTile extends StatelessWidget {
         child: InkWell(
           borderRadius: BorderRadius.circular(20),
           onTap: onTap,
+          onLongPress: onLongPress,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(

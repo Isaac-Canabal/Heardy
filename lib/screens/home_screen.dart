@@ -7,6 +7,7 @@ import '../models/playlist.dart';
 import '../services/database_helper.dart';
 import '../services/audio_player_handler.dart';
 import '../theme/app_theme.dart';
+import '../l10n/app_localizations.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -30,6 +31,7 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   Widget build(BuildContext context) {
     Provider.of<SettingsProvider>(context);
+    final l10n = AppLocalizations.of(context)!;
     final musicProvider = Provider.of<MusicProvider>(context);
     final playlists = musicProvider.playlists
         .where((p) => p.name.toLowerCase().contains(_query))
@@ -47,9 +49,9 @@ class _HomeScreenState extends State<HomeScreen> {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      const Text(
-                        'Mis playlists',
-                        style: TextStyle(
+                      Text(
+                        l10n.homeTitle,
+                        style: const TextStyle(
                           color: Colors.white,
                           fontSize: 28,
                           fontWeight: FontWeight.w800,
@@ -73,7 +75,7 @@ class _HomeScreenState extends State<HomeScreen> {
               onChanged: (v) => setState(() => _query = v.trim().toLowerCase()),
               style: const TextStyle(color: Colors.white),
               decoration: InputDecoration(
-                hintText: 'Buscar en mis playlists',
+                hintText: l10n.homeSearchHint,
                 prefixIcon: Icon(
                   Icons.search_rounded,
                   color: AppTheme.primaryLight,
@@ -99,6 +101,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Widget _buildEmptyState() {
+    final l10n = AppLocalizations.of(context)!;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -111,9 +114,9 @@ class _HomeScreenState extends State<HomeScreen> {
               color: Colors.white.withValues(alpha: 0.15),
             ),
             const SizedBox(height: 16),
-            const Text(
-              'Sin playlists todavía',
-              style: TextStyle(
+            Text(
+              l10n.homeEmptyTitle,
+              style: const TextStyle(
                 color: Colors.white,
                 fontSize: 20,
                 fontWeight: FontWeight.bold,
@@ -121,7 +124,7 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Crea una lista, metés archivos en tu carpeta o descargás desde Añadir.',
+              l10n.homeEmptyBody,
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.white.withValues(alpha: 0.45),
@@ -135,23 +138,24 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _showCreatePlaylistDialog(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     _playlistNameController.clear();
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
         backgroundColor: AppTheme.surface,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
-        title: const Text('Nueva playlist', style: TextStyle(color: Colors.white)),
+        title: Text(l10n.homeNewPlaylistTitle, style: const TextStyle(color: Colors.white)),
         content: TextField(
           controller: _playlistNameController,
           autofocus: true,
           style: const TextStyle(color: Colors.white),
-          decoration: const InputDecoration(hintText: 'Nombre'),
+          decoration: InputDecoration(hintText: l10n.commonName),
         ),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(context),
-            child: Text('Cancelar', style: TextStyle(color: Colors.white.withValues(alpha: 0.5))),
+            child: Text(l10n.commonCancel, style: TextStyle(color: Colors.white.withValues(alpha: 0.5))),
           ),
           TextButton(
             onPressed: () async {
@@ -171,7 +175,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 }
               }
             },
-            child: Text('Crear', style: TextStyle(color: AppTheme.primaryLight, fontWeight: FontWeight.bold)),
+            child: Text(l10n.commonCreate, style: TextStyle(color: AppTheme.primaryLight, fontWeight: FontWeight.bold)),
           ),
         ],
       ),
@@ -209,6 +213,7 @@ class _PlaylistCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     final audioHandler = Provider.of<AudioPlayerHandler>(context, listen: false);
     final musicProvider = Provider.of<MusicProvider>(context, listen: false);
 
@@ -255,9 +260,7 @@ class _PlaylistCard extends StatelessWidget {
                           ),
                           const SizedBox(height: 4),
                           Text(
-                            count == 0
-                                ? 'Sin canciones'
-                                : '$count canciones, ${AppTheme.formatDuration(duration)}',
+                            l10n.homeSongsCount(count, AppTheme.formatDuration(duration)),
                             style: TextStyle(
                               color: Colors.white.withValues(alpha: 0.45),
                               fontSize: 12,
@@ -303,21 +306,21 @@ class _PlaylistCard extends StatelessWidget {
                             context: context,
                             builder: (ctx) => AlertDialog(
                               backgroundColor: AppTheme.surface,
-                              title: const Text('Eliminar lista', style: TextStyle(color: Colors.white)),
+                              title: Text(l10n.homeDeleteListTitle, style: const TextStyle(color: Colors.white)),
                               content: Text(
-                                '¿Estás seguro de que deseas eliminar la lista "${playlist.name}"?\n\nEsto también eliminará permanentemente del dispositivo las canciones descargadas que no pertenezcan a ninguna otra lista.',
+                                l10n.homeDeleteListBody(playlist.name),
                                 style: const TextStyle(color: Colors.white70),
                               ),
                               actions: [
                                 TextButton(
                                   onPressed: () => Navigator.pop(ctx, false),
-                                  child: const Text('Cancelar'),
+                                  child: Text(l10n.commonCancel),
                                 ),
                                 TextButton(
                                   onPressed: () => Navigator.pop(ctx, true),
-                                  child: const Text(
-                                    'Eliminar',
-                                    style: TextStyle(color: Colors.redAccent),
+                                  child: Text(
+                                    l10n.commonDelete,
+                                    style: const TextStyle(color: Colors.redAccent),
                                   ),
                                 ),
                               ],
@@ -328,8 +331,7 @@ class _PlaylistCard extends StatelessWidget {
                             if (context.mounted) {
                               ScaffoldMessenger.of(context).showSnackBar(
                                 SnackBar(
-                                  content: Text('Se eliminó la lista "${playlist.name}"'),
-                                  backgroundColor: Colors.indigo[900],
+                                  content: Text(l10n.homeDeletedSnack(playlist.name)),
                                 ),
                               );
                             }
@@ -337,13 +339,13 @@ class _PlaylistCard extends StatelessWidget {
                         }
                       },
                       itemBuilder: (_) => [
-                        const PopupMenuItem(
+                        PopupMenuItem(
                           value: 'rename',
-                          child: Text('Renombrar', style: TextStyle(color: Colors.white)),
+                          child: Text(l10n.commonRename, style: const TextStyle(color: Colors.white)),
                         ),
-                        const PopupMenuItem(
+                        PopupMenuItem(
                           value: 'delete',
-                          child: Text('Eliminar', style: TextStyle(color: Colors.redAccent)),
+                          child: Text(l10n.commonDelete, style: const TextStyle(color: Colors.redAccent)),
                         ),
                       ],
                     ),
@@ -358,12 +360,13 @@ class _PlaylistCard extends StatelessWidget {
   }
 
   void _renamePlaylist(BuildContext context, Playlist playlist) {
+    final l10n = AppLocalizations.of(context)!;
     final controller = TextEditingController(text: playlist.name);
     showDialog(
       context: context,
       builder: (ctx) => AlertDialog(
         backgroundColor: AppTheme.surface,
-        title: const Text('Renombrar', style: TextStyle(color: Colors.white)),
+        title: Text(l10n.commonRename, style: const TextStyle(color: Colors.white)),
         content: TextField(
           controller: controller,
           style: const TextStyle(color: Colors.white),
@@ -371,7 +374,7 @@ class _PlaylistCard extends StatelessWidget {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancelar'),
+            child: Text(l10n.commonCancel),
           ),
           TextButton(
             onPressed: () {
@@ -382,7 +385,7 @@ class _PlaylistCard extends StatelessWidget {
               }
               Navigator.pop(ctx);
             },
-            child: const Text('Guardar'),
+            child: Text(l10n.commonSave),
           ),
         ],
       ),

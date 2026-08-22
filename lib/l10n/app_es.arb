@@ -1,0 +1,360 @@
+{
+  "@@locale": "es",
+  "appTitle": "Heardy",
+  "@appTitle": {"description": "Nombre de la app"},
+
+  "commonCancel": "Cancelar",
+  "commonDelete": "Eliminar",
+  "commonSave": "Guardar",
+  "commonRename": "Renombrar",
+  "commonCreate": "Crear",
+  "commonConfirm": "Confirmar",
+  "commonAccept": "Aceptar",
+  "commonName": "Nombre",
+  "commonCreateNewPlaylistHint": "Crear nueva playlist…",
+  "commonBack": "Volver",
+  "commonUnknownArtist": "Artista desconocido",
+
+  "homeTitle": "Mis playlists",
+  "homeSearchHint": "Buscar en mis playlists",
+  "homeEmptyTitle": "Sin playlists todavía",
+  "homeEmptyBody": "Crea una lista, metés archivos en tu carpeta o descargás desde Añadir.",
+  "homeNewPlaylistTitle": "Nueva playlist",
+  "homeSongsCount": "{count, plural, =0{Sin canciones} one{1 canción, {duration}} other{{count} canciones, {duration}}}",
+  "@homeSongsCount": {
+    "placeholders": {
+      "count": {"type": "int"},
+      "duration": {"type": "String"}
+    }
+  },
+  "homeDeleteListTitle": "Eliminar lista",
+  "homeDeleteListBody": "¿Estás seguro de que deseas eliminar la lista \"{name}\"?\n\nEsto también eliminará permanentemente del dispositivo las canciones descargadas que no pertenezcan a ninguna otra lista.",
+  "@homeDeleteListBody": {
+    "placeholders": {"name": {"type": "String"}}
+  },
+  "homeDeletedSnack": "Se eliminó la lista \"{name}\"",
+  "@homeDeletedSnack": {
+    "placeholders": {"name": {"type": "String"}}
+  },
+
+  "settingsTitle": "Ajustes",
+  "settingsSectionStorage": "Almacenamiento",
+  "settingsSpaceUsed": "Espacio usado",
+  "settingsCalculating": "Calculando...",
+  "settingsCalcError": "Error calculando",
+  "settingsTotalDownloadedSongs": "Total de canciones descargadas",
+  "settingsFolderReadySnack": "Carpeta \"Heardy\" lista. Andá a Bandeja para escanearla.",
+  "settingsFolderPickError": "No se pudo elegir la carpeta: {error}",
+  "@settingsFolderPickError": {
+    "placeholders": {"error": {"type": "String"}}
+  },
+  "settingsSectionAppearance": "Apariencia",
+  "settingsThemeColor": "Tema de color",
+  "settingsSectionLanguage": "Idioma",
+  "settingsSectionPlaylistOrder": "Orden de playlists",
+  "settingsCreatePlaylistsHint": "Crea playlists para poder reordenarlas aquí.",
+  "settingsSectionLocalLibrary": "Biblioteca local (beta)",
+  "settingsImportFromFolder": "Importar desde carpeta",
+  "settingsImportFolderBody": "Elegí una carpeta y Heardy creará \"Heardy/\" dentro, con una subcarpeta por playlist. Metés archivos .mp3/.mp4 ahí desde el explorador — recargar y asignar lo suelto se hace desde la pestaña Bandeja.",
+  "settingsChooseFolder": "Elegir carpeta",
+  "settingsSectionAdvanced": "Ajustes avanzados",
+  "settingsSectionSearch": "Búsqueda",
+  "settingsMaxResults": "Resultados máximos",
+  "settingsMaxResultsBody": "Número de resultados a mostrar en búsquedas (10-100)",
+  "settingsSectionAbout": "Acerca de",
+  "settingsAboutBody": "Reproductor de tu biblioteca musical, 100% offline.",
+
+  "statsSectionTitle": "Estadísticas",
+  "statsYourActivity": "Tu actividad",
+  "statsWeek": "Semana",
+  "statsMonth": "Mes",
+  "statsEmptyHint": "Reproduce música para ver tus estadísticas.",
+  "statsPlaysLabel": "Reproducciones",
+  "statsListenTimeLabel": "Tiempo escuchado",
+  "statsTopArtists": "Top 5 artistas",
+  "statsTopSongs": "Top canciones",
+  "statsUnknownArtist": "Desconocido",
+  "statsUntitledSong": "Sin título",
+
+  "serverSectionTitle": "Servidor de descargas",
+  "serverIntroBody": "Por defecto, Heardy usa el servidor oficial del proyecto — no hace falta configurar nada acá. Si preferís montar el tuyo (server/ de este repo, con Docker), pegá su dirección abajo.",
+  "serverRestoreOfficial": "Restaurar servidor oficial",
+  "serverAddressLabel": "Dirección",
+  "serverApiKeyLabel": "Clave de API",
+  "serverTestingButton": "Probando…",
+  "serverSaveAndTestButton": "Guardar y probar conexión",
+  "serverConnectedStatus": "Conectado — yt-dlp {version}",
+  "@serverConnectedStatus": {
+    "placeholders": {"version": {"type": "String"}}
+  },
+
+  "playlistUpdateFromYoutube": "Actualizar desde YouTube",
+  "playlistNoNewSongs": "Ya está actualizada, no hay canciones nuevas",
+  "playlistSongsQueuedSnack": "{count, plural, one{1 canción nueva encolada} other{{count} canciones nuevas encoladas}}",
+  "@playlistSongsQueuedSnack": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "playlistUpdateError": "No se pudo actualizar: {error}",
+  "@playlistUpdateError": {
+    "placeholders": {"error": {"type": "String"}}
+  },
+  "playlistSortImportOrder": "Orden de importación",
+  "playlistSortArtist": "Artista",
+  "playlistSortTitle": "Título",
+  "playlistSortDuration": "Duración",
+  "playlistSortTooltip": "Ordenar",
+  "playlistFinishEditing": "Terminar edición",
+  "playlistModifyOrder": "Modificar orden",
+  "playlistSearchHint": "Buscar en esta lista...",
+  "playlistEmptyTitle": "No hay canciones en esta lista",
+  "playlistEmptyBody": "Metés archivos en tu carpeta o descargás desde la pestaña Añadir.",
+  "playlistNoResultsTitle": "Sin resultados",
+  "playlistNoResultsBody": "Ninguna canción coincide con \"{query}\".",
+  "@playlistNoResultsBody": {
+    "placeholders": {"query": {"type": "String"}}
+  },
+  "playlistPlayNextSnack": "Se reproducirá \"{title}\" después de la actual",
+  "@playlistPlayNextSnack": {
+    "placeholders": {"title": {"type": "String"}}
+  },
+  "playlistDeletedSnack": "Se eliminó \"{title}\" de la lista",
+  "@playlistDeletedSnack": {
+    "placeholders": {"title": {"type": "String"}}
+  },
+  "playlistUndo": "Deshacer",
+  "playlistMoveToOther": "Mover a otra playlist",
+  "playlistCopyToOther": "Copiar a otra playlist",
+  "playlistChangePosition": "Cambiar posición",
+  "playlistMovedSnack": "\"{title}\" movida",
+  "@playlistMovedSnack": {
+    "placeholders": {"title": {"type": "String"}}
+  },
+  "playlistCopiedSnack": "\"{title}\" copiada",
+  "@playlistCopiedSnack": {
+    "placeholders": {"title": {"type": "String"}}
+  },
+  "playlistNewPositionTitle": "Nueva posición",
+  "playlistPositionHint": "Entre 1 y {total}",
+  "@playlistPositionHint": {
+    "placeholders": {"total": {"type": "int"}}
+  },
+  "playlistPositionError": "Ingresá un número entre 1 y {total}",
+  "@playlistPositionError": {
+    "placeholders": {"total": {"type": "int"}}
+  },
+  "playlistGoneTitle": "Playlist no disponible",
+  "playlistGoneBody": "Esta playlist ya no existe.",
+
+  "nowPlayingNoMusic": "No hay música seleccionada",
+  "nowPlayingLyricsButton": "Letra",
+  "nowPlayingQueueButton": "Cola",
+  "nowPlayingRewind5": "Retroceder 5 s",
+  "nowPlayingForward5": "Adelantar 5 s",
+  "nowPlayingShuffleTitle": "Aleatorio",
+  "nowPlayingRepeatTitle": "Repetir",
+  "nowPlayingOnLabel": "Activado",
+  "nowPlayingOffLabel": "Desactivado",
+  "nowPlayingRepeatOneLabel": "Una canción",
+  "nowPlayingRepeatAllLabel": "Todas",
+  "nowPlayingSleepTimerTitle": "Temporizador de pausa",
+  "nowPlayingSleepTimerRemaining": "Quedan {remaining}",
+  "@nowPlayingSleepTimerRemaining": {
+    "placeholders": {"remaining": {"type": "String"}}
+  },
+  "nowPlayingSleepTimerBody": "Pausa la reproducción automáticamente",
+  "nowPlayingCustomChip": "Personalizado",
+  "nowPlayingMinutesDialogTitle": "Minutos",
+  "nowPlayingMinutesHint": "Entre {min} y {max}",
+  "@nowPlayingMinutesHint": {
+    "placeholders": {"min": {"type": "int"}, "max": {"type": "int"}}
+  },
+  "nowPlayingMinutesError": "Ingresá un número entre {min} y {max}",
+  "@nowPlayingMinutesError": {
+    "placeholders": {"min": {"type": "int"}, "max": {"type": "int"}}
+  },
+  "lyricsUnavailable": "Letra no disponible",
+  "queueTitle": "Cola de reproducción",
+  "queueEmpty": "Cola vacía",
+
+  "searchTitle": "Buscar",
+  "searchLocalTab": "Mi biblioteca",
+  "searchLocalHint": "Buscar en tu biblioteca",
+  "searchYoutubeHint": "Buscar en YouTube",
+  "searchLocalEmptyTitle": "Buscá tu música",
+  "searchLocalEmptySubtitle": "Escribí el título o el artista",
+  "searchNoResultsSubtitle": "No encontramos nada con \"{query}\"",
+  "@searchNoResultsSubtitle": {
+    "placeholders": {"query": {"type": "String"}}
+  },
+  "searchNoServerTitle": "No hay servidor de descargas configurado",
+  "searchNoServerSubtitle": "Configuralo en Ajustes → Servidor de descargas",
+  "searchYoutubeEmptyTitle": "Buscá en YouTube",
+  "searchYoutubeEmptySubtitle": "Escribí para buscar sin salir de la app",
+  "searchFailedTitle": "No se pudo buscar",
+  "searchFailedGeneric": "No se pudo buscar: {error}",
+  "@searchFailedGeneric": {
+    "placeholders": {"error": {"type": "String"}}
+  },
+  "searchAddedToQueueSnack": "\"{title}\" agregada a la cola",
+  "@searchAddedToQueueSnack": {
+    "placeholders": {"title": {"type": "String"}}
+  },
+  "searchAlreadyQueuedSnack": "Esa canción ya estaba en la cola",
+
+  "navInbox": "Bandeja",
+  "navAdd": "Añadir",
+
+  "inboxScanSummaryBase": "Nuevas: {inserted} · Movidas: {moved} · Actualizadas: {updated} · Sin cambios: {unchanged}",
+  "@inboxScanSummaryBase": {
+    "placeholders": {
+      "inserted": {"type": "int"}, "moved": {"type": "int"},
+      "updated": {"type": "int"}, "unchanged": {"type": "int"}
+    }
+  },
+  "inboxScanMissingSuffix": " · Faltantes: {missing}",
+  "@inboxScanMissingSuffix": {
+    "placeholders": {"missing": {"type": "int"}}
+  },
+  "inboxRootUnavailable": "La carpeta de tu biblioteca ya no está disponible. Elegí una de nuevo.",
+  "inboxScanError": "Error al escanear: {error}",
+  "@inboxScanError": {
+    "placeholders": {"error": {"type": "String"}}
+  },
+  "inboxIgnoredCountSnack": "{count, plural, one{1 canción ignorada} other{{count} canciones ignoradas}}",
+  "@inboxIgnoredCountSnack": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "inboxRestoredCountSnack": "{count, plural, one{1 canción restaurada a la bandeja} other{{count} canciones restauradas a la bandeja}}",
+  "@inboxRestoredCountSnack": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "inboxAssignedCountSnack": "{count, plural, one{1 canción asignada} other{{count} canciones asignadas}}",
+  "@inboxAssignedCountSnack": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "inboxTitle": "Bandeja de entrada",
+  "inboxSubtitleIgnored": "Ignoradas — se pueden restaurar",
+  "inboxSubtitleLoose": "Archivos sueltos sin playlist",
+  "inboxTabActive": "Bandeja ({count})",
+  "@inboxTabActive": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "inboxTabIgnored": "Ignoradas ({count})",
+  "@inboxTabIgnored": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "inboxSelectNone": "Ninguna",
+  "inboxSelectAll": "Seleccionar todo",
+  "inboxCountIgnoredSuffix": "{count} ignoradas",
+  "@inboxCountIgnoredSuffix": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "inboxCountUnassignedSuffix": "{count} sin asignar",
+  "@inboxCountUnassignedSuffix": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "inboxRestoreButton": "Restaurar a la bandeja ({count})",
+  "@inboxRestoreButton": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "inboxIgnoreButton": "Ignorar ({count})",
+  "@inboxIgnoreButton": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "inboxAssignButton": "Asignar a… ({count})",
+  "@inboxAssignButton": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "inboxNoFolderTitle": "Todavía no elegiste una carpeta",
+  "inboxNoFolderBody": "Elegí dónde vive tu música para poder escanearla.",
+  "inboxEmptyTitle": "Todo organizado",
+  "inboxEmptyBody": "Metés archivos en la carpeta desde fuera de la app y tocás recargar acá arriba.",
+  "inboxNoIgnoredTitle": "No ignoraste ninguna canción",
+  "inboxNoIgnoredBody": "Las que descartés desde la bandeja aparecen acá, y podés traerlas de vuelta cuando quieras.",
+  "inboxAssignSheetTitle": "Asignar a…",
+
+  "importScreenTitle": "Añadir música",
+  "importUrlHint": "Pegá un enlace de YouTube o Spotify…",
+  "importPasteTooltip": "Pegar",
+  "importAnalyzeError": "No se pudo analizar el enlace: {message}",
+  "@importAnalyzeError": {
+    "placeholders": {"message": {"type": "String"}}
+  },
+  "importSavedForLaterSnack": "Guardado. Se descargará solo cuando el servidor esté disponible",
+  "importAlreadyInWaitlistSnack": "Ya estaba en la lista de espera",
+  "importSongsQueuedSnack": "{count, plural, one{1 canción encolada} other{{count} canciones encoladas}}",
+  "@importSongsQueuedSnack": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "importSpotifySkippedSuffix": " · {skipped} sin buena coincidencia en YouTube",
+  "@importSpotifySkippedSuffix": {
+    "placeholders": {"skipped": {"type": "int"}}
+  },
+  "importNoServerBody": "Configuralo en Ajustes → Servidor de descargas.",
+  "importNoFolderTitle": "Elegí primero una carpeta de biblioteca",
+  "importNoFolderBody": "Las descargas se guardan ahí, igual que los archivos que importás a mano. Configuralo en Ajustes.",
+  "importSaveForLaterButton": "Guardar para cuando el servidor esté disponible",
+  "importWaitlistTitle": "Lista de espera · servidor no disponible",
+  "importRetryNowButton": "Reintentar ahora",
+  "importDeletedPlaylistFallback": "Playlist eliminada",
+  "importDownloadButton": "Descargar",
+  "importVideosCount": "{count, plural, one{{count} video} other{{count} videos}}",
+  "@importVideosCount": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "importDownloadCountButton": "{count, plural, one{Descargar 1 canción} other{Descargar {count} canciones}}",
+  "@importDownloadCountButton": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "importSpotifyGoodMatchSummary": "{acceptable} de {total} con buena coincidencia",
+  "@importSpotifyGoodMatchSummary": {
+    "placeholders": {"acceptable": {"type": "int"}, "total": {"type": "int"}}
+  },
+  "importSpotifyPartialMatchSummary": "{acceptable} de {total} se van a descargar — el resto no tiene una coincidencia confiable en YouTube",
+  "@importSpotifyPartialMatchSummary": {
+    "placeholders": {"acceptable": {"type": "int"}, "total": {"type": "int"}}
+  },
+  "importSpotifyNoMatchesButton": "Sin coincidencias descargables",
+  "importQueueSectionTitle": "En cola",
+  "importCancelAllButton": "Cancelar todo",
+  "importFailuresTitle": "No se pudieron descargar",
+  "importDismissButton": "Descartar",
+  "importMatchNoResult": "No se encontró nada parecido en YouTube",
+  "importMatchGood": "Δ {diff}s",
+  "@importMatchGood": {
+    "placeholders": {"diff": {"type": "int"}}
+  },
+  "importMatchReview": "revisar · Δ {diff}s",
+  "@importMatchReview": {
+    "placeholders": {"diff": {"type": "int"}}
+  },
+  "importMatchNone": "no se descargará",
+
+  "downloadPhaseResolving": "Obteniendo datos…",
+  "downloadPhasePreparing": "Preparando en el servidor…",
+  "downloadPhaseDownloading": "Descargando…",
+  "downloadPhaseSaving": "Guardando en la biblioteca…",
+  "downloadCardTitle": "Descargando",
+  "downloadCardCancelThisTooltip": "Cancelar esta canción",
+  "downloadCardPreparing": "Preparando…",
+  "downloadCardQueuedSuffix": "+{count} en cola",
+  "@downloadCardQueuedSuffix": {
+    "placeholders": {"count": {"type": "int"}}
+  },
+  "downloadCardCancelAllButton": "Cancelar toda la tanda",
+  "playlistTargetSheetTitle": "¿A qué playlist?",
+  "searchResultsAlbumLabel": "Búsqueda",
+  "themeNavy": "Azul nocturno",
+  "themeViolet": "Violeta neón",
+  "themeRose": "Rosa eléctrico",
+  "themeGreen": "Verde bosque",
+  "themeOrange": "Naranja ardiente",
+  "themeRed": "Rojo intenso",
+  "themeCustom": "Personalizado",
+  "themeCustomizeTitle": "Personalizar colores",
+  "themePrimaryColorLabel": "Color principal",
+  "themeSecondaryColorLabel": "Color secundario",
+  "themeCombinedToggle": "Degradado combinado",
+  "themeCombinedOnHint": "Los dos colores se funden en un degradado",
+  "themeCombinedOffHint": "Cada color se usa por separado, sin mezclarse"
+}

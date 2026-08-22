@@ -8,6 +8,7 @@ import '../theme/app_theme.dart';
 import '../services/download_source.dart';
 import '../services/storage_service.dart';
 import '../services/ytdlp_server_source.dart';
+import '../l10n/app_localizations.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -20,7 +21,7 @@ class SettingsScreen extends StatelessWidget {
   /// carpeta (vía SAF) más lo que sigue siendo legítimamente un `File` —
   /// descargas heredadas pre-pivot y las miniaturas, que siempre viven en
   /// almacenamiento privado sin importar el origen de la canción (D5).
-  Future<String> _calculateStorageUsage(String? libraryRootUri) async {
+  Future<String> _calculateStorageUsage(BuildContext context, String? libraryRootUri) async {
     try {
       int totalBytes = 0;
 
@@ -51,7 +52,7 @@ class SettingsScreen extends StatelessWidget {
 
       return _formatBytes(totalBytes);
     } catch (e) {
-      return 'Error calculando';
+      return context.mounted ? AppLocalizations.of(context)!.settingsCalcError : 'Error calculando';
     }
   }
 
@@ -74,10 +75,8 @@ class SettingsScreen extends StatelessWidget {
       // having to navigate away and back.
       context.read<MusicProvider>().setLibraryRootUri(rootUri);
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Carpeta "Heardy" lista. Andá a Bandeja para escanearla.',
-          ),
+        SnackBar(
+          content: Text(AppLocalizations.of(context)!.settingsFolderReadySnack),
           behavior: SnackBarBehavior.floating,
         ),
       );
@@ -85,7 +84,7 @@ class SettingsScreen extends StatelessWidget {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
-          content: Text('No se pudo elegir la carpeta: $e'),
+          content: Text(AppLocalizations.of(context)!.settingsFolderPickError(e.toString())),
           backgroundColor: Colors.red.withValues(alpha: 0.8),
           behavior: SnackBarBehavior.floating,
         ),
@@ -97,30 +96,31 @@ class SettingsScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final settings = Provider.of<SettingsProvider>(context);
     final musicProvider = Provider.of<MusicProvider>(context);
+    final l10n = AppLocalizations.of(context)!;
 
     return SafeArea(
       child: ListView(
         padding: const EdgeInsets.fromLTRB(20, 16, 20, 90),
         children: [
-          const Text(
-            'Ajustes',
-            style: TextStyle(
+          Text(
+            l10n.settingsTitle,
+            style: const TextStyle(
               color: Colors.white,
               fontSize: 28,
               fontWeight: FontWeight.w800,
             ),
           ),
           const SizedBox(height: 24),
-          _SectionTitle('Almacenamiento'),
+          _SectionTitle(l10n.settingsSectionStorage),
           const SizedBox(height: 10),
           Container(
             decoration: AppTheme.glassCard(),
             padding: const EdgeInsets.all(16),
             child: FutureBuilder<String>(
               key: ValueKey(musicProvider.libraryRootUri),
-              future: _calculateStorageUsage(musicProvider.libraryRootUri),
+              future: _calculateStorageUsage(context, musicProvider.libraryRootUri),
               builder: (context, snapshot) {
-                final storage = snapshot.data ?? 'Calculando...';
+                final storage = snapshot.data ?? l10n.settingsCalculating;
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
@@ -133,7 +133,7 @@ class SettingsScreen extends StatelessWidget {
                         ),
                         const SizedBox(width: 8),
                         Text(
-                          'Espacio usado',
+                          l10n.settingsSpaceUsed,
                           style: TextStyle(
                             color: Colors.white.withValues(alpha: 0.7),
                             fontSize: 13,
@@ -152,7 +152,7 @@ class SettingsScreen extends StatelessWidget {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      'Total de canciones descargadas',
+                      l10n.settingsTotalDownloadedSongs,
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.45),
                         fontSize: 12,
@@ -166,7 +166,7 @@ class SettingsScreen extends StatelessWidget {
           const SizedBox(height: 28),
           const _StatisticsSection(),
           const SizedBox(height: 28),
-          _SectionTitle('Apariencia'),
+          _SectionTitle(l10n.settingsSectionAppearance),
           const SizedBox(height: 10),
           Container(
             decoration: AppTheme.glassCard(),
@@ -175,7 +175,7 @@ class SettingsScreen extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Tema de color',
+                  l10n.settingsThemeColor,
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.7),
                     fontSize: 13,
@@ -184,6 +184,7 @@ class SettingsScreen extends StatelessWidget {
                 const SizedBox(height: 12),
                 ...AppThemePreset.values.map((preset) {
                   final selected = settings.preset == preset;
+                  final isCustom = preset == AppThemePreset.custom;
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 8),
                     child: Material(
@@ -193,7 +194,9 @@ class SettingsScreen extends StatelessWidget {
                       borderRadius: BorderRadius.circular(12),
                       child: InkWell(
                         borderRadius: BorderRadius.circular(12),
-                        onTap: () => settings.setPreset(preset),
+                        onTap: () => isCustom
+                            ? _showCustomThemeSheet(context, settings)
+                            : settings.setPreset(preset),
                         child: Padding(
                           padding: const EdgeInsets.symmetric(
                             horizontal: 14,
@@ -205,12 +208,79 @@ class SettingsScreen extends StatelessWidget {
                               const SizedBox(width: 12),
                               Expanded(
                                 child: Text(
-                                  settings.presetLabel(preset),
+                                  settings.presetLabel(context, preset),
                                   style: TextStyle(
                                     color: Colors.white,
                                     fontWeight: selected
                                         ? FontWeight.w700
                                         : FontWeight.w500,
+                                  ),
+                                ),
+                              ),
+                              if (isCustom)
+                                Icon(
+                                  Icons.tune_rounded,
+                                  color: selected
+                                      ? AppTheme.primaryLight
+                                      : Colors.white.withValues(alpha: 0.4),
+                                  size: 20,
+                                )
+                              else if (selected)
+                                Icon(
+                                  Icons.check_circle_rounded,
+                                  color: AppTheme.primaryLight,
+                                  size: 20,
+                                ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            ),
+          ),
+          const SizedBox(height: 28),
+          _SectionTitle(l10n.settingsSectionLanguage),
+          const SizedBox(height: 10),
+          Container(
+            decoration: AppTheme.glassCard(),
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ...AppLanguage.values.map((lang) {
+                  final selected = settings.language == lang;
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Material(
+                      color: selected
+                          ? AppTheme.primary.withValues(alpha: 0.2)
+                          : Colors.white.withValues(alpha: 0.04),
+                      borderRadius: BorderRadius.circular(12),
+                      child: InkWell(
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: () => settings.setLanguage(lang),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 12,
+                          ),
+                          child: Row(
+                            children: [
+                              Icon(
+                                Icons.language_rounded,
+                                color: selected ? AppTheme.primaryLight : Colors.white54,
+                                size: 20,
+                              ),
+                              const SizedBox(width: 12),
+                              Expanded(
+                                child: Text(
+                                  settings.languageLabel(lang),
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
                                   ),
                                 ),
                               ),
@@ -231,7 +301,7 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 28),
-          _SectionTitle('Orden de playlists'),
+          _SectionTitle(l10n.settingsSectionPlaylistOrder),
           const SizedBox(height: 10),
           Container(
             decoration: AppTheme.glassCard(),
@@ -239,7 +309,7 @@ class SettingsScreen extends StatelessWidget {
                 ? Padding(
                     padding: const EdgeInsets.all(20),
                     child: Text(
-                      'Crea playlists para poder reordenarlas aquí.',
+                      l10n.settingsCreatePlaylistsHint,
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.45),
                       ),
@@ -286,7 +356,7 @@ class SettingsScreen extends StatelessWidget {
                   ),
           ),
           const SizedBox(height: 28),
-          _SectionTitle('Biblioteca local (beta)'),
+          _SectionTitle(l10n.settingsSectionLocalLibrary),
           const SizedBox(height: 10),
           Container(
             decoration: AppTheme.glassCard(),
@@ -303,7 +373,7 @@ class SettingsScreen extends StatelessWidget {
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      'Importar desde carpeta',
+                      l10n.settingsImportFromFolder,
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.7),
                         fontSize: 13,
@@ -313,7 +383,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 8),
                 Text(
-                  'Elegí una carpeta y Heardy creará "Heardy/" dentro, con una subcarpeta por playlist. Metés archivos .mp3/.mp4 ahí desde el explorador — recargar y asignar lo suelto se hace desde la pestaña Bandeja.',
+                  l10n.settingsImportFolderBody,
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.45),
                     fontSize: 12,
@@ -335,9 +405,9 @@ class SettingsScreen extends StatelessWidget {
                       padding: const EdgeInsets.symmetric(vertical: 12),
                     ),
                     icon: const Icon(Icons.folder_rounded, size: 18),
-                    label: const Text(
-                      'Elegir carpeta',
-                      style: TextStyle(fontWeight: FontWeight.w600),
+                    label: Text(
+                      l10n.settingsChooseFolder,
+                      style: const TextStyle(fontWeight: FontWeight.w600),
                     ),
                     onPressed: () => _pickLibraryFolder(context),
                   ),
@@ -346,11 +416,11 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 28),
-          _SectionTitle('Ajustes avanzados'),
+          _SectionTitle(l10n.settingsSectionAdvanced),
           const SizedBox(height: 10),
           const _AdvancedSettingsSection(),
           const SizedBox(height: 28),
-          _SectionTitle('Búsqueda'),
+          _SectionTitle(l10n.settingsSectionSearch),
           const SizedBox(height: 10),
           Container(
             decoration: AppTheme.glassCard(),
@@ -367,7 +437,7 @@ class SettingsScreen extends StatelessWidget {
                     ),
                     const SizedBox(width: 8),
                     Text(
-                      'Resultados máximos',
+                      l10n.settingsMaxResults,
                       style: TextStyle(
                         color: Colors.white.withValues(alpha: 0.7),
                         fontSize: 13,
@@ -377,7 +447,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  'Número de resultados a mostrar en búsquedas (10-100)',
+                  l10n.settingsMaxResultsBody,
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.45),
                     fontSize: 12,
@@ -422,7 +492,7 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 28),
-          _SectionTitle('Acerca de'),
+          _SectionTitle(l10n.settingsSectionAbout),
           const SizedBox(height: 10),
           Container(
             decoration: AppTheme.glassCard(),
@@ -440,7 +510,7 @@ class SettingsScreen extends StatelessWidget {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  'Reproductor de tu biblioteca musical, 100% offline.',
+                  l10n.settingsAboutBody,
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.45),
                     fontSize: 13,
@@ -459,15 +529,13 @@ class SettingsScreen extends StatelessWidget {
 class _StatisticsData {
   final int totalPlays;
   final int totalListenSeconds;
-  final String? topArtist;
-  final int topArtistPlays;
+  final List<Map<String, dynamic>> topArtists;
   final List<Map<String, dynamic>> topSongs;
 
   const _StatisticsData({
     required this.totalPlays,
     required this.totalListenSeconds,
-    this.topArtist,
-    required this.topArtistPlays,
+    required this.topArtists,
     required this.topSongs,
   });
 }
@@ -490,18 +558,16 @@ class _StatisticsSectionState extends State<_StatisticsSection> {
       isWeek
           ? db.getTotalListenTimeThisWeek()
           : db.getTotalListenTimeThisMonth(),
-      isWeek ? db.getTopArtistThisWeek() : db.getTopArtistThisMonth(),
+      isWeek ? db.getTopArtistsThisWeek() : db.getTopArtistsThisMonth(),
       isWeek
           ? db.getTopSongsThisWeek(limit: 10)
           : db.getTopSongsThisMonth(limit: 10),
     ]);
 
-    final topArtist = results[2] as Map<String, dynamic>?;
     return _StatisticsData(
       totalPlays: results[0] as int,
       totalListenSeconds: results[1] as int,
-      topArtist: topArtist?['artist'] as String?,
-      topArtistPlays: topArtist?['playCount'] as int? ?? 0,
+      topArtists: results[2] as List<Map<String, dynamic>>,
       topSongs: results[3] as List<Map<String, dynamic>>,
     );
   }
@@ -516,10 +582,11 @@ class _StatisticsSectionState extends State<_StatisticsSection> {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _SectionTitle('Estadísticas'),
+        _SectionTitle(l10n.statsSectionTitle),
         const SizedBox(height: 10),
         Container(
           decoration: AppTheme.glassCard(),
@@ -536,7 +603,7 @@ class _StatisticsSectionState extends State<_StatisticsSection> {
                   ),
                   const SizedBox(width: 8),
                   Text(
-                    'Tu actividad',
+                    l10n.statsYourActivity,
                     style: TextStyle(
                       color: Colors.white.withValues(alpha: 0.7),
                       fontSize: 13,
@@ -571,7 +638,7 @@ class _StatisticsSectionState extends State<_StatisticsSection> {
                     return Padding(
                       padding: const EdgeInsets.symmetric(vertical: 8),
                       child: Text(
-                        'Reproduce música para ver tus estadísticas.',
+                        l10n.statsEmptyHint,
                         style: TextStyle(
                           color: Colors.white.withValues(alpha: 0.45),
                           fontSize: 13,
@@ -587,7 +654,7 @@ class _StatisticsSectionState extends State<_StatisticsSection> {
                         children: [
                           Expanded(
                             child: _StatMiniCard(
-                              label: 'Reproducciones',
+                              label: l10n.statsPlaysLabel,
                               value: '${data.totalPlays}',
                               icon: Icons.play_circle_outline_rounded,
                             ),
@@ -595,17 +662,17 @@ class _StatisticsSectionState extends State<_StatisticsSection> {
                           const SizedBox(width: 10),
                           Expanded(
                             child: _StatMiniCard(
-                              label: 'Tiempo escuchado',
+                              label: l10n.statsListenTimeLabel,
                               value: _formatListenTime(data.totalListenSeconds),
                               icon: Icons.schedule_rounded,
                             ),
                           ),
                         ],
                       ),
-                      if (data.topArtist != null) ...[
+                      if (data.topArtists.isNotEmpty) ...[
                         const SizedBox(height: 16),
                         Text(
-                          'Artista más escuchado',
+                          l10n.statsTopArtists,
                           style: TextStyle(
                             color: Colors.white.withValues(alpha: 0.55),
                             fontSize: 12,
@@ -613,51 +680,19 @@ class _StatisticsSectionState extends State<_StatisticsSection> {
                           ),
                         ),
                         const SizedBox(height: 8),
-                        Row(
-                          children: [
-                            Icon(
-                              Icons.person_rounded,
-                              color: AppTheme.primaryLight,
-                              size: 18,
-                            ),
-                            const SizedBox(width: 8),
-                            Expanded(
-                              child: Text(
-                                data.topArtist!,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 15,
-                                ),
-                              ),
-                            ),
-                            Container(
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 8,
-                                vertical: 4,
-                              ),
-                              decoration: BoxDecoration(
-                                color: AppTheme.primary.withValues(alpha: 0.25),
-                                borderRadius: BorderRadius.circular(8),
-                              ),
-                              child: Text(
-                                '${data.topArtistPlays}x',
-                                style: TextStyle(
-                                  color: AppTheme.primaryLight,
-                                  fontSize: 12,
-                                  fontWeight: FontWeight.w700,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ),
+                        ...List.generate(data.topArtists.length, (index) {
+                          final artist = data.topArtists[index];
+                          return _TopArtistRow(
+                            rank: index + 1,
+                            name: artist['artist'] as String? ?? l10n.statsUnknownArtist,
+                            playCount: artist['playCount'] as int? ?? 0,
+                          );
+                        }),
                       ],
                       if (data.topSongs.isNotEmpty) ...[
                         const SizedBox(height: 16),
                         Text(
-                          'Top canciones',
+                          l10n.statsTopSongs,
                           style: TextStyle(
                             color: Colors.white.withValues(alpha: 0.55),
                             fontSize: 12,
@@ -675,9 +710,9 @@ class _StatisticsSectionState extends State<_StatisticsSection> {
                             final song = data.topSongs[index];
                             return _TopSongRow(
                               rank: index + 1,
-                              title: song['title'] as String? ?? 'Sin título',
+                              title: song['title'] as String? ?? l10n.statsUntitledSong,
                               artist:
-                                  song['artist'] as String? ?? 'Desconocido',
+                                  song['artist'] as String? ?? l10n.statsUnknownArtist,
                               artPath: song['artPath'] as String? ?? '',
                               playCount: song['playCount'] as int? ?? 0,
                             );
@@ -720,6 +755,7 @@ class _PeriodToggle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     return Container(
       decoration: BoxDecoration(
         color: Colors.white.withValues(alpha: 0.06),
@@ -729,12 +765,12 @@ class _PeriodToggle extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           _PeriodChip(
-            label: 'Semana',
+            label: l10n.statsWeek,
             selected: isWeek,
             onTap: () => onChanged(true),
           ),
           _PeriodChip(
-            label: 'Mes',
+            label: l10n.statsMonth,
             selected: !isWeek,
             onTap: () => onChanged(false),
           ),
@@ -821,6 +857,83 @@ class _StatMiniCard extends StatelessWidget {
             style: TextStyle(
               color: Colors.white.withValues(alpha: 0.45),
               fontSize: 11,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TopArtistRow extends StatelessWidget {
+  final int rank;
+  final String name;
+  final int playCount;
+
+  const _TopArtistRow({
+    required this.rank,
+    required this.name,
+    required this.playCount,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 22,
+            child: Text(
+              '$rank',
+              style: TextStyle(
+                color: Colors.white.withValues(alpha: 0.4),
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Container(
+            width: 40,
+            height: 40,
+            decoration: BoxDecoration(
+              gradient: AppTheme.primaryGradient,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Icon(
+              Icons.person_rounded,
+              color: Colors.white.withValues(alpha: 0.7),
+              size: 20,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.w600,
+                fontSize: 14,
+              ),
+            ),
+          ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: AppTheme.primary.withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              '${playCount}x',
+              style: TextStyle(
+                color: AppTheme.primaryLight,
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+              ),
             ),
           ),
         ],
@@ -974,7 +1087,7 @@ class _AdvancedSettingsSection extends StatelessWidget {
               Icon(Icons.dns_rounded, color: AppTheme.primaryLight, size: 20),
               const SizedBox(width: 8),
               Text(
-                'Servidor de descargas',
+                AppLocalizations.of(context)!.serverSectionTitle,
                 style: TextStyle(
                   color: Colors.white.withValues(alpha: 0.7),
                   fontSize: 13,
@@ -1074,13 +1187,14 @@ class _DownloadServerSectionState extends State<_DownloadServerSection> {
     return (
       color: Colors.greenAccent,
       icon: Icons.cloud_done_rounded,
-      text: 'Conectado — yt-dlp ${status.version ?? "?"}',
+      text: AppLocalizations.of(context)!.serverConnectedStatus(status.version ?? '?'),
     );
   }
 
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsProvider>();
+    final l10n = AppLocalizations.of(context)!;
     final line = _statusLine();
     final fieldBorder = OutlineInputBorder(
       borderRadius: BorderRadius.circular(12),
@@ -1091,9 +1205,7 @@ class _DownloadServerSectionState extends State<_DownloadServerSection> {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Por defecto, Heardy usa el servidor oficial del proyecto — no hace '
-          'falta configurar nada acá. Si preferís montar el tuyo (server/ de '
-          'este repo, con Docker), pegá su dirección abajo.',
+          l10n.serverIntroBody,
           style: TextStyle(
             color: Colors.white.withValues(alpha: 0.45),
             fontSize: 12,
@@ -1110,9 +1222,9 @@ class _DownloadServerSectionState extends State<_DownloadServerSection> {
                 padding: const EdgeInsets.symmetric(horizontal: 4),
               ),
               icon: const Icon(Icons.restore_rounded, size: 16),
-              label: const Text(
-                'Restaurar servidor oficial',
-                style: TextStyle(fontSize: 12),
+              label: Text(
+                l10n.serverRestoreOfficial,
+                style: const TextStyle(fontSize: 12),
               ),
               onPressed: () async {
                 await settings.restoreOfficialServer();
@@ -1133,7 +1245,7 @@ class _DownloadServerSectionState extends State<_DownloadServerSection> {
           keyboardType: TextInputType.url,
           autocorrect: false,
           decoration: InputDecoration(
-            labelText: 'Dirección',
+            labelText: l10n.serverAddressLabel,
             hintText: '192.168.1.50:8080',
             labelStyle: TextStyle(
               color: Colors.white.withValues(alpha: 0.5),
@@ -1160,7 +1272,7 @@ class _DownloadServerSectionState extends State<_DownloadServerSection> {
           autocorrect: false,
           enableSuggestions: false,
           decoration: InputDecoration(
-            labelText: 'Clave de API',
+            labelText: l10n.serverApiKeyLabel,
             labelStyle: TextStyle(
               color: Colors.white.withValues(alpha: 0.5),
               fontSize: 13,
@@ -1207,7 +1319,7 @@ class _DownloadServerSectionState extends State<_DownloadServerSection> {
                   )
                 : const Icon(Icons.wifi_tethering_rounded, size: 18),
             label: Text(
-              _testing ? 'Probando…' : 'Guardar y probar conexión',
+              _testing ? l10n.serverTestingButton : l10n.serverSaveAndTestButton,
               style: const TextStyle(fontWeight: FontWeight.w600),
             ),
             onPressed: _testing ? null : _saveAndTest,
@@ -1262,20 +1374,250 @@ class _PresetDot extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final colors = switch (preset) {
-      AppThemePreset.navy => [const Color(0xFF2563EB), const Color(0xFF1E40AF)],
-      AppThemePreset.violet => [
-        const Color(0xFF7C3AED),
-        const Color(0xFF4F46E5),
-      ],
-      AppThemePreset.rose => [const Color(0xFFDB2777), const Color(0xFFBE185D)],
-    };
+    final colors = AppTheme.previewColors(preset);
     return Container(
       width: 28,
       height: 28,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         gradient: LinearGradient(colors: colors),
+      ),
+    );
+  }
+}
+
+// --- PERSONALIZACIÓN DE COLORES ---
+
+const _customThemeSwatches = <Color>[
+  Color(0xFFEF4444), // red
+  Color(0xFFF97316), // orange
+  Color(0xFFF59E0B), // amber
+  Color(0xFFEAB308), // yellow
+  Color(0xFF84CC16), // lime
+  Color(0xFF22C55E), // green
+  Color(0xFF10B981), // emerald
+  Color(0xFF14B8A6), // teal
+  Color(0xFF06B6D4), // cyan
+  Color(0xFF0EA5E9), // sky
+  Color(0xFF3B82F6), // blue
+  Color(0xFF6366F1), // indigo
+  Color(0xFF8B5CF6), // violet
+  Color(0xFFA855F7), // purple
+  Color(0xFFD946EF), // fuchsia
+  Color(0xFFEC4899), // pink
+  Color(0xFFF43F5E), // rose
+  Color(0xFF64748B), // slate (neutro)
+];
+
+Future<void> _showCustomThemeSheet(
+  BuildContext context,
+  SettingsProvider settings,
+) async {
+  final result = await showModalBottomSheet<(Color, Color, bool)>(
+    context: context,
+    backgroundColor: AppTheme.surface,
+    isScrollControlled: true,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (_) => _CustomThemeSheet(
+      initialPrimary: settings.customPrimary,
+      initialSecondary: settings.customSecondary,
+      initialCombined: settings.customCombined,
+    ),
+  );
+  if (result == null) return;
+  await settings.setCustomColors(
+    primary: result.$1,
+    secondary: result.$2,
+    combined: result.$3,
+  );
+}
+
+class _CustomThemeSheet extends StatefulWidget {
+  final Color initialPrimary;
+  final Color initialSecondary;
+  final bool initialCombined;
+
+  const _CustomThemeSheet({
+    required this.initialPrimary,
+    required this.initialSecondary,
+    required this.initialCombined,
+  });
+
+  @override
+  State<_CustomThemeSheet> createState() => _CustomThemeSheetState();
+}
+
+class _CustomThemeSheetState extends State<_CustomThemeSheet> {
+  late Color _primary = widget.initialPrimary;
+  late Color _secondary = widget.initialSecondary;
+  late bool _combined = widget.initialCombined;
+  late final _primaryHexController = TextEditingController(text: _hex(_primary));
+  late final _secondaryHexController = TextEditingController(text: _hex(_secondary));
+
+  static String _hex(Color c) =>
+      '#${c.toARGB32().toRadixString(16).substring(2).toUpperCase()}';
+
+  Color? _parseHex(String input) {
+    var s = input.trim().replaceFirst('#', '');
+    if (s.length == 3) {
+      s = s.split('').map((c) => '$c$c').join();
+    }
+    if (s.length != 6) return null;
+    final value = int.tryParse(s, radix: 16);
+    if (value == null) return null;
+    return Color(0xFF000000 | value);
+  }
+
+  @override
+  void dispose() {
+    _primaryHexController.dispose();
+    _secondaryHexController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    return SafeArea(
+      child: Padding(
+        padding: EdgeInsets.only(bottom: MediaQuery.of(context).viewInsets.bottom),
+        child: SingleChildScrollView(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(20, 20, 20, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  l10n.themeCustomizeTitle,
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(height: 16),
+                _buildPreview(),
+                const SizedBox(height: 20),
+                Text(
+                  l10n.themePrimaryColorLabel,
+                  style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 13),
+                ),
+                const SizedBox(height: 10),
+                _buildSwatchGrid(_primary, (c) {
+                  setState(() {
+                    _primary = c;
+                    _primaryHexController.text = _hex(c);
+                  });
+                }),
+                const SizedBox(height: 8),
+                _buildHexField(_primaryHexController, (c) => setState(() => _primary = c)),
+                const SizedBox(height: 20),
+                Text(
+                  l10n.themeSecondaryColorLabel,
+                  style: TextStyle(color: Colors.white.withValues(alpha: 0.7), fontSize: 13),
+                ),
+                const SizedBox(height: 10),
+                _buildSwatchGrid(_secondary, (c) {
+                  setState(() {
+                    _secondary = c;
+                    _secondaryHexController.text = _hex(c);
+                  });
+                }),
+                const SizedBox(height: 8),
+                _buildHexField(_secondaryHexController, (c) => setState(() => _secondary = c)),
+                const SizedBox(height: 12),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  activeThumbColor: _primary,
+                  title: Text(l10n.themeCombinedToggle, style: const TextStyle(color: Colors.white)),
+                  subtitle: Text(
+                    _combined ? l10n.themeCombinedOnHint : l10n.themeCombinedOffHint,
+                    style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12),
+                  ),
+                  value: _combined,
+                  onChanged: (v) => setState(() => _combined = v),
+                ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: _primary,
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                    ),
+                    onPressed: () => Navigator.pop(context, (_primary, _secondary, _combined)),
+                    child: Text(l10n.commonConfirm),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPreview() {
+    return Container(
+      height: 56,
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(borderRadius: BorderRadius.circular(14)),
+      child: _combined
+          ? DecoratedBox(
+              decoration: BoxDecoration(
+                gradient: LinearGradient(colors: [_primary, _secondary]),
+              ),
+            )
+          : Row(
+              children: [
+                Expanded(child: ColoredBox(color: _primary)),
+                Expanded(child: ColoredBox(color: _secondary)),
+              ],
+            ),
+    );
+  }
+
+  Widget _buildSwatchGrid(Color selected, ValueChanged<Color> onSelect) {
+    return Wrap(
+      spacing: 10,
+      runSpacing: 10,
+      children: _customThemeSwatches.map((c) {
+        final isSelected = c.toARGB32() == selected.toARGB32();
+        return GestureDetector(
+          onTap: () => onSelect(c),
+          child: Container(
+            width: 32,
+            height: 32,
+            decoration: BoxDecoration(
+              color: c,
+              shape: BoxShape.circle,
+              border: isSelected ? Border.all(color: Colors.white, width: 2.5) : null,
+              boxShadow: isSelected
+                  ? [BoxShadow(color: c.withValues(alpha: 0.6), blurRadius: 8)]
+                  : null,
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  Widget _buildHexField(TextEditingController controller, ValueChanged<Color> onValid) {
+    return SizedBox(
+      width: 150,
+      child: TextField(
+        controller: controller,
+        style: const TextStyle(color: Colors.white, fontSize: 13),
+        decoration: const InputDecoration(isDense: true, hintText: '#RRGGBB'),
+        onSubmitted: (value) {
+          final c = _parseHex(value);
+          if (c != null) onValid(c);
+        },
       ),
     );
   }

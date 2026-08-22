@@ -11,6 +11,7 @@ import '../services/spotify_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/download_progress_card.dart';
 import '../widgets/playlist_target_sheet.dart';
+import '../l10n/app_localizations.dart';
 
 /// What a pasted URL turned out to be, once analyzed.
 enum _UrlKind { video, playlist, spotify }
@@ -141,7 +142,9 @@ class _ImportScreenState extends State<ImportScreen> {
       final raw = e.toString();
       final message = raw.startsWith('Exception: ') ? raw.substring('Exception: '.length) : raw;
       setState(() {
-        _errorMessage = SpotifyService.isSpotifyUrl(url) ? message : 'No se pudo analizar el enlace: $message';
+        _errorMessage = SpotifyService.isSpotifyUrl(url)
+            ? message
+            : AppLocalizations.of(context)!.importAnalyzeError(message);
       });
     } finally {
       // Un único punto de reset — la pantalla que reemplaza a ésta (la vieja
@@ -178,8 +181,9 @@ class _ImportScreenState extends State<ImportScreen> {
     setState(_clearAnalysis);
     _urlController.clear();
 
+    final l10n = AppLocalizations.of(context)!;
     _showSnack(
-      added ? 'Guardado. Se descargará solo cuando el servidor esté disponible' : 'Ya estaba en la lista de espera',
+      added ? l10n.importSavedForLaterSnack : l10n.importAlreadyInWaitlistSnack,
     );
   }
 
@@ -203,7 +207,8 @@ class _ImportScreenState extends State<ImportScreen> {
     _urlController.clear();
     provider.processQueue();
 
-    _showSnack(added ? '"${track.title}" agregada a la cola' : 'Esa canción ya estaba en la cola');
+    final l10n = AppLocalizations.of(context)!;
+    _showSnack(added ? l10n.searchAddedToQueueSnack(track.title) : l10n.searchAlreadyQueuedSnack);
   }
 
   Future<void> _downloadPlaylist(RemotePlaylist playlist) async {
@@ -229,7 +234,7 @@ class _ImportScreenState extends State<ImportScreen> {
     _urlController.clear();
     provider.processQueue();
 
-    _showSnack('$added ${added == 1 ? "canción encolada" : "canciones encoladas"}');
+    _showSnack(AppLocalizations.of(context)!.importSongsQueuedSnack(added));
   }
 
   Future<void> _downloadSpotifyMatches(SpotifyAnalysisResult spotify, List<SpotifyMatch> matches) async {
@@ -265,11 +270,11 @@ class _ImportScreenState extends State<ImportScreen> {
     provider.processQueue();
 
     final skipped = matches.length - acceptable.length;
+    final l10n = AppLocalizations.of(context)!;
     _showSnack(
       skipped == 0
-          ? '$added ${added == 1 ? "canción encolada" : "canciones encoladas"}'
-          : '$added ${added == 1 ? "canción encolada" : "canciones encoladas"} · '
-              '$skipped sin buena coincidencia en YouTube',
+          ? l10n.importSongsQueuedSnack(added)
+          : l10n.importSongsQueuedSnack(added) + l10n.importSpotifySkippedSuffix(skipped),
     );
   }
 
@@ -283,6 +288,7 @@ class _ImportScreenState extends State<ImportScreen> {
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsProvider>();
     final libraryRootUri = context.watch<MusicProvider>().libraryRootUri;
+    final l10n = AppLocalizations.of(context)!;
 
     if (!settings.hasDownloadServer) return _buildNoServerState();
     if (libraryRootUri == null) return _buildNoFolderState();
@@ -291,11 +297,11 @@ class _ImportScreenState extends State<ImportScreen> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Padding(
-            padding: EdgeInsets.fromLTRB(20, 12, 20, 0),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
             child: Text(
-              'Añadir música',
-              style: TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w800, letterSpacing: -0.5),
+              l10n.importScreenTitle,
+              style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w800, letterSpacing: -0.5),
             ),
           ),
           Padding(
@@ -311,11 +317,11 @@ class _ImportScreenState extends State<ImportScreen> {
                     autocorrect: false,
                     onSubmitted: (_) => _analyze(),
                     decoration: InputDecoration(
-                      hintText: 'Pegá un enlace de YouTube o Spotify…',
+                      hintText: l10n.importUrlHint,
                       prefixIcon: Icon(Icons.link_rounded, color: AppTheme.primaryLight),
                       suffixIcon: IconButton(
                         icon: const Icon(Icons.content_paste_rounded, size: 18),
-                        tooltip: 'Pegar',
+                        tooltip: l10n.importPasteTooltip,
                         onPressed: _pasteFromClipboard,
                       ),
                       contentPadding: const EdgeInsets.symmetric(vertical: 14),
@@ -368,6 +374,7 @@ class _ImportScreenState extends State<ImportScreen> {
   }
 
   Widget _buildNoServerState() {
+    final l10n = AppLocalizations.of(context)!;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -376,14 +383,14 @@ class _ImportScreenState extends State<ImportScreen> {
           children: [
             Icon(Icons.dns_outlined, size: 56, color: Colors.white.withValues(alpha: 0.3)),
             const SizedBox(height: 16),
-            const Text(
-              'No hay servidor de descargas configurado',
-              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+            Text(
+              l10n.searchNoServerTitle,
+              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 8),
             Text(
-              'Configuralo en Ajustes → Servidor de descargas.',
+              l10n.importNoServerBody,
               style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
               textAlign: TextAlign.center,
             ),
@@ -394,6 +401,7 @@ class _ImportScreenState extends State<ImportScreen> {
   }
 
   Widget _buildNoFolderState() {
+    final l10n = AppLocalizations.of(context)!;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(32),
@@ -402,14 +410,14 @@ class _ImportScreenState extends State<ImportScreen> {
           children: [
             Icon(Icons.folder_off_rounded, size: 56, color: Colors.white.withValues(alpha: 0.3)),
             const SizedBox(height: 16),
-            const Text(
-              'Elegí primero una carpeta de biblioteca',
-              style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+            Text(
+              l10n.importNoFolderTitle,
+              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 8),
             Text(
-              'Las descargas se guardan ahí, igual que los archivos que importás a mano. Configuralo en Ajustes.',
+              l10n.importNoFolderBody,
               style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
               textAlign: TextAlign.center,
             ),
@@ -451,7 +459,7 @@ class _ImportScreenState extends State<ImportScreen> {
                 side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
               ),
               icon: const Icon(Icons.schedule_rounded, size: 16),
-              label: const Text('Guardar para cuando el servidor esté disponible'),
+              label: Text(AppLocalizations.of(context)!.importSaveForLaterButton),
             ),
           ],
         ],
@@ -464,12 +472,13 @@ class _ImportScreenState extends State<ImportScreen> {
     final pending = downloadProvider.pendingImports;
     if (pending.isEmpty) return const SizedBox.shrink();
 
+    final l10n = AppLocalizations.of(context)!;
     final musicProvider = context.watch<MusicProvider>();
     String playlistName(String id) {
       for (final p in musicProvider.playlists) {
         if (p.id == id) return p.name;
       }
-      return 'Playlist eliminada';
+      return l10n.importDeletedPlaylistFallback;
     }
 
     return Padding(
@@ -482,13 +491,13 @@ class _ImportScreenState extends State<ImportScreen> {
               Icon(Icons.schedule_rounded, color: Colors.white.withValues(alpha: 0.5), size: 15),
               const SizedBox(width: 6),
               Text(
-                'Lista de espera · servidor no disponible',
+                l10n.importWaitlistTitle,
                 style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12, fontWeight: FontWeight.w700),
               ),
               const Spacer(),
               TextButton(
                 onPressed: () => downloadProvider.retryPendingImports(),
-                child: const Text('Reintentar ahora'),
+                child: Text(l10n.importRetryNowButton),
               ),
             ],
           ),
@@ -539,6 +548,7 @@ class _ImportScreenState extends State<ImportScreen> {
   }
 
   Widget _buildTrackPreview(RemoteTrack track) {
+    final l10n = AppLocalizations.of(context)!;
     return Container(
       margin: const EdgeInsets.only(bottom: 20),
       decoration: AppTheme.glassCard(),
@@ -589,7 +599,7 @@ class _ImportScreenState extends State<ImportScreen> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
               icon: const Icon(Icons.download_rounded, size: 18),
-              label: const Text('Descargar'),
+              label: Text(l10n.importDownloadButton),
               onPressed: () => _downloadTrack(track),
             ),
           ),
@@ -599,6 +609,7 @@ class _ImportScreenState extends State<ImportScreen> {
   }
 
   Widget _buildPlaylistPreview(RemotePlaylist playlist) {
+    final l10n = AppLocalizations.of(context)!;
     return Container(
       margin: const EdgeInsets.only(bottom: 20),
       decoration: AppTheme.glassCard(),
@@ -630,7 +641,7 @@ class _ImportScreenState extends State<ImportScreen> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      '${playlist.entries.length} ${playlist.entries.length == 1 ? "video" : "videos"}',
+                      l10n.importVideosCount(playlist.entries.length),
                       style: TextStyle(color: Colors.white.withValues(alpha: 0.55), fontSize: 13),
                     ),
                   ],
@@ -650,7 +661,7 @@ class _ImportScreenState extends State<ImportScreen> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
               icon: const Icon(Icons.playlist_add_rounded, size: 18),
-              label: Text('Descargar ${playlist.entries.length} canciones'),
+              label: Text(l10n.importDownloadCountButton(playlist.entries.length)),
               onPressed: playlist.entries.isEmpty ? null : () => _downloadPlaylist(playlist),
             ),
           ),
@@ -660,6 +671,7 @@ class _ImportScreenState extends State<ImportScreen> {
   }
 
   Widget _buildSpotifyPreview(SpotifyAnalysisResult spotify, List<SpotifyMatch> matches) {
+    final l10n = AppLocalizations.of(context)!;
     final acceptable = matches.where((m) => m.isAcceptable).length;
 
     return Container(
@@ -714,9 +726,8 @@ class _ImportScreenState extends State<ImportScreen> {
           const SizedBox(height: 4),
           Text(
             acceptable == matches.length
-                ? '$acceptable de ${matches.length} con buena coincidencia'
-                : '$acceptable de ${matches.length} se van a descargar — el resto no tiene una '
-                    'coincidencia confiable en YouTube',
+                ? l10n.importSpotifyGoodMatchSummary(acceptable, matches.length)
+                : l10n.importSpotifyPartialMatchSummary(acceptable, matches.length),
             style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12),
           ),
           const SizedBox(height: 12),
@@ -731,7 +742,7 @@ class _ImportScreenState extends State<ImportScreen> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
               icon: const Icon(Icons.download_rounded, size: 18),
-              label: Text(acceptable == 0 ? 'Sin coincidencias descargables' : 'Descargar $acceptable canciones'),
+              label: Text(acceptable == 0 ? l10n.importSpotifyNoMatchesButton : l10n.importDownloadCountButton(acceptable)),
               onPressed: acceptable == 0 ? null : () => _downloadSpotifyMatches(spotify, matches),
             ),
           ),
@@ -741,6 +752,7 @@ class _ImportScreenState extends State<ImportScreen> {
   }
 
   Widget _buildQueueSection() {
+    final l10n = AppLocalizations.of(context)!;
     final provider = context.watch<DownloadProvider>();
     final current = provider.current;
     final pending = provider.queue.where((j) => current == null || j.queueId != current.queueId).toList();
@@ -759,7 +771,7 @@ class _ImportScreenState extends State<ImportScreen> {
             child: DownloadProgressCard(
               title: current.displayTitle,
               subtitle: current.artist,
-              phaseLabel: provider.phaseLabel,
+              phase: provider.phase,
               progress: provider.progress,
               queueRemaining: pending.length,
               onCancel: () => provider.cancelJob(current.queueId),
@@ -772,13 +784,13 @@ class _ImportScreenState extends State<ImportScreen> {
             child: Row(
               children: [
                 Text(
-                  'En cola',
+                  l10n.importQueueSectionTitle,
                   style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12, fontWeight: FontWeight.w700),
                 ),
                 const Spacer(),
                 TextButton(
                   onPressed: provider.cancelAll,
-                  child: const Text('Cancelar todo'),
+                  child: Text(l10n.importCancelAllButton),
                 ),
               ],
             ),
@@ -792,11 +804,11 @@ class _ImportScreenState extends State<ImportScreen> {
           Row(
             children: [
               Text(
-                'No se pudieron descargar',
+                l10n.importFailuresTitle,
                 style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 12, fontWeight: FontWeight.w700),
               ),
               const Spacer(),
-              TextButton(onPressed: provider.clearFailures, child: const Text('Descartar')),
+              TextButton(onPressed: provider.clearFailures, child: Text(l10n.importDismissButton)),
             ],
           ),
           ...failures.map((f) => _FailureRow(failure: f)),
@@ -814,14 +826,15 @@ class _SpotifyMatchRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     final (icon, color, label) = switch (match) {
-      SpotifyMatch(isGoodMatch: true) => (Icons.check_circle_rounded, Colors.greenAccent, 'Δ ${match.durationDiffSeconds}s'),
+      SpotifyMatch(isGoodMatch: true) => (Icons.check_circle_rounded, Colors.greenAccent, l10n.importMatchGood(match.durationDiffSeconds!)),
       SpotifyMatch(isAcceptable: true) => (
           Icons.warning_amber_rounded,
           Colors.amberAccent,
-          'revisar · Δ ${match.durationDiffSeconds}s',
+          l10n.importMatchReview(match.durationDiffSeconds!),
         ),
-      _ => (Icons.block_rounded, Colors.redAccent, 'no se descargará'),
+      _ => (Icons.block_rounded, Colors.redAccent, l10n.importMatchNone),
     };
 
     return Padding(
@@ -850,7 +863,7 @@ class _SpotifyMatchRow extends StatelessWidget {
                   )
                 else
                   Text(
-                    'No se encontró nada parecido en YouTube',
+                    l10n.importMatchNoResult,
                     style: TextStyle(color: Colors.white.withValues(alpha: 0.4), fontSize: 12),
                   ),
               ],

@@ -5,7 +5,14 @@ import '../providers/settings_provider.dart';
 abstract final class AppTheme {
   static AppThemePreset activePreset = AppThemePreset.navy;
 
-  static _Palette get _p => _palettes[activePreset]!;
+  // Sólo relevantes cuando activePreset == custom — ver applyCustomColors.
+  static Color customPrimary = const Color(0xFF2563EB);
+  static Color customSecondary = const Color(0xFF38BDF8);
+  static bool customCombined = true;
+
+  static _Palette get _p => activePreset == AppThemePreset.custom
+      ? _customPalette(customPrimary, customSecondary, customCombined)
+      : _palettes[activePreset]!;
 
   static Color get primary => _p.primary;
   static Color get primaryLight => _p.primaryLight;
@@ -99,7 +106,7 @@ abstract final class AppTheme {
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
-        fillColor: const Color(0xFF0A1020),
+        fillColor: surface,
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(14),
           borderSide: BorderSide.none,
@@ -117,6 +124,9 @@ abstract final class AppTheme {
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        backgroundColor: surfaceLight,
+        contentTextStyle: const TextStyle(color: Colors.white),
+        actionTextColor: primaryLight,
       ),
       textTheme: const TextTheme(
         bodyLarge: TextStyle(color: Colors.white),
@@ -127,6 +137,74 @@ abstract final class AppTheme {
 
   static void applyPreset(AppThemePreset preset) {
     activePreset = preset;
+  }
+
+  /// Sincroniza los colores del modo "Personalizado". Se llama siempre desde
+  /// `HeardyApp.build` junto a [applyPreset], sin condicionar — no hace nada
+  /// visible salvo que `activePreset` sea `custom`, así que no hay riesgo de
+  /// pisar un preset fijo por error de orden.
+  static void applyCustomColors({
+    required Color primary,
+    required Color secondary,
+    required bool combined,
+  }) {
+    customPrimary = primary;
+    customSecondary = secondary;
+    customCombined = combined;
+  }
+
+  /// Los dos colores representativos de [preset], para dibujar un swatch de
+  /// vista previa (selector de tema) sin duplicar la paleta completa.
+  static List<Color> previewColors(AppThemePreset preset) {
+    if (preset == AppThemePreset.custom) {
+      return [customPrimary, customSecondary];
+    }
+    final palette = _palettes[preset]!;
+    return [palette.primary, palette.primaryGradient.last];
+  }
+
+  /// Deriva una paleta completa a partir de los dos colores que eligió el
+  /// usuario. El fondo/superficie siempre sale de acá (nunca de los colores
+  /// elegidos directamente) — así "nunca 100% negro" es una propiedad de la
+  /// función, no algo que dependa de qué haya elegido el usuario: se satura
+  /// muy poco y se limita la luminosidad a un mínimo de 0.03, nunca 0.
+  ///
+  /// [combined] decide si el degradado principal (`primaryGradient`, el más
+  /// visible: botones, glow de cards resaltadas) mezcla ambos colores o usa
+  /// sólo tonos del principal — el secundario sigue usándose igual como
+  /// `accent`/`accentPink` en los dos casos, lo que cambia es si además se
+  /// funde con el principal en un degradado.
+  static _Palette _customPalette(Color primary, Color secondary, bool combined) {
+    final hsl = HSLColor.fromColor(primary);
+    Color shade(double lightness, {double saturationFactor = 0.4}) {
+      return HSLColor.fromColor(primary)
+          .withLightness(lightness.clamp(0.03, 1.0))
+          .withSaturation((hsl.saturation * saturationFactor).clamp(0.0, 1.0))
+          .toColor();
+    }
+
+    final primaryLight =
+        hsl.withLightness((hsl.lightness + 0.18).clamp(0.0, 1.0)).toColor();
+    final gradientColors = combined
+        ? [primary, Color.lerp(primary, secondary, 0.5)!, secondary]
+        : [
+            primary,
+            hsl.withLightness((hsl.lightness * 0.78).clamp(0.05, 1.0)).toColor(),
+            hsl.withLightness((hsl.lightness * 0.58).clamp(0.05, 1.0)).toColor(),
+          ];
+
+    return _Palette(
+      primary: primary,
+      primaryLight: primaryLight,
+      accent: secondary,
+      accentPink: secondary,
+      surface: shade(0.09),
+      surfaceLight: shade(0.13),
+      backgroundTop: shade(0.035),
+      backgroundMid: shade(0.05),
+      backgroundBottom: shade(0.065),
+      primaryGradient: gradientColors,
+    );
   }
 
   static BoxDecoration gradientScaffold() => BoxDecoration(
@@ -237,6 +315,57 @@ abstract final class AppTheme {
         Color(0xFFDB2777),
         Color(0xFFBE185D),
         Color(0xFF9D174D),
+      ],
+    ),
+    // Los tres presets de abajo (verde/naranja/rojo) siguen el mismo patrón
+    // que navy/violet/rose: fondo/superficie casi negros pero teñidos del
+    // matiz principal — nunca #000000 literal.
+    AppThemePreset.green: _Palette(
+      primary: Color(0xFF16A34A),
+      primaryLight: Color(0xFF4ADE80),
+      accent: Color(0xFF84CC16),
+      accentPink: Color(0xFFEAB308),
+      surface: Color(0xFF0F1F16),
+      surfaceLight: Color(0xFF16291D),
+      backgroundTop: Color(0xFF050D08),
+      backgroundMid: Color(0xFF081408),
+      backgroundBottom: Color(0xFF0A1810),
+      primaryGradient: [
+        Color(0xFF16A34A),
+        Color(0xFF15803D),
+        Color(0xFF166534),
+      ],
+    ),
+    AppThemePreset.orange: _Palette(
+      primary: Color(0xFFEA580C),
+      primaryLight: Color(0xFFFB923C),
+      accent: Color(0xFFF59E0B),
+      accentPink: Color(0xFFDC2626),
+      surface: Color(0xFF1F1206),
+      surfaceLight: Color(0xFF2A1908),
+      backgroundTop: Color(0xFF120A03),
+      backgroundMid: Color(0xFF1A0F05),
+      backgroundBottom: Color(0xFF1F1206),
+      primaryGradient: [
+        Color(0xFFEA580C),
+        Color(0xFFC2410C),
+        Color(0xFF9A3412),
+      ],
+    ),
+    AppThemePreset.red: _Palette(
+      primary: Color(0xFFDC2626),
+      primaryLight: Color(0xFFF87171),
+      accent: Color(0xFFF97316),
+      accentPink: Color(0xFFF43F5E),
+      surface: Color(0xFF1F0A0A),
+      surfaceLight: Color(0xFF2A1010),
+      backgroundTop: Color(0xFF120505),
+      backgroundMid: Color(0xFF1A0808),
+      backgroundBottom: Color(0xFF1F0A0A),
+      primaryGradient: [
+        Color(0xFFDC2626),
+        Color(0xFFB91C1C),
+        Color(0xFF991B1B),
       ],
     ),
   };

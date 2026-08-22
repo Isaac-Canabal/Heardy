@@ -9,6 +9,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  intl: any
   sqflite: ^2.3.0
   path_provider: ^2.1.1
   permission_handler: ^11.0.1
@@ -50,5 +53,6 @@ flutter_launcher_icons:
 
 flutter:
   uses-material-design: true
+  generate: true
   assets:
     - assets/icon/

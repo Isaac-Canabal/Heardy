@@ -9,7 +9,9 @@ import '../models/playlist.dart';
 import '../models/song.dart';
 import '../widgets/song_tile.dart';
 import '../widgets/mini_player.dart';
+import '../widgets/playlist_target_sheet.dart';
 import '../theme/app_theme.dart';
+import '../l10n/app_localizations.dart';
 
 /// Entradas de [remote] cuyo `sourceUrl` todavía no está entre las canciones
 /// ya presentes en la playlist ([existingSongs]) — lo que decide qué se
@@ -81,8 +83,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       final missing = missingPlaylistEntries(remote, musicProvider.currentPlaylistSongs);
 
       if (!mounted) return;
+      final l10n = AppLocalizations.of(context)!;
       if (missing.isEmpty) {
-        _showSnack('Ya está actualizada, no hay canciones nuevas');
+        _showSnack(l10n.playlistNoNewSongs);
         return;
       }
 
@@ -92,13 +95,13 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
       );
       downloadProvider.processQueue();
       if (!mounted) return;
-      _showSnack('$added ${added == 1 ? "canción nueva encolada" : "canciones nuevas encoladas"}');
+      _showSnack(l10n.playlistSongsQueuedSnack(added));
     } on DownloadSourceException catch (e) {
       if (!mounted) return;
       _showSnack(e.userMessage, isError: true);
     } catch (e) {
       if (!mounted) return;
-      _showSnack('No se pudo actualizar: $e', isError: true);
+      _showSnack(AppLocalizations.of(context)!.playlistUpdateError(e.toString()), isError: true);
     } finally {
       if (mounted) setState(() => _isUpdatingFromYoutube = false);
     }
@@ -118,6 +121,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   Widget build(BuildContext context) {
     final musicProvider = Provider.of<MusicProvider>(context);
     final audioHandler = Provider.of<AudioPlayerHandler>(context);
+    final l10n = AppLocalizations.of(context)!;
 
     // Fetch the active playlist metadata.
     //
@@ -155,7 +159,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: AppBar(
-        title: Text(playlist.name),
+        title: Text(playlist.name, maxLines: 1, overflow: TextOverflow.ellipsis),
         actions: [
           if (playlist.originalUrl != null && playlist.originalUrl!.isNotEmpty)
             IconButton(
@@ -166,55 +170,55 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                       child: CircularProgressIndicator(strokeWidth: 2),
                     )
                   : const Icon(Icons.sync_rounded),
-              tooltip: 'Actualizar desde YouTube',
+              tooltip: l10n.playlistUpdateFromYoutube,
               onPressed: _isUpdatingFromYoutube ? null : () => _updateFromYoutube(playlist),
             ),
           PopupMenuButton<String>(
             icon: const Icon(Icons.sort_rounded),
-            tooltip: 'Ordenar',
+            tooltip: l10n.playlistSortTooltip,
             onSelected: (value) {
               setState(() {
                 _sortBy = value;
               });
             },
             itemBuilder: (context) => [
-              const PopupMenuItem(
+              PopupMenuItem(
                 value: 'manual',
                 child: Row(
                   children: [
-                    Icon(Icons.list_rounded),
-                    SizedBox(width: 12),
-                    Text('Orden de importación'),
+                    const Icon(Icons.list_rounded),
+                    const SizedBox(width: 12),
+                    Text(l10n.playlistSortImportOrder),
                   ],
                 ),
               ),
-              const PopupMenuItem(
+              PopupMenuItem(
                 value: 'artist',
                 child: Row(
                   children: [
-                    Icon(Icons.person_rounded),
-                    SizedBox(width: 12),
-                    Text('Artista'),
+                    const Icon(Icons.person_rounded),
+                    const SizedBox(width: 12),
+                    Text(l10n.playlistSortArtist),
                   ],
                 ),
               ),
-              const PopupMenuItem(
+              PopupMenuItem(
                 value: 'title',
                 child: Row(
                   children: [
-                    Icon(Icons.music_note_rounded),
-                    SizedBox(width: 12),
-                    Text('Título'),
+                    const Icon(Icons.music_note_rounded),
+                    const SizedBox(width: 12),
+                    Text(l10n.playlistSortTitle),
                   ],
                 ),
               ),
-              const PopupMenuItem(
+              PopupMenuItem(
                 value: 'duration',
                 child: Row(
                   children: [
-                    Icon(Icons.timer_rounded),
-                    SizedBox(width: 12),
-                    Text('Duración'),
+                    const Icon(Icons.timer_rounded),
+                    const SizedBox(width: 12),
+                    Text(l10n.playlistSortDuration),
                   ],
                 ),
               ),
@@ -222,7 +226,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
           ),
           IconButton(
             icon: Icon(_isReordering ? Icons.done : Icons.edit_outlined),
-            tooltip: _isReordering ? 'Terminar edición' : 'Modificar orden',
+            tooltip: _isReordering ? l10n.playlistFinishEditing : l10n.playlistModifyOrder,
             onPressed: () {
               setState(() {
                 _isReordering = !_isReordering;
@@ -299,8 +303,20 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
                                     return Dismissible(
                                       key: Key(song.id),
-                                      direction: DismissDirection.endToStart,
+                                      direction: DismissDirection.horizontal,
                                       background: Container(
+                                        color: Colors.blueAccent[700],
+                                        alignment: Alignment.centerLeft,
+                                        padding: const EdgeInsets.only(left: 24),
+                                        margin: const EdgeInsets.symmetric(
+                                            horizontal: 16, vertical: 6),
+                                        child: const Icon(
+                                          Icons.queue_music_rounded,
+                                          color: Colors.white,
+                                          size: 28,
+                                        ),
+                                      ),
+                                      secondaryBackground: Container(
                                         color: Colors.redAccent[700],
                                         alignment: Alignment.centerRight,
                                         padding: const EdgeInsets.only(right: 24),
@@ -312,6 +328,38 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                                           size: 28,
                                         ),
                                       ),
+                                      confirmDismiss: (direction) async {
+                                        if (direction == DismissDirection.startToEnd) {
+                                          final item = MediaItem(
+                                            id: song.id,
+                                            album: playlist.name,
+                                            title: song.title,
+                                            artist: song.artist,
+                                            duration: Duration(seconds: song.duration),
+                                            artUri: song.artPath.isNotEmpty
+                                                ? Uri.file(song.artPath)
+                                                : null,
+                                            extras: {
+                                              'filePath': song.playablePath,
+                                              'artPath': song.artPath,
+                                              'playlist_id': widget.playlistId,
+                                            },
+                                          );
+                                          await audioHandler.insertPlayNext(item);
+                                          if (mounted) {
+                                            ScaffoldMessenger.of(context).clearSnackBars();
+                                            ScaffoldMessenger.of(context).showSnackBar(
+                                              SnackBar(
+                                                content: Text(
+                                                    l10n.playlistPlayNextSnack(song.title)),
+                                                duration: const Duration(seconds: 2),
+                                              ),
+                                            );
+                                          }
+                                          return false;
+                                        }
+                                        return true;
+                                      },
                                       onDismissed: (direction) async {
                                         final songId = song.id;
                                         final songTitle = song.title;
@@ -325,11 +373,10 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                                           ScaffoldMessenger.of(context).clearSnackBars();
                                           ScaffoldMessenger.of(context).showSnackBar(
                                             SnackBar(
-                                              content: Text('Se eliminó "$songTitle" de la lista'),
-                                              backgroundColor: Colors.indigo[900],
+                                              content: Text(l10n.playlistDeletedSnack(songTitle)),
                                               duration: const Duration(seconds: 4),
                                               action: SnackBarAction(
-                                                label: 'Deshacer',
+                                                label: l10n.playlistUndo,
                                                 textColor: Colors.amberAccent,
                                                 onPressed: () {
                                                   undoClicked = true;
@@ -360,6 +407,8 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
                                         index: index,
                                         onTap: () => _playSong(
                                             audioHandler, filteredSongs, song, playlist.name),
+                                        onLongPress: () => _showSongActionsSheet(
+                                            context, audioHandler, musicProvider, song),
                                       ),
                                     );
                                   },
@@ -391,7 +440,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         controller: _searchController,
         style: const TextStyle(color: Colors.white),
         decoration: InputDecoration(
-          hintText: 'Buscar en esta lista...',
+          hintText: AppLocalizations.of(context)!.playlistSearchHint,
           hintStyle: TextStyle(color: Colors.grey[600], fontSize: 14),
           prefixIcon: Icon(Icons.search, color: AppTheme.primaryLight),
           suffixIcon: _searchQuery.isNotEmpty
@@ -408,6 +457,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   }
 
   Widget _buildEmptyState() {
+    final l10n = AppLocalizations.of(context)!;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24.0),
@@ -420,10 +470,10 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               color: Colors.grey[800],
             ),
             const SizedBox(height: 16),
-            const Text(
-              'No hay canciones en esta lista',
+            Text(
+              l10n.playlistEmptyTitle,
               textAlign: TextAlign.center,
-              style: TextStyle(
+              style: const TextStyle(
                 color: Colors.white,
                 fontSize: 16,
                 fontWeight: FontWeight.bold,
@@ -431,7 +481,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Metés archivos en tu carpeta o descargás desde la pestaña Añadir.',
+              l10n.playlistEmptyBody,
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.grey[500],
@@ -445,6 +495,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
   }
 
   Widget _buildNoResultsState() {
+    final l10n = AppLocalizations.of(context)!;
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(24.0),
@@ -457,9 +508,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
               color: Colors.grey[800],
             ),
             const SizedBox(height: 16),
-            const Text(
-              'Sin resultados',
-              style: TextStyle(
+            Text(
+              l10n.playlistNoResultsTitle,
+              style: const TextStyle(
                 color: Colors.white,
                 fontSize: 16,
                 fontWeight: FontWeight.bold,
@@ -467,7 +518,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Ninguna canción coincide con "$_searchQuery".',
+              l10n.playlistNoResultsBody(_searchQuery),
               style: TextStyle(
                 color: Colors.grey[500],
                 fontSize: 14,
@@ -492,11 +543,160 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
         extras: {
           'filePath': song.playablePath,
           'artPath': song.artPath,
+          'playlist_id': widget.playlistId,
         },
       );
     }).toList();
 
     await audioHandler.playPlaylist(mediaItems, targetSong.id);
+  }
+
+  Future<void> _showSongActionsSheet(
+    BuildContext context,
+    AudioPlayerHandler audioHandler,
+    MusicProvider musicProvider,
+    Song song,
+  ) async {
+    final l10n = AppLocalizations.of(context)!;
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 20, 20, 8),
+              child: Text(
+                song.title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700),
+              ),
+            ),
+            ListTile(
+              leading: const Icon(Icons.drive_file_move_outline, color: Colors.white70),
+              title: Text(l10n.playlistMoveToOther, style: const TextStyle(color: Colors.white)),
+              onTap: () => Navigator.pop(sheetContext, 'move'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.content_copy_rounded, color: Colors.white70),
+              title: Text(l10n.playlistCopyToOther, style: const TextStyle(color: Colors.white)),
+              onTap: () => Navigator.pop(sheetContext, 'copy'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.swap_vert_rounded, color: Colors.white70),
+              title: Text(l10n.playlistChangePosition, style: const TextStyle(color: Colors.white)),
+              onTap: () => Navigator.pop(sheetContext, 'position'),
+            ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+
+    if (action == null || !mounted) return;
+
+    switch (action) {
+      case 'move':
+        final choice = await pickTargetPlaylist(context, excludePlaylistId: widget.playlistId);
+        if (choice == null || !mounted) return;
+        final targetId = await resolveTargetPlaylistId(context, choice);
+        if (targetId == null || !mounted) return;
+        await musicProvider.moveSongToPlaylist(song.id, widget.playlistId, targetId);
+        if (musicProvider.currentPlaylistId == widget.playlistId) {
+          await musicProvider.refreshAudioHandlerQueue(audioHandler);
+        }
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(l10n.playlistMovedSnack(song.title)),
+            ),
+          );
+        }
+        break;
+      case 'copy':
+        final choice = await pickTargetPlaylist(context, excludePlaylistId: widget.playlistId);
+        if (choice == null || !mounted) return;
+        final targetId = await resolveTargetPlaylistId(context, choice);
+        if (targetId == null || !mounted) return;
+        await musicProvider.copySongToPlaylist(song.id, targetId);
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text(l10n.playlistCopiedSnack(song.title)),
+            ),
+          );
+        }
+        break;
+      case 'position':
+        final total = musicProvider.currentPlaylistSongs.length;
+        if (total == 0) return;
+        final position = await _promptPosition(context, total);
+        if (position == null || !mounted) return;
+        final orderedIds = musicProvider.currentPlaylistSongs.map((s) => s.id).toList();
+        final currentIndex = orderedIds.indexOf(song.id);
+        if (currentIndex == -1) return;
+        orderedIds.removeAt(currentIndex);
+        orderedIds.insert((position - 1).clamp(0, orderedIds.length), song.id);
+        setState(() {
+          _sortBy = 'manual';
+        });
+        await musicProvider.reorderSongsInPlaylist(widget.playlistId, orderedIds);
+        break;
+    }
+  }
+
+  Future<int?> _promptPosition(BuildContext context, int total) {
+    final l10n = AppLocalizations.of(context)!;
+    final controller = TextEditingController();
+    return showDialog<int>(
+      context: context,
+      builder: (dialogContext) {
+        String? errorText;
+        return StatefulBuilder(
+          builder: (dialogContext, setState) {
+            return AlertDialog(
+              backgroundColor: const Color(0xFF1A1A1A),
+              title: Text(l10n.playlistNewPositionTitle, style: const TextStyle(color: Colors.white)),
+              content: TextField(
+                controller: controller,
+                keyboardType: TextInputType.number,
+                autofocus: true,
+                style: const TextStyle(color: Colors.white),
+                decoration: InputDecoration(
+                  hintText: l10n.playlistPositionHint(total),
+                  hintStyle: const TextStyle(color: Colors.white38),
+                  errorText: errorText,
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(dialogContext).pop(),
+                  child: Text(l10n.commonCancel),
+                ),
+                TextButton(
+                  onPressed: () {
+                    final value = int.tryParse(controller.text.trim());
+                    if (value == null || value < 1 || value > total) {
+                      setState(() {
+                        errorText = l10n.playlistPositionError(total);
+                      });
+                      return;
+                    }
+                    Navigator.of(dialogContext).pop(value);
+                  },
+                  child: Text(l10n.commonAccept),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
 }
@@ -511,8 +711,9 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 class _PlaylistGoneScaffold extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
     return Scaffold(
-      appBar: AppBar(title: const Text('Playlist no disponible')),
+      appBar: AppBar(title: Text(l10n.playlistGoneTitle)),
       body: Container(
         decoration: AppTheme.gradientScaffold(),
         child: Center(
@@ -528,7 +729,7 @@ class _PlaylistGoneScaffold extends StatelessWidget {
                 ),
                 const SizedBox(height: 16),
                 Text(
-                  'Esta playlist ya no existe.',
+                  l10n.playlistGoneBody,
                   textAlign: TextAlign.center,
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.7),
@@ -538,7 +739,7 @@ class _PlaylistGoneScaffold extends StatelessWidget {
                 const SizedBox(height: 20),
                 FilledButton(
                   onPressed: () => Navigator.of(context).pop(),
-                  child: const Text('Volver'),
+                  child: Text(l10n.commonBack),
                 ),
               ],
             ),

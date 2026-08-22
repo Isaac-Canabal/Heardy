@@ -2,18 +2,34 @@ import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../services/official_server.dart';
+import '../l10n/app_localizations.dart';
 
-enum AppThemePreset { navy, violet, rose }
+enum AppThemePreset { navy, violet, rose, green, orange, red, custom }
+
+enum AppLanguage { es, en }
 
 class SettingsProvider with ChangeNotifier {
   static const _presetKey = 'theme_preset';
   static const _maxResultsKey = 'max_search_results';
   static const _serverUrlKey = 'download_server_url';
   static const _serverKeyKey = 'download_server_api_key';
+  static const _languageKey = 'app_language';
+  static const _customPrimaryKey = 'custom_theme_primary';
+  static const _customSecondaryKey = 'custom_theme_secondary';
+  static const _customCombinedKey = 'custom_theme_combined';
 
   AppThemePreset _preset = AppThemePreset.navy;
   bool _loaded = false;
   int _maxSearchResults = 20;
+  AppLanguage _language = AppLanguage.es;
+
+  // Colores del modo "Personalizado" (AppThemePreset.custom). Persistidos
+  // aparte del preset en sí, para que elegir otro preset y volver a
+  // "Personalizado" no pierda lo elegido. Nunca se usan para dibujar nada
+  // salvo cuando _preset == custom (ver AppTheme._p).
+  Color _customPrimary = const Color(0xFF2563EB);
+  Color _customSecondary = const Color(0xFF38BDF8);
+  bool _customCombined = true;
 
   /// Por defecto, el servidor OFICIAL — modo automático (ver
   /// docs/arquitectura_servidor_hibrido.md, sección 4). Un usuario avanzado
@@ -25,6 +41,11 @@ class SettingsProvider with ChangeNotifier {
   AppThemePreset get preset => _preset;
   bool get isLoaded => _loaded;
   int get maxSearchResults => _maxSearchResults;
+  AppLanguage get language => _language;
+  Locale get locale => Locale(_language.name);
+  Color get customPrimary => _customPrimary;
+  Color get customSecondary => _customSecondary;
+  bool get customCombined => _customCombined;
 
   /// Dirección del microservidor de descargas (`server/` en este repo, ya
   /// sea el oficial o uno propio). Nunca queda vacía por defecto: apunta al
@@ -52,9 +73,18 @@ class SettingsProvider with ChangeNotifier {
       _preset = AppThemePreset.values[index];
     }
     _maxSearchResults = prefs.getInt(_maxResultsKey) ?? 20;
+    final langIndex = prefs.getInt(_languageKey);
+    if (langIndex != null && langIndex >= 0 && langIndex < AppLanguage.values.length) {
+      _language = AppLanguage.values[langIndex];
+    }
     _downloadServerUrl = prefs.getString(_serverUrlKey) ?? OfficialServer.url;
     _downloadServerApiKey =
         prefs.getString(_serverKeyKey) ?? OfficialServer.apiKey;
+    final customPrimaryArgb = prefs.getInt(_customPrimaryKey);
+    if (customPrimaryArgb != null) _customPrimary = Color(customPrimaryArgb);
+    final customSecondaryArgb = prefs.getInt(_customSecondaryKey);
+    if (customSecondaryArgb != null) _customSecondary = Color(customSecondaryArgb);
+    _customCombined = prefs.getBool(_customCombinedKey) ?? true;
     _loaded = true;
     notifyListeners();
   }
@@ -93,9 +123,49 @@ class SettingsProvider with ChangeNotifier {
     }
   }
 
-  String presetLabel(AppThemePreset p) => switch (p) {
-    AppThemePreset.navy => 'Azul nocturno',
-    AppThemePreset.violet => 'Violeta neón',
-    AppThemePreset.rose => 'Rosa eléctrico',
+  String presetLabel(BuildContext context, AppThemePreset p) {
+    final l10n = AppLocalizations.of(context)!;
+    return switch (p) {
+      AppThemePreset.navy => l10n.themeNavy,
+      AppThemePreset.violet => l10n.themeViolet,
+      AppThemePreset.rose => l10n.themeRose,
+      AppThemePreset.green => l10n.themeGreen,
+      AppThemePreset.orange => l10n.themeOrange,
+      AppThemePreset.red => l10n.themeRed,
+      AppThemePreset.custom => l10n.themeCustom,
+    };
+  }
+
+  /// Guarda los colores del modo "Personalizado" y lo activa como preset
+  /// actual en un solo paso — separarlos obligaría a la UI a llamar a
+  /// [setPreset] aparte y arriesgar un frame con colores nuevos pero preset
+  /// viejo (o viceversa).
+  Future<void> setCustomColors({
+    required Color primary,
+    required Color secondary,
+    required bool combined,
+  }) async {
+    _customPrimary = primary;
+    _customSecondary = secondary;
+    _customCombined = combined;
+    _preset = AppThemePreset.custom;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_customPrimaryKey, primary.toARGB32());
+    await prefs.setInt(_customSecondaryKey, secondary.toARGB32());
+    await prefs.setBool(_customCombinedKey, combined);
+    await prefs.setInt(_presetKey, AppThemePreset.custom.index);
+  }
+
+  Future<void> setLanguage(AppLanguage language) async {
+    _language = language;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_languageKey, language.index);
+  }
+
+  String languageLabel(AppLanguage l) => switch (l) {
+    AppLanguage.es => 'Español',
+    AppLanguage.en => 'English',
   };
 }

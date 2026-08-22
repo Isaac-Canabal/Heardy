@@ -34,6 +34,11 @@ migrate_working_dir/
 .pub/
 /build/
 
+# Generado por `flutter gen-l10n` a partir de lib/l10n/*.arb (ver l10n.yaml) —
+# se reconstruye solo en cada `flutter pub get`/build gracias a `generate: true`
+# en pubspec.yaml, no hace falta versionarlo. Los .arb sí se versionan.
+lib/l10n/app_localizations*.dart
+
 # Symbolication related
 app.*.symbols
 

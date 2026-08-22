@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 import '../services/audio_player_handler.dart';
 import '../theme/app_theme.dart';
 import '../screens/now_playing_screen.dart';
+import '../l10n/app_localizations.dart';
 
 class MiniPlayer extends StatelessWidget {
   const MiniPlayer({super.key});
@@ -95,7 +96,7 @@ class MiniPlayer extends StatelessWidget {
                           ),
                           const SizedBox(height: 2),
                           Text(
-                            mediaItem.artist ?? 'Artista desconocido',
+                            mediaItem.artist ?? AppLocalizations.of(context)!.commonUnknownArtist,
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: TextStyle(
