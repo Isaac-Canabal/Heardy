@@ -41,12 +41,12 @@
   "settingsImportFromFolder": "Import from folder",
   "settingsImportFolderBody": "Pick a folder and Heardy will create \"Heardy/\" inside it, with one subfolder per playlist. Drop .mp3/.mp4 files in there from the file explorer — reloading and assigning loose files happens from the Inbox tab.",
   "settingsChooseFolder": "Choose folder",
-  "settingsSectionAdvanced": "Advanced settings",
   "settingsSectionSearch": "Search",
   "settingsMaxResults": "Max results",
   "settingsMaxResultsBody": "Number of results to show in searches (10-100)",
   "settingsSectionAbout": "About",
   "settingsAboutBody": "Your music library player, 100% offline.",
+  "settingsAboutExternalServices": "Playback is local. Only these leave your phone: looking up lyrics (LRCLIB), translating a lyric (MyMemory, only if you ask for it with the translate icon), and downloads (Heardy's server). None of them get your name or email.",
 
   "statsSectionTitle": "Statistics",
   "statsYourActivity": "Your activity",
@@ -61,12 +61,9 @@
   "statsUntitledSong": "Untitled",
 
   "serverSectionTitle": "Download server",
-  "serverIntroBody": "By default, Heardy uses the project's official server — no setup needed here. If you'd rather run your own (server/ in this repo, with Docker), paste its address below.",
-  "serverRestoreOfficial": "Restore official server",
-  "serverAddressLabel": "Address",
-  "serverApiKeyLabel": "API key",
+  "serverIntroBody": "Heardy downloads through the project's official server. There's nothing to set up here: if a download fails, test the connection to find out whether the problem is the server or your network.",
   "serverTestingButton": "Testing…",
-  "serverSaveAndTestButton": "Save and test connection",
+  "serverTestButton": "Test connection",
   "serverConnectedStatus": "Connected — yt-dlp {version}",
 
   "playlistUpdateFromYoutube": "Update from YouTube",

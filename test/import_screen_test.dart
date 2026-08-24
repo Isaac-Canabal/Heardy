@@ -263,18 +263,21 @@ void main() {
   }
 
   testWidgets(
-      'sin servidor configurado (el usuario borró la dirección oficial por defecto), '
-      'muestra la guía y no el campo de URL', (tester) async {
+      'un servidor propio guardado por una versión anterior NO deja la pantalla '
+      'inservible: sigue apareciendo el campo de URL', (tester) async {
     await tester.runAsync(() async {
       await db.clearDownloadQueue();
       final backend = FakeSafBackend();
       final root = backend.addDir(null, 'Heardy');
       SafUtilPlatform.instance = FakeSafUtil(backend);
       SafStreamPlatform.instance = FakeSafStream(backend);
-      // Desde el modo automático (docs/arquitectura_servidor_hibrido.md,
-      // sección 4) el valor por defecto ya no es "vacío", es el servidor
-      // oficial — este estado sólo se alcanza si el usuario lo borró a
-      // propósito desde Ajustes avanzados.
+      // La dirección del servidor ya no se configura desde la app: va
+      // compilada en el binario (OfficialServer). Estas dos claves son restos
+      // de cuando SÍ era editable, y el riesgo real de aquel cambio es que un
+      // valor viejo —de un servidor que quizá ya no existe— siguiera mandando
+      // sin ninguna UI para deshacerlo. Aquí se comprueba a nivel de pantalla,
+      // que es donde el usuario lo sufriría: la de abajo es la más hostil de
+      // las dos (dirección vacía = "no hay servidor").
       SharedPreferences.setMockInitialValues({
         'heardy_library_root_uri': root.uri,
         'download_server_url': '',
@@ -289,8 +292,8 @@ void main() {
       await pumpImportScreen(
           tester, source: source, musicProvider: musicProvider, downloadProvider: downloadProvider);
 
-      expect(find.text('No hay servidor de descargas configurado'), findsOneWidget);
-      expect(find.byKey(const Key('import_url_field')), findsNothing);
+      expect(find.byKey(const Key('import_url_field')), findsOneWidget);
+      expect(find.text('No hay servidor de descargas configurado'), findsNothing);
     });
   });
 

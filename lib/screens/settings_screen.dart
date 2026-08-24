@@ -7,7 +7,6 @@ import '../services/database_helper.dart';
 import '../theme/app_theme.dart';
 import '../services/download_source.dart';
 import '../services/storage_service.dart';
-import '../services/ytdlp_server_source.dart';
 import '../l10n/app_localizations.dart';
 
 class SettingsScreen extends StatelessWidget {
@@ -416,9 +415,9 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 28),
-          _SectionTitle(l10n.settingsSectionAdvanced),
+          _SectionTitle(l10n.serverSectionTitle),
           const SizedBox(height: 10),
-          const _AdvancedSettingsSection(),
+          const _DownloadServerSection(),
           const SizedBox(height: 28),
           _SectionTitle(l10n.settingsSectionSearch),
           const SizedBox(height: 10),
@@ -514,6 +513,15 @@ class SettingsScreen extends StatelessWidget {
                   style: TextStyle(
                     color: Colors.white.withValues(alpha: 0.45),
                     fontSize: 13,
+                    height: 1.4,
+                  ),
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  l10n.settingsAboutExternalServices,
+                  style: TextStyle(
+                    color: Colors.white.withValues(alpha: 0.35),
+                    fontSize: 12,
                     height: 1.4,
                   ),
                 ),
@@ -1057,51 +1065,21 @@ class _TopSongRow extends StatelessWidget {
   }
 }
 
-/// Configuración del microservidor de descargas (`server/` en este repo).
+/// Estado del microservidor de descargas (`server/` en este repo).
 ///
-/// "Probar conexión" distingue los tres fallos que el usuario puede arreglar
-/// —sin configurar, inalcanzable, clave inválida— en vez de un genérico
-/// "error", porque cada uno se corrige en un sitio distinto.
-/// Colapsado por defecto: el usuario promedio ya está en el servidor
-/// oficial sin haber tocado nada acá, así que esta pantalla nunca necesita
-/// abrirse para que la app funcione. Sólo existe para quien quiera apuntar
-/// a su propio servidor (ver docs/arquitectura_servidor_hibrido.md, sección 4).
-class _AdvancedSettingsSection extends StatelessWidget {
-  const _AdvancedSettingsSection();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      decoration: AppTheme.glassCard(),
-      clipBehavior: Clip.antiAlias,
-      child: Theme(
-        data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-        child: ExpansionTile(
-          initiallyExpanded: false,
-          tilePadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-          childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-          iconColor: AppTheme.primaryLight,
-          collapsedIconColor: Colors.white.withValues(alpha: 0.5),
-          title: Row(
-            children: [
-              Icon(Icons.dns_rounded, color: AppTheme.primaryLight, size: 20),
-              const SizedBox(width: 8),
-              Text(
-                AppLocalizations.of(context)!.serverSectionTitle,
-                style: TextStyle(
-                  color: Colors.white.withValues(alpha: 0.7),
-                  fontSize: 13,
-                ),
-              ),
-            ],
-          ),
-          children: const [_DownloadServerSection()],
-        ),
-      ),
-    );
-  }
-}
-
+/// **Sólo diagnóstico: aquí no se configura nada.** La dirección y la clave
+/// del servidor oficial van compiladas en el binario (ver `OfficialServer` y
+/// `SettingsProvider.downloadServerUrl`), así que no hay campos que editar —
+/// dejarlos editables sólo servía para que alguien se rompiera las descargas
+/// sin saber cómo volver.
+///
+/// Lo que sí sigue siendo útil, y por eso esta sección existe, es responder
+/// "¿por qué no me descarga?" sin salir de la app: "Probar conexión"
+/// distingue *inalcanzable* (el servidor está caído o no hay red) de *clave
+/// inválida* (este build de la app quedó sin clave) de *conectado pero sin
+/// proveedor de PO tokens* (llega, pero las descargas van a fallar igual).
+/// Cada uno se arregla en un sitio distinto, y un "error" genérico no diría
+/// en cuál.
 class _DownloadServerSection extends StatefulWidget {
   const _DownloadServerSection();
 
@@ -1110,45 +1088,19 @@ class _DownloadServerSection extends StatefulWidget {
 }
 
 class _DownloadServerSectionState extends State<_DownloadServerSection> {
-  late final TextEditingController _urlController;
-  late final TextEditingController _keyController;
   bool _testing = false;
-  bool _obscureKey = true;
   DownloadSourceStatus? _lastStatus;
 
-  @override
-  void initState() {
-    super.initState();
-    final settings = context.read<SettingsProvider>();
-    _urlController = TextEditingController(text: settings.downloadServerUrl);
-    _keyController = TextEditingController(text: settings.downloadServerApiKey);
-  }
-
-  @override
-  void dispose() {
-    _urlController.dispose();
-    _keyController.dispose();
-    super.dispose();
-  }
-
-  Future<void> _saveAndTest() async {
-    // Se guarda primero: si el usuario sale de Ajustes mientras se prueba, lo
-    // que escribió no se pierde.
-    await context.read<SettingsProvider>().setDownloadServer(
-      url: _urlController.text,
-      apiKey: _keyController.text,
-    );
-    if (!mounted) return;
-
+  Future<void> _test() async {
     setState(() {
       _testing = true;
       _lastStatus = null;
     });
 
-    final source = YtdlpServerSource(
-      baseUrl: () => _urlController.text,
-      apiKey: () => _keyController.text,
-    );
+    // El `DownloadSource` del árbol de Providers, no uno nuevo: así lo que se
+    // prueba es exactamente la fuente que usan las descargas reales, y no una
+    // copia que podría estar configurada de otra forma.
+    final source = context.read<DownloadSource>();
     try {
       final status = await source.probe();
       if (!mounted) return;
@@ -1193,159 +1145,82 @@ class _DownloadServerSectionState extends State<_DownloadServerSection> {
 
   @override
   Widget build(BuildContext context) {
-    final settings = context.watch<SettingsProvider>();
     final l10n = AppLocalizations.of(context)!;
     final line = _statusLine();
-    final fieldBorder = OutlineInputBorder(
-      borderRadius: BorderRadius.circular(12),
-      borderSide: BorderSide(color: Colors.white.withValues(alpha: 0.2)),
-    );
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          l10n.serverIntroBody,
-          style: TextStyle(
-            color: Colors.white.withValues(alpha: 0.45),
-            fontSize: 12,
-            height: 1.4,
-          ),
-        ),
-        if (!settings.isOfficialServer) ...[
-          const SizedBox(height: 10),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              style: TextButton.styleFrom(
-                foregroundColor: AppTheme.primaryLight,
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-              ),
-              icon: const Icon(Icons.restore_rounded, size: 16),
-              label: Text(
-                l10n.serverRestoreOfficial,
-                style: const TextStyle(fontSize: 12),
-              ),
-              onPressed: () async {
-                await settings.restoreOfficialServer();
-                if (!mounted) return;
-                setState(() {
-                  _urlController.text = settings.downloadServerUrl;
-                  _keyController.text = settings.downloadServerApiKey;
-                  _lastStatus = null;
-                });
-              },
-            ),
-          ),
-        ],
-        const SizedBox(height: 14),
-        TextField(
-          controller: _urlController,
-          style: const TextStyle(color: Colors.white, fontSize: 14),
-          keyboardType: TextInputType.url,
-          autocorrect: false,
-          decoration: InputDecoration(
-            labelText: l10n.serverAddressLabel,
-            hintText: '192.168.1.50:8080',
-            labelStyle: TextStyle(
-              color: Colors.white.withValues(alpha: 0.5),
-              fontSize: 13,
-            ),
-            hintStyle: TextStyle(
-              color: Colors.white.withValues(alpha: 0.25),
-              fontSize: 13,
-            ),
-            border: fieldBorder,
-            enabledBorder: fieldBorder,
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide(color: AppTheme.primaryLight),
-            ),
-            isDense: true,
-          ),
-        ),
-        const SizedBox(height: 10),
-        TextField(
-          controller: _keyController,
-          style: const TextStyle(color: Colors.white, fontSize: 14),
-          obscureText: _obscureKey,
-          autocorrect: false,
-          enableSuggestions: false,
-          decoration: InputDecoration(
-            labelText: l10n.serverApiKeyLabel,
-            labelStyle: TextStyle(
-              color: Colors.white.withValues(alpha: 0.5),
-              fontSize: 13,
-            ),
-            border: fieldBorder,
-            enabledBorder: fieldBorder,
-            focusedBorder: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(12),
-              borderSide: BorderSide(color: AppTheme.primaryLight),
-            ),
-            isDense: true,
-            suffixIcon: IconButton(
-              icon: Icon(
-                _obscureKey
-                    ? Icons.visibility_rounded
-                    : Icons.visibility_off_rounded,
-                color: Colors.white.withValues(alpha: 0.4),
-                size: 18,
-              ),
-              onPressed: () => setState(() => _obscureKey = !_obscureKey),
-            ),
-          ),
-        ),
-        const SizedBox(height: 12),
-        SizedBox(
-          width: double.infinity,
-          child: OutlinedButton.icon(
-            style: OutlinedButton.styleFrom(
-              foregroundColor: Colors.white,
-              side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(12),
-              ),
-              padding: const EdgeInsets.symmetric(vertical: 12),
-            ),
-            icon: _testing
-                ? const SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      color: Colors.white,
-                    ),
-                  )
-                : const Icon(Icons.wifi_tethering_rounded, size: 18),
-            label: Text(
-              _testing ? l10n.serverTestingButton : l10n.serverSaveAndTestButton,
-              style: const TextStyle(fontWeight: FontWeight.w600),
-            ),
-            onPressed: _testing ? null : _saveAndTest,
-          ),
-        ),
-        if (line != null) ...[
-          const SizedBox(height: 12),
+    return Container(
+      decoration: AppTheme.glassCard(),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
           Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(line.icon, color: line.color, size: 16),
+              Icon(Icons.dns_rounded, color: AppTheme.primaryLight, size: 20),
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  line.text,
+                  l10n.serverIntroBody,
                   style: TextStyle(
-                    color: line.color,
+                    color: Colors.white.withValues(alpha: 0.45),
                     fontSize: 12,
-                    height: 1.35,
+                    height: 1.4,
                   ),
                 ),
               ),
             ],
           ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white,
+                side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              icon: _testing
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : const Icon(Icons.wifi_tethering_rounded, size: 18),
+              label: Text(
+                _testing ? l10n.serverTestingButton : l10n.serverTestButton,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              onPressed: _testing ? null : _test,
+            ),
+          ),
+          if (line != null) ...[
+            const SizedBox(height: 12),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(line.icon, color: line.color, size: 16),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    line.text,
+                    style: TextStyle(
+                      color: line.color,
+                      fontSize: 12,
+                      height: 1.35,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ],
-      ],
+      ),
     );
   }
 }

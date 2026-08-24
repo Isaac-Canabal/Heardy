@@ -57,12 +57,12 @@
   "settingsImportFromFolder": "Importar desde carpeta",
   "settingsImportFolderBody": "Elegí una carpeta y Heardy creará \"Heardy/\" dentro, con una subcarpeta por playlist. Metés archivos .mp3/.mp4 ahí desde el explorador — recargar y asignar lo suelto se hace desde la pestaña Bandeja.",
   "settingsChooseFolder": "Elegir carpeta",
-  "settingsSectionAdvanced": "Ajustes avanzados",
   "settingsSectionSearch": "Búsqueda",
   "settingsMaxResults": "Resultados máximos",
   "settingsMaxResultsBody": "Número de resultados a mostrar en búsquedas (10-100)",
   "settingsSectionAbout": "Acerca de",
   "settingsAboutBody": "Reproductor de tu biblioteca musical, 100% offline.",
+  "settingsAboutExternalServices": "La reproducción es local. Sólo salen de tu teléfono: la búsqueda de letras (LRCLIB), traducir una letra (MyMemory, sólo si lo pedís con el ícono de traducir) y las descargas (el servidor de Heardy). Ninguno recibe tu nombre ni tu correo.",
 
   "statsSectionTitle": "Estadísticas",
   "statsYourActivity": "Tu actividad",
@@ -77,12 +77,9 @@
   "statsUntitledSong": "Sin título",
 
   "serverSectionTitle": "Servidor de descargas",
-  "serverIntroBody": "Por defecto, Heardy usa el servidor oficial del proyecto — no hace falta configurar nada acá. Si preferís montar el tuyo (server/ de este repo, con Docker), pegá su dirección abajo.",
-  "serverRestoreOfficial": "Restaurar servidor oficial",
-  "serverAddressLabel": "Dirección",
-  "serverApiKeyLabel": "Clave de API",
+  "serverIntroBody": "Heardy descarga a través del servidor oficial del proyecto. No hay nada que configurar acá: si una descarga falla, probá la conexión para saber si el problema es del servidor o de tu red.",
   "serverTestingButton": "Probando…",
-  "serverSaveAndTestButton": "Guardar y probar conexión",
+  "serverTestButton": "Probar conexión",
   "serverConnectedStatus": "Conectado — yt-dlp {version}",
   "@serverConnectedStatus": {
     "placeholders": {"version": {"type": "String"}}

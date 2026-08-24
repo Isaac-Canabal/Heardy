@@ -1,7 +1,8 @@
-// Verifica el modo automático (docs/arquitectura_servidor_hibrido.md,
-// sección 4): sin que el usuario toque nada, SettingsProvider ya apunta al
-// servidor oficial. Cambiar a un servidor propio y volver atrás son las
-// únicas dos acciones que le corresponden a Ajustes avanzados.
+// El servidor de descargas ya no se configura desde la app: su dirección y su
+// clave van compiladas en el binario (OfficialServer). Lo que estos tests
+// cubren es que eso se cumpla de verdad y, sobre todo, que una instalación que
+// venía de una versión anterior —cuando el servidor SÍ era editable— no se
+// quede clavada apuntando a un servidor que ya no existe.
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -16,8 +17,8 @@ Future<void> _waitLoaded(SettingsProvider settings) async {
 }
 
 void main() {
-  group('modo automático', () {
-    test('sin nada guardado todavía, usa el servidor oficial por defecto', () async {
+  group('servidor fijo', () {
+    test('sin nada guardado, apunta al servidor oficial', () async {
       SharedPreferences.setMockInitialValues({});
       final settings = SettingsProvider();
       await _waitLoaded(settings);
@@ -25,70 +26,35 @@ void main() {
       expect(settings.downloadServerUrl, OfficialServer.url);
       expect(settings.downloadServerApiKey, OfficialServer.apiKey);
       expect(settings.hasDownloadServer, isTrue,
-          reason: 'el modo automático no debe requerir configuración previa');
-      expect(settings.isOfficialServer, isTrue);
+          reason: 'descargar no debe requerir configuración previa');
     });
 
-    test('un servidor guardado antes pisa el valor oficial al cargar', () async {
+    test('un servidor propio guardado por una versión anterior se ignora', () async {
+      // El caso que importa: sin UI que lo edite, respetar este valor dejaría
+      // al usuario sin descargas y sin forma de volver desde dentro de la app.
       SharedPreferences.setMockInitialValues({
-        'download_server_url': 'http://mi-servidor:8080',
-        'download_server_api_key': 'mi-clave',
+        'download_server_url': 'http://servidor-viejo-que-ya-no-existe:8080',
+        'download_server_api_key': 'clave-vieja',
       });
       final settings = SettingsProvider();
       await _waitLoaded(settings);
 
-      expect(settings.downloadServerUrl, 'http://mi-servidor:8080');
-      expect(settings.downloadServerApiKey, 'mi-clave');
-      expect(settings.isOfficialServer, isFalse);
-    });
-  });
-
-  group('cambiar y volver al servidor oficial', () {
-    test('setDownloadServer deja de estar en el servidor oficial', () async {
-      SharedPreferences.setMockInitialValues({});
-      final settings = SettingsProvider();
-      await _waitLoaded(settings);
-      expect(settings.isOfficialServer, isTrue);
-
-      await settings.setDownloadServer(url: 'http://propio:8080', apiKey: 'clave-propia');
-
-      expect(settings.isOfficialServer, isFalse);
-      expect(settings.downloadServerUrl, 'http://propio:8080');
-      expect(settings.downloadServerApiKey, 'clave-propia');
-    });
-
-    test('setDownloadServer persiste: un provider nuevo retoma el servidor propio', () async {
-      SharedPreferences.setMockInitialValues({});
-      final primero = SettingsProvider();
-      await _waitLoaded(primero);
-      await primero.setDownloadServer(url: 'http://propio:9090', apiKey: 'k');
-
-      final segundo = SettingsProvider();
-      await _waitLoaded(segundo);
-
-      expect(segundo.downloadServerUrl, 'http://propio:9090');
-      expect(segundo.isOfficialServer, isFalse);
-    });
-
-    test('restoreOfficialServer vuelve al oficial y lo persiste', () async {
-      SharedPreferences.setMockInitialValues({
-        'download_server_url': 'http://propio:8080',
-        'download_server_api_key': 'clave-propia',
-      });
-      final settings = SettingsProvider();
-      await _waitLoaded(settings);
-      expect(settings.isOfficialServer, isFalse);
-
-      await settings.restoreOfficialServer();
-
-      expect(settings.isOfficialServer, isTrue);
       expect(settings.downloadServerUrl, OfficialServer.url);
       expect(settings.downloadServerApiKey, OfficialServer.apiKey);
+    });
 
-      // Y sobrevive a un provider nuevo, como cualquier otro cambio guardado.
-      final otro = SettingsProvider();
-      await _waitLoaded(otro);
-      expect(otro.isOfficialServer, isTrue);
+    test('esa configuración vieja además se borra, no sólo se ignora', () async {
+      SharedPreferences.setMockInitialValues({
+        'download_server_url': 'http://servidor-viejo-que-ya-no-existe:8080',
+        'download_server_api_key': 'clave-vieja',
+      });
+      final settings = SettingsProvider();
+      await _waitLoaded(settings);
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('download_server_url'), isNull);
+      expect(prefs.getString('download_server_api_key'), isNull,
+          reason: 'una clave de API huérfana no debe seguir en disco');
     });
   });
 }

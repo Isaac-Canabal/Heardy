@@ -11,9 +11,15 @@ enum AppLanguage { es, en }
 class SettingsProvider with ChangeNotifier {
   static const _presetKey = 'theme_preset';
   static const _maxResultsKey = 'max_search_results';
-  static const _serverUrlKey = 'download_server_url';
-  static const _serverKeyKey = 'download_server_api_key';
   static const _languageKey = 'app_language';
+
+  /// Restos de cuando la dirección del servidor se editaba a mano en Ajustes.
+  /// Se borran al cargar (ver [_load]) en vez de simplemente ignorarse: sin UI
+  /// que los edite, un valor viejo apuntando a un servidor que ya no existe
+  /// dejaría la app sin descargas para siempre y sin forma de arreglarlo
+  /// desde dentro.
+  static const _legacyServerUrlKey = 'download_server_url';
+  static const _legacyServerKeyKey = 'download_server_api_key';
   static const _customPrimaryKey = 'custom_theme_primary';
   static const _customSecondaryKey = 'custom_theme_secondary';
   static const _customCombinedKey = 'custom_theme_combined';
@@ -31,13 +37,6 @@ class SettingsProvider with ChangeNotifier {
   Color _customSecondary = const Color(0xFF38BDF8);
   bool _customCombined = true;
 
-  /// Por defecto, el servidor OFICIAL — modo automático (ver
-  /// docs/arquitectura_servidor_hibrido.md, sección 4). Un usuario avanzado
-  /// puede pisar esto desde Ajustes avanzados con `setDownloadServer`; nunca
-  /// vuelve solo, hace falta `restoreOfficialServer` explícito.
-  String _downloadServerUrl = OfficialServer.url;
-  String _downloadServerApiKey = OfficialServer.apiKey;
-
   AppThemePreset get preset => _preset;
   bool get isLoaded => _loaded;
   int get maxSearchResults => _maxSearchResults;
@@ -47,20 +46,23 @@ class SettingsProvider with ChangeNotifier {
   Color get customSecondary => _customSecondary;
   bool get customCombined => _customCombined;
 
-  /// Dirección del microservidor de descargas (`server/` en este repo, ya
-  /// sea el oficial o uno propio). Nunca queda vacía por defecto: apunta al
-  /// servidor oficial hasta que el usuario elija explícitamente otro.
-  String get downloadServerUrl => _downloadServerUrl;
-  String get downloadServerApiKey => _downloadServerApiKey;
-  bool get hasDownloadServer => _downloadServerUrl.trim().isNotEmpty;
-
-  /// True mientras el servidor configurado sea el oficial — no sólo "está
-  /// vacío", sino "coincide exactamente con `OfficialServer`". La pantalla
-  /// de Ajustes lo usa para decidir cuándo mostrar "Restaurar servidor
-  /// oficial": no tiene sentido ofrecerlo si ya se está usando.
-  bool get isOfficialServer =>
-      _downloadServerUrl.trim() == OfficialServer.url.trim() &&
-      _downloadServerApiKey.trim() == OfficialServer.apiKey.trim();
+  /// Dirección y clave del microservidor de descargas (`server/` en este
+  /// repo). **Fijas, compiladas en el binario** (ver [OfficialServer]): ya no
+  /// se configuran desde la app.
+  ///
+  /// El servidor oficial es uno solo y estable, así que dejar la dirección
+  /// editable sólo servía para que el usuario se rompiera las descargas él
+  /// mismo y no supiera volver. Apuntar a otro servidor sigue siendo posible
+  /// con `--dart-define=HEARDY_OFFICIAL_SERVER_URL=...`, que es donde
+  /// corresponde: en tiempo de build, no en tiempo de ejecución.
+  ///
+  /// Siguen siendo getters de este provider (y no lecturas directas de
+  /// [OfficialServer]) para no tocar los llamadores: `main.dart` se los pasa
+  /// a `YtdlpServerSource` como callbacks, e `import_screen`/`search_screen`
+  /// consultan [hasDownloadServer].
+  String get downloadServerUrl => OfficialServer.url;
+  String get downloadServerApiKey => OfficialServer.apiKey;
+  bool get hasDownloadServer => OfficialServer.url.trim().isNotEmpty;
 
   SettingsProvider() {
     _load();
@@ -77,9 +79,11 @@ class SettingsProvider with ChangeNotifier {
     if (langIndex != null && langIndex >= 0 && langIndex < AppLanguage.values.length) {
       _language = AppLanguage.values[langIndex];
     }
-    _downloadServerUrl = prefs.getString(_serverUrlKey) ?? OfficialServer.url;
-    _downloadServerApiKey =
-        prefs.getString(_serverKeyKey) ?? OfficialServer.apiKey;
+    // Ver [_legacyServerUrlKey]: se borra, no se ignora, para que un servidor
+    // propio configurado en una versión anterior no sobreviva sin UI que lo
+    // pueda deshacer.
+    await prefs.remove(_legacyServerUrlKey);
+    await prefs.remove(_legacyServerKeyKey);
     final customPrimaryArgb = prefs.getInt(_customPrimaryKey);
     if (customPrimaryArgb != null) _customPrimary = Color(customPrimaryArgb);
     final customSecondaryArgb = prefs.getInt(_customSecondaryKey);
@@ -88,24 +92,6 @@ class SettingsProvider with ChangeNotifier {
     _loaded = true;
     notifyListeners();
   }
-
-  Future<void> setDownloadServer({
-    required String url,
-    required String apiKey,
-  }) async {
-    _downloadServerUrl = url.trim();
-    _downloadServerApiKey = apiKey.trim();
-    notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_serverUrlKey, _downloadServerUrl);
-    await prefs.setString(_serverKeyKey, _downloadServerApiKey);
-  }
-
-  /// Vuelve al servidor oficial. Un solo punto de entrada para el botón
-  /// "Restaurar servidor oficial" de Ajustes avanzados — no duplica la
-  /// lógica de guardado, reusa [setDownloadServer].
-  Future<void> restoreOfficialServer() =>
-      setDownloadServer(url: OfficialServer.url, apiKey: OfficialServer.apiKey);
 
   Future<void> setPreset(AppThemePreset preset) async {
     _preset = preset;

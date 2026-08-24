@@ -129,4 +129,6 @@ devtools_options.yaml
 pad_icon.dart
 ios/Runner/Info.plist
 *.apk
+CLAUDE.local.md
+.local/
 .claude/skills/isaac-fullstack-dev/SKILL.md
