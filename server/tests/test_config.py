@@ -1,5 +1,6 @@
-"""Tests de app.config.parse_api_keys — función pura, sin tocar el entorno."""
-from app.config import parse_api_keys
+"""Tests de app.config.parse_api_keys / parse_admin_labels — funciones puras,
+sin tocar el entorno."""
+from app.config import parse_admin_labels, parse_api_keys
 
 
 def test_sin_claves_de_ningun_tipo():
@@ -40,3 +41,19 @@ def test_entradas_vacias_se_ignoran():
 def test_espacios_alrededor_se_recortan():
     keys = parse_api_keys(" isaac : key1 , ana:key2 ", "")
     assert keys == {"key1": "isaac", "key2": "ana"}
+
+
+def test_admin_labels_vacio():
+    assert parse_admin_labels("") == frozenset()
+
+
+def test_admin_labels_una_etiqueta():
+    assert parse_admin_labels("isaac") == frozenset({"isaac"})
+
+
+def test_admin_labels_varias():
+    assert parse_admin_labels("isaac,ana") == frozenset({"isaac", "ana"})
+
+
+def test_admin_labels_espacios_y_vacios_se_ignoran():
+    assert parse_admin_labels(" isaac , , ana ,") == frozenset({"isaac", "ana"})

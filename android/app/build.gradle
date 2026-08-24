@@ -50,8 +50,16 @@ android {
     buildTypes {
         release {
             signingConfig signingConfigs.release
-            minifyEnabled false
-            shrinkResources false
+            // A5 de la Fase 1 de seguridad (2026-08-24): sin esto, ni
+            // siquiera había ofuscación de nombres — `strings` sobre el APK
+            // encontraba texto legible por todos lados. Ver
+            // android/app/proguard-rules.pro para las reglas defensivas que
+            // acompañan esto, y verificar con un APK de release real en un
+            // dispositivo antes de considerar esto cerrado (no hay
+            // dispositivo Android disponible en este entorno).
+            minifyEnabled true
+            shrinkResources true
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
 }

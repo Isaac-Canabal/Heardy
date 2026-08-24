@@ -76,6 +76,27 @@ def parse_api_keys(raw: str, legacy_key: str) -> dict[str, str]:
 # no necesita definir esto — HEARDY_API_KEY solo ya alcanza (ver arriba).
 API_KEYS = parse_api_keys(os.environ.get("HEARDY_API_KEYS", ""), API_KEY)
 
+def parse_admin_labels(raw: str) -> frozenset[str]:
+    """Convierte `HEARDY_ADMIN_LABELS` ("etiqueta,etiqueta,...") en el
+    conjunto de etiquetas con permiso de administrador. Función pura, como
+    `parse_api_keys` arriba, para poder probarla sin tocar el entorno."""
+    return frozenset(label.strip() for label in raw.split(",") if label.strip())
+
+
+# Etiquetas (de las de arriba) con permiso de administrador: hoy sólo
+# DELETE /cache y GET /health/detail. Vacío por defecto — en un servidor
+# personal de una sola clave (etiqueta "default"), un usuario que quiera
+# gestionarlo él mismo pone HEARDY_ADMIN_LABELS=default; el servidor oficial
+# compartido pone sólo la etiqueta del operador, nunca la de cada beta tester.
+ADMIN_LABELS = parse_admin_labels(os.environ.get("HEARDY_ADMIN_LABELS", ""))
+
+# /docs y /openapi.json quedan apagados por defecto: exponen la forma exacta
+# de la API (parámetros, que /audio acepta Range, límites declarados) sin
+# autenticación, gratis para cualquiera que encuentre la URL del servidor.
+# Útil en desarrollo local, no en un despliegue compartido — por eso hace
+# falta encenderlo a propósito.
+ENABLE_DOCS = os.environ.get("HEARDY_ENABLE_DOCS", "").strip() == "1"
+
 # URL del proveedor que genera PO Tokens. Sin él, YouTube devuelve 403 en la
 # mayoría de clientes desde 2025 (ver DD1 en CLAUDE.md).
 # Por defecto, loopback: es donde escucha el proveedor lanzado con run-pot.bat.

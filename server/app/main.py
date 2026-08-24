@@ -18,7 +18,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 from pydantic import BaseModel, Field
 
 from . import config, ytdlp_client
-from .auth import require_api_key
+from .auth import require_admin
 from .rate_limit import enforce_rate_limit
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -83,10 +83,28 @@ async def lifespan(_: FastAPI):
         )
     if config.ALLOW_NO_AUTH:
         log.warning("autenticación DESACTIVADA (HEARDY_ALLOW_NO_AUTH=1)")
+    if config.ENABLE_DOCS:
+        log.warning("/docs y /openapi.json están expuestos (HEARDY_ENABLE_DOCS=1)")
+    if not config.ADMIN_LABELS:
+        log.warning(
+            "HEARDY_ADMIN_LABELS vacío: DELETE /cache y GET /health/detail no los "
+            "puede usar nadie hasta configurarlo"
+        )
     yield
 
 
-app = FastAPI(title="Heardy download API", docs_url="/docs", redoc_url=None, lifespan=lifespan)
+# /docs y /openapi.json quedan apagados salvo HEARDY_ENABLE_DOCS=1 (ver
+# config.py) — expuestos sin autenticación, le dan a cualquiera el contrato
+# exacto de la API gratis. Pasar None a openapi_url también apaga /docs por
+# dentro (Swagger UI lo necesita para renderizar), así que hace falta el
+# `if` en los dos, no sólo en docs_url.
+app = FastAPI(
+    title="Heardy download API",
+    docs_url="/docs" if config.ENABLE_DOCS else None,
+    redoc_url=None,
+    openapi_url="/openapi.json" if config.ENABLE_DOCS else None,
+    lifespan=lifespan,
+)
 
 # Limita las extracciones simultáneas. yt-dlp es bloqueante, así que además
 # se ejecuta siempre en un hilo (`asyncio.to_thread`) para no congelar el
@@ -178,10 +196,7 @@ def _extraction_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc))
 
 
-@app.get("/health")
-async def health() -> JSONResponse:
-    """Diagnóstico. Sin autenticación a propósito: la app necesita poder
-    distinguir 'servidor apagado' de 'clave incorrecta' antes de tener clave."""
+async def _pot_provider_status() -> dict:
     pot_reachable = False
     pot_detail = "no comprobado"
     pot_target = config.POT_PROVIDER_URL
@@ -203,27 +218,47 @@ async def health() -> JSONResponse:
                 pot_detail = f"HTTP {response.status_code}"
         except Exception as e:  # noqa: BLE001 — es un diagnóstico, cualquier fallo es informativo
             pot_detail = f"inalcanzable: {type(e).__name__}"
+    return {
+        "mode": "script" if config.POT_PROVIDER_SCRIPT_HOME else "http",
+        "url": pot_target,
+        "reachable": pot_reachable,
+        "detail": pot_detail,
+    }
 
-    cached_files = len(list(config.CACHE_DIR.glob("*.m4a"))) if config.CACHE_DIR.is_dir() else 0
 
+@app.get("/health")
+async def health() -> JSONResponse:
+    """Diagnóstico. Sin autenticación a propósito: la app necesita poder
+    distinguir 'servidor apagado' de 'clave incorrecta' antes de tener clave —
+    es justo lo que `ytdlp_server_source.dart:probe()` hace con esta
+    respuesta, así que cada campo de aquí abajo es uno que ese código lee.
+
+    Deliberadamente NO lleva `rateLimiting` ni `cookies` (ver /health/detail):
+    esos dos, sin autenticación, le dicen gratis a cualquiera si el servidor
+    tiene límites puestos y si depende de una sesión de cookies — información
+    de la que un abusador se beneficia y que un usuario normal probando su
+    conexión no necesita."""
     return JSONResponse(
         {
             "status": "ok",
             "ytdlpVersion": ytdlp_client.version(),
             "authRequired": bool(config.API_KEYS) and not config.ALLOW_NO_AUTH,
-            "potProvider": {
-                "mode": "script" if config.POT_PROVIDER_SCRIPT_HOME else "http",
-                "url": pot_target,
-                "reachable": pot_reachable,
-                "detail": pot_detail,
-            },
+            "potProvider": await _pot_provider_status(),
+        }
+    )
+
+
+@app.get("/health/detail", dependencies=[Depends(require_admin)])
+async def health_detail() -> JSONResponse:
+    """Lo que /health ya no expone en abierto: estado de la caché, de las
+    cookies y la configuración de límites. Sólo para quien administra el
+    servidor — ver `config.ADMIN_LABELS`."""
+    cached_files = len(list(config.CACHE_DIR.glob("*.m4a"))) if config.CACHE_DIR.is_dir() else 0
+    return JSONResponse(
+        {
             "cache": {"files": cached_files, "maxBytes": config.CACHE_MAX_BYTES},
-            # Diagnóstico del experimento de cookies: sin esto, la única forma
-            # de saber si se cargaron es leer los logs de arranque. No se
-            # expone el contenido ni la ruta completa, sólo si están activas.
+            # No se expone el contenido ni la ruta completa, sólo si están activas.
             "cookies": {"enabled": bool(config.COOKIES_FILE)},
-            # Puramente informativo — la app no necesita leer esto para
-            # funcionar, es diagnóstico para quien administra el servidor.
             "rateLimiting": {
                 "perKeyLimit": config.RATE_LIMIT_PER_KEY,
                 "perKeyWindowSeconds": config.RATE_LIMIT_WINDOW_SECONDS,
@@ -340,7 +375,7 @@ async def audio(video_id: str, request: Request, identity: str = Depends(enforce
     )
 
 
-@app.delete("/cache", dependencies=[Depends(require_api_key)])
+@app.delete("/cache", dependencies=[Depends(require_admin), Depends(enforce_rate_limit)])
 async def clear_cache() -> dict:
     removed = 0
     if config.CACHE_DIR.is_dir():

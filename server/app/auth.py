@@ -5,7 +5,7 @@ como varias claves con nombre (servidor oficial, HEARDY_API_KEYS) — ambas
 conviven en `config.API_KEYS`, ver config.py."""
 import hmac
 
-from fastapi import Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 
 from . import config
 
@@ -42,16 +42,39 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> str:
             detail="El servidor no tiene HEARDY_API_KEY/HEARDY_API_KEYS configurada",
         )
 
+    # Mismo detalle para "ausente" e "inválida" a propósito: el código (401)
+    # ya es idéntico en los dos casos, que es lo que importa para no darle a
+    # quien no tiene ninguna clave una pista sobre cuál de las dos situaciones
+    # está viendo. El nombre de la cabecera no es un secreto — está en
+    # /openapi.json cuando HEARDY_ENABLE_DOCS está activo, y en el propio
+    # README — así que unificar el texto es higiene, no el cierre de una vía
+    # de ataque nueva.
     if not x_api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="X-Api-Key ausente",
+            detail="X-Api-Key ausente o inválida",
         )
 
     label = _match(x_api_key, config.API_KEYS)
     if label is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="X-Api-Key inválida",
+            detail="X-Api-Key ausente o inválida",
         )
     return label
+
+
+def require_admin(identity: str = Depends(require_api_key)) -> str:
+    """Dependencia de FastAPI: además de una clave válida, exige que su
+    etiqueta esté en `config.ADMIN_LABELS`. Depende de `require_api_key` (no
+    lo reimplementa) para que ambas dependencias en la misma petición resuelvan
+    la misma identidad una sola vez — FastAPI cachea por dependencia dentro de
+    una petición.
+
+    Usa 404, no 403: un 403 le confirma a quien no es admin que la ruta existe
+    y que sólo le falta permiso, invitándolo a probar con otra clave. Un 404
+    no distingue "no tenés permiso" de "esto no existe" — la misma razón por
+    la que `require_api_key` no distingue clave ausente de inválida."""
+    if identity not in config.ADMIN_LABELS:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No encontrado")
+    return identity

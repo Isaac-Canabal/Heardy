@@ -13,12 +13,19 @@
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- allowBackup=false por sí solo ya desactiva tanto el backup en la
+         nube de Google como la transferencia al cambiar de móvil — sin esto,
+         SharedPreferences y la base SQLite (playlists, historial) podían
+         salir del dispositivo por una vía que nadie eligió. No hace falta
+         además dataExtractionRules: se ignora entero mientras allowBackup
+         sea false. -->
     <application
         android:label="Heardy"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
-        android:networkSecurityConfig="@xml/network_security_config">
-        
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:allowBackup="false">
+
         <activity
             android:name=".MainActivity"
             android:exported="true"
