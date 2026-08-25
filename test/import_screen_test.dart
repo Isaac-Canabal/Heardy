@@ -33,6 +33,7 @@ import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:uuid/uuid.dart';
 
 import 'package:heardy/models/playlist.dart';
+import 'package:heardy/providers/auth_provider.dart';
 import 'package:heardy/providers/download_provider.dart';
 import 'package:heardy/providers/music_provider.dart';
 import 'package:heardy/providers/settings_provider.dart';
@@ -238,6 +239,12 @@ void main() {
           ChangeNotifierProvider.value(value: musicProvider),
           Provider<DownloadSource>.value(value: source),
           ChangeNotifierProvider.value(value: downloadProvider),
+          // Fase 2 del plan de seguridad: ImportScreen ahora exige sesión
+          // antes de mostrar el flujo de descarga. `.fake` nunca toca
+          // FirebaseAuth.instance (que no está inicializado en un test), y
+          // `isReady: true` deja el resto de estas pruebas exactamente como
+          // estaban, ejercitando el flujo de descarga real.
+          ChangeNotifierProvider<HeardyAuthProvider>.value(value: HeardyAuthProvider.fake()),
         ],
         child: MaterialApp(
           theme: AppTheme.dark(),

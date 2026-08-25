@@ -6,6 +6,12 @@ httpx==0.28.1
 pydantic==2.10.4
 python-dotenv==1.0.1
 
+# Verificación de tokens de ID de Firebase Auth (Fase 2 del plan de
+# seguridad) sin el SDK completo de administrador — ver
+# app/firebase_auth.py para por qué. El extra [crypto] trae `cryptography`,
+# que hace falta para verificar firmas RS256.
+PyJWT[crypto]==2.10.1
+
 # yt-dlp NO se fija a propósito, al contrario que el resto. Es la única pieza
 # cuyo valor está en ser la más nueva posible: los arreglos a los cambios de
 # YouTube llegan en días y fijar una versión es exactamente cómo se acaba con

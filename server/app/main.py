@@ -276,7 +276,16 @@ async def resolve(body: UrlRequest, identity: str = Depends(enforce_rate_limit))
     except ytdlp_client.EXTRACTION_ERRORS as e:
         raise _extraction_error(e) from e
     finally:
-        log.info("/resolve por %s: %s", identity, body.url)
+        # D-4 (Fase 2 del plan de seguridad): identidad y URL/id NUNCA en la
+        # misma línea de log. Con identidad real (Firebase, no ya una clave
+        # compartida por todos), una sola línea con las dos cosas es
+        # historial de escucha atribuible acumulándose en los logs de un
+        # tercero (Render) — algo que nunca se decidió guardar a propósito.
+        # El conteo por identidad sigue existiendo para diagnosticar
+        # abuso/cuota; el detalle de qué se pidió sigue existiendo para
+        # diagnosticar extracciones fallidas. Sólo dejan de viajar juntos.
+        log.info("/resolve por %s", identity)
+        log.info("/resolve: %s", body.url)
 
 
 @app.post("/playlist")
@@ -287,7 +296,8 @@ async def playlist(body: UrlRequest, identity: str = Depends(enforce_rate_limit)
     except ytdlp_client.EXTRACTION_ERRORS as e:
         raise _extraction_error(e) from e
     finally:
-        log.info("/playlist por %s: %s", identity, body.url)
+        log.info("/playlist por %s", identity)
+        log.info("/playlist: %s", body.url)
 
 
 @app.get("/search")
@@ -296,7 +306,8 @@ async def search(
     limit: int = Query(default=20, ge=1, le=config.MAX_SEARCH_RESULTS),
     identity: str = Depends(enforce_rate_limit),
 ) -> dict:
-    log.info("/search por %s: %s", identity, q)
+    log.info("/search por %s", identity)
+    log.info("/search: %s", q)
     try:
         results = await _run(ytdlp_client.search, q, limit)
     except ytdlp_client.EXTRACTION_ERRORS as e:
@@ -316,7 +327,8 @@ async def audio(video_id: str, request: Request, identity: str = Depends(enforce
     if not _VIDEO_ID_RE.match(video_id):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="id de vídeo inválido")
 
-    log.info("/audio por %s: %s", identity, video_id)
+    log.info("/audio por %s", identity)
+    log.info("/audio: %s", video_id)
     try:
         path: Path = await _run(ytdlp_client.fetch_audio, video_id)
     except ytdlp_client.NoAudioTrackError as e:

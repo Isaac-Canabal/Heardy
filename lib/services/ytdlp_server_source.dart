@@ -28,14 +28,33 @@ class YtdlpServerSource implements DownloadSource {
   static const _audioIdleTimeout = Duration(seconds: 90);
 
   final String Function() _baseUrlProvider;
-  final String Function() _apiKeyProvider;
+  final Future<String?> Function() _authTokenProvider;
+  final String Function()? _apiKeyProvider;
   final http.Client Function() _clientFactory;
 
+  /// [authToken] reemplaza la antigua clave de API compilada (Fase 2 del
+  /// plan de seguridad, A1): es el token de ID de Firebase de quien inició
+  /// sesión, mandado como `Authorization: Bearer`. `null`/vacío sin sesión —
+  /// en ese caso las llamadas llegan sin autenticación y el servidor las
+  /// rechaza con 401, que [DownloadSourceErrorKind.unauthorized] ya sabe
+  /// interpretar.
+  ///
+  /// [apiKey] es el mecanismo viejo (`X-Api-Key`), opcional y sin usar por la
+  /// app en sí (la clave compilada se quitó con este mismo cambio): sigue
+  /// existiendo acá sólo porque el servidor mismo sigue aceptándolo para un
+  /// servidor personal o de desarrollo (ver `server/app/auth.py`,
+  /// `resolve_identity`), y es lo que exercita
+  /// `test/download_live_integration_test.dart` contra un servidor local
+  /// levantado con `HEARDY_API_KEY`. Cuando [authToken] resuelve un valor no
+  /// vacío tiene prioridad — mismo orden que el servidor usa para decidir
+  /// cuál de los dos mecanismos se está usando.
   YtdlpServerSource({
     required String Function() baseUrl,
-    required String Function() apiKey,
+    required Future<String?> Function() authToken,
+    String Function()? apiKey,
     http.Client Function()? clientFactory,
   })  : _baseUrlProvider = baseUrl,
+        _authTokenProvider = authToken,
         _apiKeyProvider = apiKey,
         _clientFactory = clientFactory ?? (() => http.Client());
 
@@ -68,10 +87,17 @@ class YtdlpServerSource implements DownloadSource {
     return Uri.parse('$base$path').replace(queryParameters: query);
   }
 
-  Map<String, String> _headers({bool json = false}) => {
-        'X-Api-Key': _apiKeyProvider().trim(),
-        if (json) 'Content-Type': 'application/json',
-      };
+  Future<Map<String, String>> _headers({bool json = false}) async {
+    final token = await _authTokenProvider();
+    final apiKey = _apiKeyProvider?.call().trim();
+    return {
+      if (token != null && token.isNotEmpty)
+        'Authorization': 'Bearer $token'
+      else if (apiKey != null && apiKey.isNotEmpty)
+        'X-Api-Key': apiKey,
+      if (json) 'Content-Type': 'application/json',
+    };
+  }
 
   /// Traduce un fallo de transporte al tipo que la cola sabe interpretar.
   Never _rethrowAsSourceError(Object error) {
@@ -151,7 +177,7 @@ class YtdlpServerSource implements DownloadSource {
     final client = _clientFactory();
     try {
       final response = await client
-          .post(_uri(path), headers: _headers(json: true), body: jsonEncode(body))
+          .post(_uri(path), headers: await _headers(json: true), body: jsonEncode(body))
           .timeout(timeout);
       _checkStatus(response.statusCode, response.body, retryAfterHeader: response.headers['retry-after']);
       return jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
@@ -179,7 +205,7 @@ class YtdlpServerSource implements DownloadSource {
     final client = _clientFactory();
     try {
       final response = await client
-          .get(_uri('/search', {'q': query, 'limit': '$limit'}), headers: _headers())
+          .get(_uri('/search', {'q': query, 'limit': '$limit'}), headers: await _headers())
           .timeout(_metadataTimeout);
       _checkStatus(response.statusCode, response.body, retryAfterHeader: response.headers['retry-after']);
       final json = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
@@ -207,7 +233,7 @@ class YtdlpServerSource implements DownloadSource {
     IOSink? sink;
     try {
       final request = http.Request('GET', _uri('/audio/$trackId'))
-        ..headers.addAll(_headers());
+        ..headers.addAll(await _headers());
       final response = await client.send(request).timeout(_audioHeaderTimeout);
 
       if (response.statusCode < 200 || response.statusCode >= 300) {
@@ -305,7 +331,7 @@ class YtdlpServerSource implements DownloadSource {
         // Una llamada autenticada barata es la única forma de saber si la
         // clave sirve, porque /health no la pide.
         final probe = await client
-            .get(_uri('/search', {'q': 'heardy', 'limit': '1'}), headers: _headers())
+            .get(_uri('/search', {'q': 'heardy', 'limit': '1'}), headers: await _headers())
             .timeout(const Duration(seconds: 20));
         authenticated = probe.statusCode != 401 && probe.statusCode != 403;
         if (!authenticated) detail = 'La clave de API no es válida';

@@ -136,18 +136,52 @@ que lo protege.
 
 ## Endpoints
 
-Todos menos `/health` requieren la cabecera `X-Api-Key`.
+Todos menos `/health` requieren autenticación — `X-Api-Key` **o**
+`Authorization: Bearer <token de Firebase>`, cualquiera de las dos (ver
+"Autenticación" más abajo). `/cache` y `/health/detail` son la excepción
+dentro de la excepción: sólo `X-Api-Key`, y sólo si la etiqueta de esa clave
+está en `HEARDY_ADMIN_LABELS`.
 
-| Método | Ruta | Devuelve |
-|---|---|---|
-| `GET` | `/health` | versión de yt-dlp, estado del proveedor de PO tokens, estado de la caché. **Sin autenticación**, para que la app pueda distinguir "servidor apagado" de "clave incorrecta" |
-| `POST` | `/resolve` | `{id, title, artist, album, durationSeconds, thumbnailUrl, sourceUrl}`. Cuerpo: `{"url": "…"}` |
-| `POST` | `/playlist` | `{id, name, sourceUrl, entries:[…]}`. Cuerpo: `{"url": "…"}` |
-| `GET` | `/search?q=&limit=` | `{results:[…]}` |
-| `GET` | `/audio/{videoId}` | los bytes M4A. Soporta `Range` |
-| `DELETE` | `/cache` | vacía la caché de audio |
+| Método | Ruta | Auth | Devuelve |
+|---|---|---|---|
+| `GET` | `/health` | Ninguna | versión de yt-dlp, si hace falta autenticarse, estado del proveedor de PO tokens. **Sin autenticación a propósito**, para que la app distinga "servidor apagado" de "clave incorrecta" |
+| `GET` | `/health/detail` | Admin | estado de la caché y de las cookies, configuración de límites — lo que `/health` ya no expone a cualquiera |
+| `POST` | `/resolve` | X-Api-Key o Bearer | `{id, title, artist, album, durationSeconds, thumbnailUrl, sourceUrl}`. Cuerpo: `{"url": "…"}` |
+| `POST` | `/playlist` | X-Api-Key o Bearer | `{id, name, sourceUrl, entries:[…]}`. Cuerpo: `{"url": "…"}` |
+| `GET` | `/search?q=&limit=` | X-Api-Key o Bearer | `{results:[…]}` |
+| `GET` | `/audio/{videoId}` | X-Api-Key o Bearer | los bytes M4A. Soporta `Range` |
+| `DELETE` | `/cache` | Admin | vacía la caché de audio |
 
-También hay documentación interactiva en `http://127.0.0.1:8080/docs`.
+`/docs` (documentación interactiva) y `/openapi.json` están apagados por
+defecto — encender con `HEARDY_ENABLE_DOCS=1`, sólo para desarrollo local.
+
+---
+
+## Autenticación
+
+Dos mecanismos, ninguno reemplaza al otro — conviven porque resuelven
+problemas distintos.
+
+**`X-Api-Key`** — el original. Una sola clave compartida (`HEARDY_API_KEY`) o
+varias con nombre (`HEARDY_API_KEYS`), ver la sección de abajo. Es el único
+camino para las rutas de administrador (`/cache`, `/health/detail`) y sigue
+siendo lo único que necesita un servidor personal.
+
+**`Authorization: Bearer <token de Firebase>`** — para el servidor oficial
+compartido con usuarios reales, cada uno con su propia cuenta (registro por
+correo/contraseña) en vez de compartir una clave repartida a mano. El
+servidor verifica el token contra las claves públicas de Google (`PyJWT`, sin
+el SDK completo de `firebase-admin`) y exige, además de la firma válida,
+`email_verified: true` — sin eso, cualquiera podría registrarse con un correo
+inventado y usar la app igual. Necesita `HEARDY_FIREBASE_PROJECT_ID` en
+`.env` (el "Project ID" de la consola de Firebase — **no** es secreto, es
+público). Sin esa variable, ningún token de Firebase se acepta y el servidor
+simplemente se queda con `X-Api-Key`.
+
+Una cuenta de Firebase **nunca** es administrador por este camino — la
+identidad que produce siempre lleva el prefijo `firebase:`, así que jamás
+puede coincidir con una etiqueta de `HEARDY_ADMIN_LABELS`, que sólo lee
+etiquetas de `X-Api-Key`.
 
 ---
 
@@ -198,7 +232,9 @@ tokens instalados. No toca YouTube ni el `.venv` de `run.bat`/`setup.bat`.
 |---|---|
 | `health.bat` dice que no hay nadie escuchando | La API no está arrancada: `run.bat` |
 | `Proveedor de PO tokens NO responde` | Falta `run-pot.bat`, o su ventana se cerró |
-| 401 desde la app | La clave de Ajustes no coincide con ninguna de `HEARDY_API_KEY`/`HEARDY_API_KEYS` de `server\.env`. Tras cambiar el `.env` hay que reiniciar la API |
+| 401 desde la app | Con `X-Api-Key`: no coincide con ninguna de `HEARDY_API_KEY`/`HEARDY_API_KEYS` de `server\.env`. Con Firebase: el token venció, o `HEARDY_FIREBASE_PROJECT_ID` no coincide con el proyecto real. Tras cambiar el `.env` hay que reiniciar la API |
+| 403 al usar la app recién registrada | Cuenta de Firebase sin verificar el correo — es a propósito (ver "Autenticación"), no un fallo |
+| 404 en `/cache` o `/health/detail` con una clave que sí funciona en el resto | Esa clave es válida pero su etiqueta no está en `HEARDY_ADMIN_LABELS` — no es un error, es que no es admin |
 | 403 / "Sign in to confirm you're not a bot" | El proveedor de PO tokens está caído, o su versión no coincide con la del plugin. Volvé a ejecutar `setup.bat` |
 | 415 | Ese vídeo no tiene pista AAC/M4A. Es definitivo para ese vídeo, no un fallo del servidor |
 | 429 | Se agotó el límite de peticiones (por clave o el tope diario global). Trae `Retry-After` con los segundos exactos — solo pasa si `HEARDY_RATE_LIMIT_PER_KEY`/`HEARDY_DAILY_QUOTA` están configurados |

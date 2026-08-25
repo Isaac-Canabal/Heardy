@@ -48,11 +48,11 @@ http.StreamedResponse _error(int status, String detail) => _json({'detail': deta
 YtdlpServerSource _source(
   _FakeClient client, {
   String url = 'http://servidor:8080',
-  String key = 'clave',
+  String? token = 'token-de-firebase',
 }) {
   return YtdlpServerSource(
     baseUrl: () => url,
-    apiKey: () => key,
+    authToken: () async => token,
     clientFactory: () => client,
   );
 }
@@ -99,9 +99,9 @@ void main() {
   });
 
   group('resolve / playlist / search', () {
-    test('resolve manda la clave de API y parsea el DTO', () async {
+    test('resolve manda el token de Firebase y parsea el DTO', () async {
       final client = _FakeClient((request) async {
-        expect(request.headers['X-Api-Key'], 'clave');
+        expect(request.headers['Authorization'], 'Bearer token-de-firebase');
         return _json({
           'id': 'dQw4',
           'title': 'Título',

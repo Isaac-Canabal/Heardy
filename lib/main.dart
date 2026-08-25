@@ -8,12 +8,14 @@ import 'package:audio_service/audio_service.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
+import 'package:firebase_core/firebase_core.dart';
 
 import 'services/database_helper.dart';
 import 'services/audio_player_handler.dart';
 import 'services/download_service.dart';
 import 'services/download_source.dart';
 import 'services/ytdlp_server_source.dart';
+import 'providers/auth_provider.dart';
 import 'providers/download_provider.dart';
 import 'providers/music_provider.dart';
 import 'providers/settings_provider.dart';
@@ -37,6 +39,12 @@ void main() async {
   ]);
 
   await DatabaseHelper.instance.database;
+
+  // Fase 2 del plan de seguridad: identidad por cuenta real (Firebase Auth)
+  // en vez de la clave de API única compilada en el binario. Sin opciones
+  // explícitas: app Android-only, `android/app/google-services.json` (vía el
+  // plugin de Gradle) ya deja todo lo que el SDK necesita.
+  await Firebase.initializeApp();
 
   const AndroidInitializationSettings initializationSettingsAndroid =
       AndroidInitializationSettings('@mipmap/ic_launcher');
@@ -68,13 +76,16 @@ void main() async {
 
   final musicProvider = MusicProvider();
   final settingsProvider = SettingsProvider();
+  final authProvider = HeardyAuthProvider();
 
   // La fuente lee la configuración por closures, no por copia: cambiar la
-  // dirección o la clave en Ajustes tiene efecto inmediato, sin reconstruir
-  // nada ni reiniciar la app.
+  // dirección en Ajustes (o iniciar/cerrar sesión) tiene efecto inmediato,
+  // sin reconstruir nada ni reiniciar la app. `authToken` reemplaza la clave
+  // de API fija de antes (Fase 2 del plan de seguridad, cierra A1): sin
+  // sesión, devuelve null y la llamada sale sin autenticar.
   final DownloadSource downloadSource = YtdlpServerSource(
     baseUrl: () => settingsProvider.downloadServerUrl,
-    apiKey: () => settingsProvider.downloadServerApiKey,
+    authToken: () => authProvider.idToken(),
   );
   final downloadProvider = DownloadProvider(
     service: DownloadService(source: downloadSource),
@@ -97,6 +108,7 @@ void main() async {
       providers: [
         Provider<AudioPlayerHandler>.value(value: audioHandler),
         Provider<DownloadSource>.value(value: downloadSource),
+        ChangeNotifierProvider.value(value: authProvider),
         ChangeNotifierProvider.value(value: settingsProvider),
         ChangeNotifierProvider.value(value: musicProvider),
         ChangeNotifierProvider.value(value: downloadProvider),

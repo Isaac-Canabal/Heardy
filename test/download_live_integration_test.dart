@@ -88,6 +88,10 @@ void main() {
     apiKey = _readApiKey();
     source = YtdlpServerSource(
       baseUrl: () => 'http://127.0.0.1:8080',
+      // Sin sesión de Firebase en este test: ejercita el mecanismo viejo
+      // (X-Api-Key), que el servidor sigue aceptando para desarrollo local
+      // (ver YtdlpServerSource, doc de `apiKey`).
+      authToken: () async => null,
       apiKey: () => apiKey ?? '',
     );
 

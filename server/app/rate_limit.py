@@ -21,7 +21,7 @@ from typing import Callable
 from fastapi import Depends, HTTPException, status
 
 from . import config
-from .auth import require_api_key
+from .auth import resolve_identity
 
 
 class RateLimitExceeded(Exception):
@@ -107,11 +107,13 @@ _limiter = RateLimiter(
 )
 
 
-async def enforce_rate_limit(identity: str = Depends(require_api_key)) -> str:
-    """Dependencia de FastAPI: autentica (delegado a `require_api_key`) y
-    además exige cuota. Se usa solo en los endpoints que gastan presupuesto
-    de IP frente a YouTube (/resolve, /playlist, /search, /audio) — no en
-    /cache, que es puramente local y no le cuesta nada a la IP."""
+async def enforce_rate_limit(identity: str = Depends(resolve_identity)) -> str:
+    """Dependencia de FastAPI: autentica (delegado a `resolve_identity` —
+    X-Api-Key o Bearer de Firebase, cualquiera de los dos) y además exige
+    cuota. Se usa solo en los endpoints que gastan presupuesto de IP frente a
+    YouTube (/resolve, /playlist, /search, /audio) — no en /cache/
+    /health/detail, que son administrativos y van por `require_admin`
+    (API-key-only, ver auth.py) en vez de por acá."""
     try:
         await _limiter.check(identity)
     except RateLimitExceeded as e:

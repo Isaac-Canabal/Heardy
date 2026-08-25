@@ -46,9 +46,11 @@ class SettingsProvider with ChangeNotifier {
   Color get customSecondary => _customSecondary;
   bool get customCombined => _customCombined;
 
-  /// Dirección y clave del microservidor de descargas (`server/` en este
-  /// repo). **Fijas, compiladas en el binario** (ver [OfficialServer]): ya no
-  /// se configuran desde la app.
+  /// Dirección del microservidor de descargas (`server/` en este repo).
+  /// **Fija, compilada en el binario** (ver [OfficialServer]): ya no se
+  /// configura desde la app. La autenticación ya no vive acá — desde la Fase
+  /// 2 del plan de seguridad es un token de Firebase (ver [HeardyAuthProvider]),
+  /// no una clave fija que este provider pudiera exponer.
   ///
   /// El servidor oficial es uno solo y estable, así que dejar la dirección
   /// editable sólo servía para que el usuario se rompiera las descargas él
@@ -56,12 +58,11 @@ class SettingsProvider with ChangeNotifier {
   /// con `--dart-define=HEARDY_OFFICIAL_SERVER_URL=...`, que es donde
   /// corresponde: en tiempo de build, no en tiempo de ejecución.
   ///
-  /// Siguen siendo getters de este provider (y no lecturas directas de
-  /// [OfficialServer]) para no tocar los llamadores: `main.dart` se los pasa
-  /// a `YtdlpServerSource` como callbacks, e `import_screen`/`search_screen`
+  /// Sigue siendo un getter de este provider (y no una lectura directa de
+  /// [OfficialServer]) para no tocar los llamadores: `main.dart` se lo pasa a
+  /// `YtdlpServerSource` como callback, e `import_screen`/`search_screen`
   /// consultan [hasDownloadServer].
   String get downloadServerUrl => OfficialServer.url;
-  String get downloadServerApiKey => OfficialServer.apiKey;
   bool get hasDownloadServer => OfficialServer.url.trim().isNotEmpty;
 
   SettingsProvider() {

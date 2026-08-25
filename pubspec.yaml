@@ -31,6 +31,15 @@ dependencies:
   crypto: ^3.0.7
   audio_metadata_reader: ^1.7.1
   flutter_foreground_task: ^11.0.1
+  # Fase 2 del plan de seguridad: identidad por cuenta real (Firebase Auth)
+  # en vez de la clave única compartida por todo el APK. firebase_core
+  # inicializa el SDK; firebase_auth es registro/login/recuperación de
+  # contraseña. Sin flutter_secure_storage: el propio SDK ya persiste la
+  # sesión (su token de refresco) de forma segura y la renueva solo -- el
+  # plan original lo pedía por las dudas, pero guardar el token a mano
+  # habría sido una dependencia redundante, no una capa extra de verdad.
+  firebase_core: ^3.8.1
+  firebase_auth: ^5.3.4
 
 dev_dependencies:
   flutter_test:

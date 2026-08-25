@@ -1,6 +1,10 @@
 plugins {
     id "com.android.application"
     id "dev.flutter.flutter-gradle-plugin"
+    // Debe ir después de com.android.application: lee google-services.json
+    // (comitea la config pública del proyecto de Firebase, no un secreto —
+    // ver CLAUDE.local.md) para inicializar firebase_core/firebase_auth.
+    id "com.google.gms.google-services"
 }
 
 def keystoreProperties = new Properties()

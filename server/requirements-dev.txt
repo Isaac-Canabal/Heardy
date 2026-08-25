@@ -8,3 +8,6 @@ fastapi==0.115.6
 python-dotenv==1.0.1
 pytest==8.3.4
 pytest-asyncio==0.25.2
+# test_firebase_auth.py firma tokens de prueba con una clave RSA propia
+# (nunca contra Google) — necesita PyJWT[crypto], igual que el runtime.
+PyJWT[crypto]==2.10.1

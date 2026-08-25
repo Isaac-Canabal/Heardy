@@ -1,8 +1,10 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import '../providers/auth_provider.dart';
 import '../providers/music_provider.dart';
 import '../providers/settings_provider.dart';
+import '../screens/auth/login_screen.dart';
 import '../services/database_helper.dart';
 import '../theme/app_theme.dart';
 import '../services/download_source.dart';
@@ -414,6 +416,10 @@ class SettingsScreen extends StatelessWidget {
               ],
             ),
           ),
+          const SizedBox(height: 28),
+          _SectionTitle(l10n.settingsAccountSectionTitle),
+          const SizedBox(height: 10),
+          const _AccountSection(),
           const SizedBox(height: 28),
           _SectionTitle(l10n.serverSectionTitle),
           const SizedBox(height: 10),
@@ -1074,6 +1080,67 @@ class _TopSongRow extends StatelessWidget {
 /// sin saber cómo volver.
 ///
 /// Lo que sí sigue siendo útil, y por eso esta sección existe, es responder
+/// Cuenta de Firebase (Fase 2 del plan de seguridad): el único lugar de
+/// Ajustes que necesita saber que existe [HeardyAuthProvider]. Sin sesión, sólo
+/// invita a iniciarla — no bloquea nada acá, la biblioteca local no la
+/// necesita para nada.
+class _AccountSection extends StatelessWidget {
+  const _AccountSection();
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    final auth = context.watch<HeardyAuthProvider>();
+    final signedIn = auth.isReady;
+
+    return Container(
+      decoration: AppTheme.glassCard(),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                signedIn ? Icons.verified_user_rounded : Icons.person_outline_rounded,
+                color: AppTheme.primaryLight,
+                size: 20,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  signedIn ? l10n.settingsAccountSignedInAs(auth.email ?? '') : l10n.settingsAccountNotSignedIn,
+                  style: TextStyle(color: Colors.white.withValues(alpha: 0.75), fontSize: 13),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          SizedBox(
+            width: double.infinity,
+            child: OutlinedButton.icon(
+              style: OutlinedButton.styleFrom(
+                foregroundColor: Colors.white,
+                side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                padding: const EdgeInsets.symmetric(vertical: 12),
+              ),
+              icon: Icon(signedIn ? Icons.logout_rounded : Icons.login_rounded, size: 18),
+              label: Text(
+                signedIn ? l10n.authSignOutButton : l10n.settingsAccountManageButton,
+                style: const TextStyle(fontWeight: FontWeight.w600),
+              ),
+              onPressed: signedIn
+                  ? () => context.read<HeardyAuthProvider>().signOut()
+                  : () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const LoginScreen())),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// "¿por qué no me descarga?" sin salir de la app: "Probar conexión"
 /// distingue *inalcanzable* (el servidor está caído o no hay red) de *clave
 /// inválida* (este build de la app quedó sin clave) de *conectado pero sin

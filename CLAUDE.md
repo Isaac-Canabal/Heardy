@@ -226,16 +226,27 @@ Same non-negotiable rule as the pivot: every stage ends with the app compiling a
     - **El plan B, si las cookies acaban siendo demasiado frágiles, sigue siendo el de la Etapa 12** y no hay que volver a razonarlo: cualquier equipo barato siempre encendido en casa (Raspberry Pi, portátil viejo, Android con Termux) con Tailscale Funnel, que conserva la IP residencial. Se descartó *por ahora* porque Render + cookies cumple el requisito original ("que no dependa de mi computador") sin hardware extra.
     - **También en esta etapa: el servidor dejó de ser configurable desde la app.** `SettingsProvider` ya no guarda dirección ni clave — ambas salen de `OfficialServer` (compiladas, con `--dart-define` como única forma de pisarlas, en tiempo de build). La sección "Ajustes avanzados" de `settings_screen.dart` se colapsó en una sección "Servidor de descargas" **de sólo diagnóstico**: un botón "Probar conexión" y la línea de estado, sin campos. Motivo: el servidor oficial es uno solo y estable, y un campo editable sólo servía para que alguien se rompiera las descargas sin saber volver. `SettingsProvider._load` **borra** (no ignora) las claves `download_server_url`/`download_server_api_key` de una instalación anterior — ignorarlas habría dejado clavado en un servidor muerto a quien hubiera configurado uno propio, sin UI para deshacerlo. Cubierto en `settings_provider_test.dart` y, a nivel de pantalla, en `import_screen_test.dart`.
 
+14. **Identidad delegada (Fase 2 del plan de seguridad) — implementada 2026-08-24.** El servidor ya sabía verificar un token de Firebase junto con `X-Api-Key` en paralelo (`server/app/firebase_auth.py`, `auth.py:resolve_identity`) desde una sesión anterior; esta sesión cerró el lado de la app, que hasta entonces sólo tenía las dependencias instaladas y ningún código de cuenta.
+    - `HeardyAuthProvider` (`lib/providers/auth_provider.dart`) — **no `AuthProvider`**: `firebase_auth` ya exporta una clase pública con ese nombre (la base de `GoogleAuthProvider` y similares) y el nombre colisiona; lo delató `flutter analyze` (`ambiguous_import`). Envuelve `FirebaseAuth`: `isReady` = sesión + correo verificado, `idToken()` para el header de las llamadas al servidor. Gana un constructor `.fake({isReady, email})` que nunca toca `FirebaseAuth.instance`, porque los widget tests existentes no corren `Firebase.initializeApp()`.
+    - `lib/screens/auth/login_screen.dart` — login/registro con toggle, recuperar contraseña, y el estado intermedio "verificá tu correo" (reenviar, "ya lo verifiqué", cerrar sesión por si es la cuenta equivocada).
+    - **`OfficialServer.apiKey` eliminado por completo — cierra A1.** Ya no hay ninguna clave compilada dentro del APK. `YtdlpServerSource` manda `Authorization: Bearer <token>` cuando hay sesión; sin ella, la llamada sale sin autenticar y el servidor la rechaza. Conserva, aparte, un parámetro `apiKey` opcional sin usar por la app real — sólo lo usa `test/download_live_integration_test.dart` para seguir pudiendo ejercitar un servidor de desarrollo con `X-Api-Key`, sin necesitar una sesión de Firebase para correr.
+    - **No es un gate global.** `ImportScreen`/`SearchScreen` (las únicas dos pantallas que hablan con el servidor) muestran un estado "iniciá sesión para descargar" — mismo patrón visual que el "sin servidor" que ya existía — cuando no hay sesión lista; el resto de la app (biblioteca local, playlists, reproducción, búsqueda local) sigue sin necesitar cuenta para nada, a propósito: la premisa del pivot (D1) nunca dejó de ser "todo vive en el teléfono, sin cuentas ni nube" para la reproducción en sí.
+    - `android/settings.gradle`/`android/app/build.gradle` ganaron el plugin `com.google.gms.google-services`, que lee `android/app/google-services.json` (comitea la config pública del proyecto de Firebase, no un secreto).
+    - `settingsAboutExternalServices` (Ajustes → Acerca de) se corrigió: ya no dice "ninguno recibe tu correo" sin matices — eso sigue siendo cierto para LRCLIB/MyMemory, pero descargar ahora sí implica una cuenta con correo (gestionada por Firebase/Google, nunca visible para el servidor de descargas en sí).
+    - **Validación:** `flutter analyze` limpio (mismos 5 infos preexistentes), 104 tests de Dart en verde, 83 tests de servidor en verde, `flutter build apk --debug` compiló con el plugin de Google Services activo. **No verificado — mismo patrón que arrastra el resto del proyecto:** registrarse de verdad, recibir el correo de verificación, iniciar sesión y descargar contra Render con un token real, todo en un dispositivo Android real. Tampoco se confirmó que `HEARDY_FIREBASE_PROJECT_ID` esté puesto en el entorno de Render — sin esa variable, todo token de Firebase se rechaza.
+
 ### Próxima sesión — retomar aquí
 
-**Estado:** la app funciona y el servidor oficial está en Render, en línea y sin depender de nada local (Etapa 13). Lo que queda abierto es **seguridad y multiusuario**, y está planificado en detalle.
+**Estado:** la app funciona, el servidor oficial está en Render, y la identidad delegada (Fase 2) está implementada pero sin verificar en un dispositivo real ni contra el despliegue de Render. Lo que queda abierto es la **cuota de descargas** (Fase 3) y, más urgente antes que eso, **cerrar la verificación de la Fase 2** (ver Etapa 14).
 
 Hay un plan por fases del 2026-08-24 en las notas de trabajo locales; **leerlo antes de empezar**. Rumbo decidido, en una línea:
 
-- **El APK se reparte abiertamente**, así que la identidad va por **Firebase Auth** (no por claves repartidas a mano, no por cuentas propias), con **correo verificado como control de alta** — sin eso, un límite por cuenta no limita nada, porque quien lo agote abre otra cuenta.
-- **Cuota de 150 canciones/día en Postgres persistente (Neon)**. Hoy sería imposible por tres motivos, todos verificados: la clave del APK es la misma para todos, el contador vive en memoria y Render lo reinicia, y el limitador cuenta *peticiones* (2-3 por canción), no canciones.
-- **El encaje es barato porque `require_api_key` ya devuelve una identidad** y todo lo de abajo trabaja con esa cadena: se sustituye quién la produce. `X-Api-Key` sigue en paralelo para servidor personal y desarrollo, así que se mantiene el invariante de **una sola implementación de backend**.
-- **La expansión a PC queda congelada** (sin decidir programa vs. web). No bloquea nada; la identidad ya queda lista para cuando se decida.
+- **El APK se reparte abiertamente**, así que la identidad va por **Firebase Auth** (no por claves repartidas a mano, no por cuentas propias), con **correo verificado como control de alta** — sin eso, un límite por cuenta no limita nada, porque quien lo agote abre otra cuenta. **Implementado (Etapa 14).**
+- **Cuota de 150 canciones/día en Postgres persistente (Neon)** — siguiente fase, todavía no empezada. Hoy sería imposible por tres motivos, todos verificados: el contador vive en memoria y Render lo reinicia, el limitador cuenta *peticiones* (2-3 por canción) no canciones, y hasta la Etapa 14 tampoco había identidad real por persona — eso último ya está resuelto.
+- **El encaje fue barato porque `require_api_key` ya devolvía una identidad** y todo lo de abajo trabaja con esa cadena: se sustituyó quién la produce. `X-Api-Key` sigue en paralelo para servidor personal y desarrollo, así que se mantiene el invariante de **una sola implementación de backend**.
+- **La expansión a PC sigue congelada** (sin decidir programa vs. web). No bloquea nada; la identidad ya queda lista para cuando se decida.
+
+**Antes de tocar la Fase 3, cerrar el pendiente de la Fase 2:** confirmar `HEARDY_FIREBASE_PROJECT_ID` en el entorno de Render, y probar el flujo de cuenta completo (registro, correo de verificación, login, una descarga real con el token) en un dispositivo Android real.
 
 **Nota sobre este archivo:** este repositorio es **público**. Al escribir aquí, asumir lector externo: arquitectura y decisiones de diseño sí, detalle operativo no.
 
@@ -273,8 +284,10 @@ lib/
 ├── providers/                       # ChangeNotifier state holders (see "State management" below)
 │   ├── music_provider.dart          # playlists + current playlist songs + cold-start playback restoration +
 │   │                                 # library-root/inbox-count/librarySongsVersion bookkeeping
-│   ├── settings_provider.dart       # theme preset + max search results + download-server URL/key (all
+│   ├── settings_provider.dart       # theme preset + max search results + download-server URL (all
 │   │                                 # SharedPreferences-backed)
+│   ├── auth_provider.dart           # (download branch, Etapa 14) HeardyAuthProvider: Firebase Auth session
+│   │                                 # (isReady = signed in + email verified), the id token downloads send
 │   └── download_provider.dart       # (download branch) the persistent download queue: enqueue, processQueue,
 │                                     # retry/backoff, cancellation — see "Download pipeline" below
 ├── services/                        # business logic, no Flutter widget dependencies
@@ -307,12 +320,15 @@ lib/
 │   ├── inbox_screen.dart            # D6 batch triage for songs imported loose in the library root
 │   ├── import_screen.dart           # (download branch) "Añadir": paste a YouTube/Spotify URL → preview →
 │   │                                 # pick playlist → enqueue; also the live download-queue UI
+│   ├── auth/login_screen.dart       # (download branch, Etapa 14) sign in/register/reset password, and the
+│   │                                 # "verify your email" interstitial — pushed from ImportScreen/SearchScreen/
+│   │                                 # Settings, never a global gate
 │   ├── search_screen.dart           # Local/YouTube segmented search
 │   ├── playlist_detail_screen.dart  # song list for one playlist: search/sort/reorder/delete/play; "Actualizar
 │   │                                 # desde YouTube" for playlists with `originalUrl` (download branch)
 │   ├── now_playing_screen.dart      # full player UI — largest screen by far
 │   └── settings_screen.dart         # theme picker, max search results, library-folder picker, download-server
-│                                     # URL/key (download branch)
+│                                     # URL diagnostic, account section (download branch)
 ├── widgets/                         # glass_card, mini_player, song_tile, playlist_target_sheet,
 │                                     # download_progress_card (download branch)
 ├── l10n/                            # app_es.arb + app_en.arb (se versionan); AppLocalizations es
@@ -326,8 +342,9 @@ server/                              # (download branch only) FastAPI + yt-dlp m
 ### State management: Provider
 
 - `MusicProvider` — owns playlists and the songs of the currently-viewed playlist (queried fresh from SQLite on every mutation, not cached/derived). Also owns playback-state restoration on cold start, and the library-root/inbox-count/`librarySongsVersion` state every screen watches to know when to reload.
-- `SettingsProvider` — theme preset, max search results, and (download branch) the download server's URL/API key — all persisted to `SharedPreferences`.
+- `SettingsProvider` — theme preset, max search results, and (download branch) the download server's URL — all persisted to `SharedPreferences`. Authentication against that server is `HeardyAuthProvider`'s job (Firebase Auth, Etapa 14), not this provider's.
 - `DownloadProvider` *(download branch)* — the persistent download queue and its processing loop. Reaches the library through an `onDownloadComplete(playlistId)` callback rather than holding a `MusicProvider` reference, which is what keeps it unit-testable and a pure orchestrator. Knows nothing about HTTP or the server — talks only to `DownloadSource`.
+- `HeardyAuthProvider` *(download branch, Etapa 14)* — wraps `FirebaseAuth`: session state, email-verification status, and the id token `YtdlpServerSource` sends as `Authorization: Bearer`. Not a gate on the rest of the app — only `ImportScreen`/`SearchScreen` read `isReady` before letting a download start.
 
 `AudioPlayerHandler` is provided directly via `Provider<AudioPlayerHandler>.value`, not a `ChangeNotifier` — screens read it via `context.read`/`context.watch` and react to its `mediaItem`/`playbackState`/`queue` streams directly. `DownloadSource` *(download branch)* is provided the same way, via `Provider<DownloadSource>.value`.
 

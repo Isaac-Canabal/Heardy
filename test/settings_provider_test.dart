@@ -1,6 +1,8 @@
-// El servidor de descargas ya no se configura desde la app: su dirección y su
-// clave van compiladas en el binario (OfficialServer). Lo que estos tests
-// cubren es que eso se cumpla de verdad y, sobre todo, que una instalación que
+// El servidor de descargas ya no se configura desde la app: su dirección va
+// compilada en el binario (OfficialServer) — la autenticación, desde la Fase
+// 2 del plan de seguridad, es una cuenta de Firebase (HeardyAuthProvider), no una
+// clave que este provider pudiera exponer. Lo que estos tests cubren es que
+// la dirección se cumpla de verdad y, sobre todo, que una instalación que
 // venía de una versión anterior —cuando el servidor SÍ era editable— no se
 // quede clavada apuntando a un servidor que ya no existe.
 import 'package:flutter_test/flutter_test.dart';
@@ -24,7 +26,6 @@ void main() {
       await _waitLoaded(settings);
 
       expect(settings.downloadServerUrl, OfficialServer.url);
-      expect(settings.downloadServerApiKey, OfficialServer.apiKey);
       expect(settings.hasDownloadServer, isTrue,
           reason: 'descargar no debe requerir configuración previa');
     });
@@ -40,7 +41,6 @@ void main() {
       await _waitLoaded(settings);
 
       expect(settings.downloadServerUrl, OfficialServer.url);
-      expect(settings.downloadServerApiKey, OfficialServer.apiKey);
     });
 
     test('esa configuración vieja además se borra, no sólo se ignora', () async {

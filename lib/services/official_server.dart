@@ -12,10 +12,16 @@ library;
 /// nombra una máquina personal, y este repositorio es público — ese caso va
 /// por `--dart-define`, nunca como `defaultValue` acá.
 ///
-/// La clave, en cambio, NO se comitea nunca — aunque sea de una beta cerrada
-/// de pocas personas, sigue siendo un secreto: se inyecta en tiempo de build
-/// con `--dart-define=HEARDY_OFFICIAL_SERVER_API_KEY=...` y queda vacía en un
-/// build de desarrollo normal.
+/// **Actualización 2026-08-24, Fase 2 del plan de seguridad: ya no hay clave
+/// compilada (cierra el hallazgo A1).** `apiKey` existió acá y viajaba
+/// idéntica dentro de cada APK repartido — cualquiera podía sacarla con
+/// `strings` sobre el binario, porque `minifyEnabled` ni siquiera la ofuscaba
+/// del todo. La reemplaza una cuenta real por persona vía Firebase Auth
+/// (`HeardyAuthProvider`, `lib/screens/auth/login_screen.dart`): `YtdlpServerSource`
+/// ahora manda `Authorization: Bearer <token de Firebase>`, nunca una clave
+/// fija. Sin sesión, las llamadas al servidor simplemente salen sin
+/// autenticación y el servidor las rechaza — comportamiento correcto, no un
+/// caso a manejar aparte.
 ///
 /// **Actualización 2026-08-22:** el servidor oficial pasó a Render
 /// (`heardy.onrender.com`), con cookies de sesión de YouTube
@@ -39,9 +45,5 @@ class OfficialServer {
   static const String url = String.fromEnvironment(
     'HEARDY_OFFICIAL_SERVER_URL',
     defaultValue: 'https://heardy.onrender.com',
-  );
-
-  static const String apiKey = String.fromEnvironment(
-    'HEARDY_OFFICIAL_SERVER_API_KEY',
   );
 }

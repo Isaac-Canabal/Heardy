@@ -2,9 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
+import '../providers/auth_provider.dart';
 import '../providers/download_provider.dart';
 import '../providers/music_provider.dart';
 import '../providers/settings_provider.dart';
+import '../screens/auth/login_screen.dart';
 import '../services/download_source.dart';
 import '../services/spotify_match.dart';
 import '../services/spotify_service.dart';
@@ -291,6 +293,11 @@ class _ImportScreenState extends State<ImportScreen> {
     final l10n = AppLocalizations.of(context)!;
 
     if (!settings.hasDownloadServer) return _buildNoServerState();
+    // Fase 2 del plan de seguridad: descargar exige sesión (identidad real
+    // en vez de la clave compilada de antes); el resto de la app —
+    // biblioteca local, playlists, reproducción— no. Este chequeo vive sólo
+    // en esta pantalla y en SearchScreen, no como un gate global.
+    if (!context.watch<HeardyAuthProvider>().isReady) return _buildAuthRequiredState();
     if (libraryRootUri == null) return _buildNoFolderState();
 
     return SafeArea(
@@ -393,6 +400,39 @@ class _ImportScreenState extends State<ImportScreen> {
               l10n.importNoServerBody,
               style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
               textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildAuthRequiredState() {
+    final l10n = AppLocalizations.of(context)!;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.lock_outline_rounded, size: 56, color: Colors.white.withValues(alpha: 0.3)),
+            const SizedBox(height: 16),
+            Text(
+              l10n.authRequiredTitle,
+              style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              l10n.authRequiredBody,
+              style: TextStyle(color: Colors.white.withValues(alpha: 0.5), fontSize: 13),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 20),
+            FilledButton(
+              style: FilledButton.styleFrom(backgroundColor: AppTheme.primary),
+              onPressed: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const LoginScreen())),
+              child: Text(l10n.authRequiredButton),
             ),
           ],
         ),

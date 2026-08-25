@@ -4,9 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:audio_service/audio_service.dart';
 import '../models/song.dart';
+import '../providers/auth_provider.dart';
 import '../providers/download_provider.dart';
 import '../providers/music_provider.dart';
 import '../providers/settings_provider.dart';
+import '../screens/auth/login_screen.dart';
 import '../services/audio_player_handler.dart';
 import '../services/database_helper.dart';
 import '../services/download_source.dart';
@@ -282,6 +284,20 @@ class _SearchScreenState extends State<SearchScreen> {
         l10n.searchNoServerSubtitle,
       );
     }
+    // Fase 2 del plan de seguridad: descargar exige sesión (identidad real
+    // en vez de la clave compilada de antes), pero la búsqueda local y el
+    // resto de la app no — así que este chequeo vive sólo acá, no como un
+    // gate global. Reusa el mismo widget de "hint" que ya existía para
+    // "sin servidor" (arriba), sólo con el texto y el botón cambiados.
+    if (!context.watch<HeardyAuthProvider>().isReady) {
+      return _buildHint(
+        Icons.lock_outline_rounded,
+        l10n.authRequiredTitle,
+        l10n.authRequiredBody,
+        actionLabel: l10n.authRequiredButton,
+        onAction: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const LoginScreen())),
+      );
+    }
     if (_query.isEmpty) {
       return _buildHint(Icons.cloud_outlined, l10n.searchYoutubeEmptyTitle, l10n.searchYoutubeEmptySubtitle);
     }
@@ -304,7 +320,13 @@ class _SearchScreenState extends State<SearchScreen> {
     );
   }
 
-  Widget _buildHint(IconData icon, String title, String subtitle) {
+  Widget _buildHint(
+    IconData icon,
+    String title,
+    String subtitle, {
+    String? actionLabel,
+    VoidCallback? onAction,
+  }) {
     // Con el teclado abierto (p. ej. mientras se escribe en el campo de
     // arriba) el alto disponible para este hint se comprime bastante —
     // en un dispositivo real esto desbordaba 7px con un Column normal.
@@ -330,6 +352,14 @@ class _SearchScreenState extends State<SearchScreen> {
               textAlign: TextAlign.center,
               style: TextStyle(color: Colors.white.withValues(alpha: 0.35), fontSize: 13),
             ),
+            if (actionLabel != null && onAction != null) ...[
+              const SizedBox(height: 20),
+              FilledButton(
+                style: FilledButton.styleFrom(backgroundColor: AppTheme.primary),
+                onPressed: onAction,
+                child: Text(actionLabel),
+              ),
+            ],
           ],
         ),
       ),

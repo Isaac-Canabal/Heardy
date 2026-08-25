@@ -1,9 +1,16 @@
-"""Tests de app.auth.require_api_key, llamado directamente (es una función
-sync normal; Header(default=None) no necesita un TestClient para probarse)."""
+"""Tests de app.auth: require_api_key, require_admin, y resolve_identity —
+todas llamadas directamente (son funciones normales, sync o async;
+Header(default=None) no necesita un TestClient para probarlas).
+
+resolve_identity NO repite la verificación de firma/claims de Firebase (eso
+ya lo cubre test_firebase_auth.py contra tokens reales firmados con una
+clave RSA de prueba) — acá se monkeypatchea app.firebase_auth.verify_id_token
+para probar sólo el DESPACHO: qué mecanismo se intenta, en qué orden, y cómo
+se traduce cada excepción al código HTTP correcto."""
 import pytest
 from fastapi import HTTPException
 
-from app import auth, config
+from app import auth, config, firebase_auth
 
 
 @pytest.fixture(autouse=True)
@@ -73,3 +80,85 @@ class TestRequireAdmin:
         with pytest.raises(HTTPException) as exc:
             auth.require_admin(identity="isaac")
         assert exc.value.status_code == 404
+
+
+class TestResolveIdentity:
+    """Fase 2: dos mecanismos en paralelo. X-Api-Key ya está cubierto por
+    TestRequireApiKey de arriba (resolve_identity delega en require_api_key
+    sin cambiarle el comportamiento) — acá se prueba el camino de Firebase y
+    la prioridad entre los dos."""
+
+    async def test_sin_ninguna_cabecera_cae_en_require_api_key(self):
+        # Mismo resultado que llamar require_api_key directo: 401 genérico.
+        with pytest.raises(HTTPException) as exc:
+            await auth.resolve_identity(authorization=None, x_api_key=None)
+        assert exc.value.status_code == 401
+
+    async def test_x_api_key_sola_funciona_igual_que_siempre(self):
+        assert (
+            await auth.resolve_identity(authorization=None, x_api_key="key-isaac")
+            == "isaac"
+        )
+
+    async def test_bearer_valido_devuelve_identidad_con_prefijo_firebase(self, monkeypatch):
+        monkeypatch.setattr(firebase_auth, "verify_id_token", lambda token: "uid-abc123")
+        identity = await auth.resolve_identity(authorization="Bearer un-token-cualquiera", x_api_key=None)
+        assert identity == "firebase:uid-abc123"
+
+    async def test_bearer_tiene_prioridad_sobre_x_api_key_si_ambos_vienen(self, monkeypatch):
+        monkeypatch.setattr(firebase_auth, "verify_id_token", lambda token: "uid-abc123")
+        identity = await auth.resolve_identity(authorization="Bearer un-token", x_api_key="key-isaac")
+        assert identity == "firebase:uid-abc123"
+
+    async def test_bearer_invalido_no_cae_a_x_api_key_como_respaldo(self, monkeypatch):
+        # Aunque venga una X-Api-Key válida al mismo tiempo, un Bearer roto
+        # es un 401 -- nunca se intenta "a ver si la otra cabecera sirve".
+        def _falla(token):
+            raise firebase_auth.FirebaseTokenError("token vencido")
+
+        monkeypatch.setattr(firebase_auth, "verify_id_token", _falla)
+        with pytest.raises(HTTPException) as exc:
+            await auth.resolve_identity(authorization="Bearer vencido", x_api_key="key-isaac")
+        assert exc.value.status_code == 401
+
+    async def test_esquema_no_bearer_da_401(self):
+        with pytest.raises(HTTPException) as exc:
+            await auth.resolve_identity(authorization="Basic dXNlcjpwYXNz", x_api_key=None)
+        assert exc.value.status_code == 401
+
+    async def test_bearer_sin_token_da_401(self):
+        with pytest.raises(HTTPException) as exc:
+            await auth.resolve_identity(authorization="Bearer", x_api_key=None)
+        assert exc.value.status_code == 401
+
+    async def test_correo_sin_verificar_da_403_no_401(self, monkeypatch):
+        # Distinción real: 403 es "sos vos, pero te falta verificar el
+        # correo" -- arreglable por la propia persona, a diferencia de un
+        # token genuinamente inválido.
+        def _sin_verificar(token):
+            raise firebase_auth.EmailNotVerifiedError("correo sin verificar")
+
+        monkeypatch.setattr(firebase_auth, "verify_id_token", _sin_verificar)
+        with pytest.raises(HTTPException) as exc:
+            await auth.resolve_identity(authorization="Bearer un-token", x_api_key=None)
+        assert exc.value.status_code == 403
+
+    async def test_dos_cuentas_de_firebase_dan_identidades_distintas(self, monkeypatch):
+        uids = iter(["uid-isaac", "uid-ana"])
+        monkeypatch.setattr(firebase_auth, "verify_id_token", lambda token: next(uids))
+
+        primera = await auth.resolve_identity(authorization="Bearer t1", x_api_key=None)
+        segunda = await auth.resolve_identity(authorization="Bearer t2", x_api_key=None)
+
+        assert primera != segunda
+        assert {primera, segunda} == {"firebase:uid-isaac", "firebase:uid-ana"}
+
+    async def test_identidad_de_firebase_nunca_coincide_con_una_etiqueta_admin(self, monkeypatch):
+        # Una cuenta de Firebase nunca es admin por este camino -- ADMIN_LABELS
+        # sólo contiene etiquetas de X-Api-Key, y el prefijo "firebase:" hace
+        # la colisión imposible incluso si alguien reutiliza el mismo uid
+        # como etiqueta de una clave por error.
+        monkeypatch.setattr(config, "ADMIN_LABELS", frozenset({"uid-abc123"}))
+        monkeypatch.setattr(firebase_auth, "verify_id_token", lambda token: "uid-abc123")
+        identity = await auth.resolve_identity(authorization="Bearer un-token", x_api_key=None)
+        assert identity not in config.ADMIN_LABELS

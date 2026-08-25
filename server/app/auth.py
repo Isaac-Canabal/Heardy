@@ -1,13 +1,23 @@
-"""Autenticación por clave(s) de API.
+"""Autenticación: dos mecanismos que conviven, nunca uno reemplaza al otro.
 
-Soporta tanto una sola clave compartida (servidor personal, HEARDY_API_KEY)
-como varias claves con nombre (servidor oficial, HEARDY_API_KEYS) — ambas
-conviven en `config.API_KEYS`, ver config.py."""
+- `X-Api-Key` — una sola clave compartida (servidor personal, HEARDY_API_KEY)
+  o varias claves con nombre (servidor oficial, HEARDY_API_KEYS), ambas en
+  `config.API_KEYS` (ver config.py). El mecanismo original, sigue intacto.
+- `Authorization: Bearer <token de Firebase>` — el camino del servidor
+  oficial desde la Fase 2 del plan de seguridad: cada usuario real tiene su
+  propia cuenta, en vez de que todo el APK comparta una clave.
+
+`resolve_identity` es el punto de entrada que decide cuál de los dos se usó y
+devuelve una identidad — una cadena — en cualquiera de los dos casos. Todo lo
+que vive aguas abajo (rate limiting, logs) trabaja con esa cadena sin saber ni
+importarle su origen; sólo `require_admin` sigue atado a `require_api_key`
+específicamente, a propósito (ver su docstring)."""
+import asyncio
 import hmac
 
 from fastapi import Depends, Header, HTTPException, status
 
-from . import config
+from . import config, firebase_auth
 
 
 def _match(candidate: str, keys: dict[str, str]) -> str | None:
@@ -45,23 +55,75 @@ def require_api_key(x_api_key: str | None = Header(default=None)) -> str:
     # Mismo detalle para "ausente" e "inválida" a propósito: el código (401)
     # ya es idéntico en los dos casos, que es lo que importa para no darle a
     # quien no tiene ninguna clave una pista sobre cuál de las dos situaciones
-    # está viendo. El nombre de la cabecera no es un secreto — está en
-    # /openapi.json cuando HEARDY_ENABLE_DOCS está activo, y en el propio
-    # README — así que unificar el texto es higiene, no el cierre de una vía
+    # está viendo. Ninguno de los dos nombres de cabecera es secreto — están
+    # en /openapi.json cuando HEARDY_ENABLE_DOCS está activo, y en el propio
+    # README — así que un texto genérico es higiene, no el cierre de una vía
     # de ataque nueva.
     if not x_api_key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="X-Api-Key ausente o inválida",
+            detail="Autenticación ausente o inválida",
         )
 
     label = _match(x_api_key, config.API_KEYS)
     if label is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="X-Api-Key ausente o inválida",
+            detail="Autenticación ausente o inválida",
         )
     return label
+
+
+def _bearer_token(authorization: str) -> str:
+    """Extrae el token de `Authorization: Bearer <token>`. Cualquier otra
+    forma (otro esquema, sin token) es un 401 — mismo texto genérico que
+    `require_api_key`, por la misma razón."""
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() != "bearer" or not token:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Autenticación ausente o inválida",
+        )
+    return token
+
+
+async def resolve_identity(
+    authorization: str | None = Header(default=None),
+    x_api_key: str | None = Header(default=None),
+) -> str:
+    """La identidad de la petición, por cualquiera de los dos mecanismos.
+    Firebase se intenta primero cuando la cabecera `Authorization` está
+    presente — es inequívoca, así que si vino es la que se pidió usar; nunca
+    se cae a `X-Api-Key` como respaldo silencioso si el Bearer resulta
+    inválido, eso ocultaría un token vencido detrás de un 401 sin pista de
+    cuál de los dos falló.
+
+    Verificar el token es bloqueante (ver firebase_auth.verify_id_token), así
+    que corre en un hilo aparte — mismo patrón que `main.py` usa para no
+    congelar el bucle de eventos con las llamadas a yt-dlp.
+
+    La identidad que devuelve para Firebase lleva el prefijo `firebase:` —
+    nunca puede confundirse con una etiqueta de X-Api-Key (esas las define el
+    operador a mano) ni, más importante, con una etiqueta de
+    `config.ADMIN_LABELS`: una cuenta de Firebase nunca es admin por este
+    camino, sólo por tener también su propia X-Api-Key (ver require_admin)."""
+    if authorization:
+        token = _bearer_token(authorization)
+        try:
+            uid = await asyncio.to_thread(firebase_auth.verify_id_token, token)
+        except firebase_auth.EmailNotVerifiedError as e:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Verificá tu correo antes de usar la app",
+            ) from e
+        except firebase_auth.FirebaseTokenError as e:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Autenticación ausente o inválida",
+            ) from e
+        return f"firebase:{uid}"
+
+    return require_api_key(x_api_key=x_api_key)
 
 
 def require_admin(identity: str = Depends(require_api_key)) -> str:

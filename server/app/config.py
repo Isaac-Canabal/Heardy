@@ -97,6 +97,14 @@ ADMIN_LABELS = parse_admin_labels(os.environ.get("HEARDY_ADMIN_LABELS", ""))
 # falta encenderlo a propósito.
 ENABLE_DOCS = os.environ.get("HEARDY_ENABLE_DOCS", "").strip() == "1"
 
+# Id del proyecto de Firebase (Configuración del proyecto → General en la
+# consola de Firebase) — NO es secreto, es un identificador público que
+# viaja igual dentro de cada token de ID. Se usa para comprobar `aud`/`iss`
+# al verificar un token (firebase_auth.py): sin esto, un token de ID
+# genuino pero de OTRO proyecto de Firebase pasaría igual la firma. Vacío
+# por defecto — un servidor personal que sólo usa X-Api-Key no lo necesita.
+FIREBASE_PROJECT_ID = os.environ.get("HEARDY_FIREBASE_PROJECT_ID", "").strip()
+
 # URL del proveedor que genera PO Tokens. Sin él, YouTube devuelve 403 en la
 # mayoría de clientes desde 2025 (ver DD1 en CLAUDE.md).
 # Por defecto, loopback: es donde escucha el proveedor lanzado con run-pot.bat.
