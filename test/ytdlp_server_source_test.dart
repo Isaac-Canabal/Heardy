@@ -240,6 +240,27 @@ void main() {
       );
     });
 
+    test('429 con reason "daily_song_quota" es dailyQuotaExceeded, no quotaExceeded (Fase 3)', () async {
+      final client = _FakeClient((_) async => http.StreamedResponse(
+            Stream.value(utf8.encode(jsonEncode({
+              'detail': 'Llegaste a tu cupo diario de 150 canciones. Volvé mañana.',
+              'reason': 'daily_song_quota',
+              'usedToday': 150,
+              'dailyLimit': 150,
+            }))),
+            429,
+            headers: {'retry-after': '3600'},
+          ));
+      await expectLater(
+        _source(client).resolve('https://youtu.be/x'),
+        throwsA(isA<DownloadSourceException>()
+            .having((e) => e.kind, 'kind', DownloadSourceErrorKind.dailyQuotaExceeded)
+            .having((e) => e.isRetryable, 'isRetryable', isTrue)
+            .having((e) => e.retryAfterSeconds, 'retryAfterSeconds', 3600)
+            .having((e) => e.userMessage, 'userMessage', contains('150'))),
+      );
+    });
+
     test('un fallo de socket se traduce a network, no se escapa como SocketException', () async {
       final client = _FakeClient((_) async => throw const SocketException('sin ruta al host'));
       await expectLater(
@@ -389,6 +410,48 @@ void main() {
 
       expect(status.reachable, isFalse);
       expect(status.detail, isNotEmpty);
+    });
+  });
+
+  group('usage (cupo diario, Fase 3)', () {
+    test('parsea usedToday/dailyLimit del servidor', () async {
+      final client = _FakeClient((_) async => _json({'usedToday': 37, 'dailyLimit': 150}));
+      final status = await _source(client).usage();
+
+      expect(status.usedToday, 37);
+      expect(status.dailyLimit, 150);
+      expect(status.isEnabled, isTrue);
+      expect(status.remaining, 113);
+    });
+
+    test('dailyLimit 0 significa "sin cupo activo", no un error', () async {
+      final client = _FakeClient((_) async => _json({'usedToday': 0, 'dailyLimit': 0}));
+      final status = await _source(client).usage();
+
+      expect(status.isEnabled, isFalse);
+      expect(status.remaining, 0);
+    });
+
+    test('no lanza si el servidor no responde: se ve igual que "sin cupo"', () async {
+      final client = _FakeClient((_) async => throw const SocketException('sin ruta al host'));
+      final status = await _source(client).usage();
+
+      expect(status, equals(UsageStatus.disabled));
+    });
+
+    test('no lanza si el servidor responde con un error HTTP', () async {
+      final client = _FakeClient((_) async => _error(401, 'X-Api-Key inválida'));
+      final status = await _source(client).usage();
+
+      expect(status, equals(UsageStatus.disabled));
+    });
+
+    test('sin dirección configurada, devuelve disabled sin mandar ninguna petición', () async {
+      final client = _FakeClient((_) async => _json({}));
+      final status = await _source(client, url: '   ').usage();
+
+      expect(status, equals(UsageStatus.disabled));
+      expect(client.requests, isEmpty);
     });
   });
 }

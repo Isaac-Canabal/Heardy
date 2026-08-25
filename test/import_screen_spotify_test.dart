@@ -127,6 +127,8 @@ class _FakeDownloadSource implements DownloadSource {
   Future<RemotePlaylist> resolvePlaylist(String url) => throw UnimplementedError();
   @override
   Future<DownloadSourceStatus> probe() => throw UnimplementedError();
+  @override
+  Future<UsageStatus> usage() async => UsageStatus.disabled;
 }
 
 RemoteTrack _yt(String id, {required int durationSeconds, String title = 'T', String artist = 'Canal'}) {

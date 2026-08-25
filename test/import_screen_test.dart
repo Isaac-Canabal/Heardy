@@ -141,6 +141,9 @@ class _FakeDownloadSource implements DownloadSource {
         potProviderReachable: true,
         detail: 'ok',
       );
+
+  @override
+  Future<UsageStatus> usage() async => UsageStatus.disabled;
 }
 
 RemoteTrack _track({

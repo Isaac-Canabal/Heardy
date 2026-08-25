@@ -158,3 +158,17 @@ COOKIES_FILE = os.environ.get("HEARDY_COOKIES_FILE", "").strip()
 RATE_LIMIT_PER_KEY = _int_env("HEARDY_RATE_LIMIT_PER_KEY", 0)
 RATE_LIMIT_WINDOW_SECONDS = _int_env("HEARDY_RATE_LIMIT_WINDOW_SECONDS", 3600)
 DAILY_QUOTA = _int_env("HEARDY_DAILY_QUOTA", 0)
+
+# Fase 3 del plan de seguridad: cupo diario de CANCIONES por identidad (no
+# peticiones — ver app/quota.py, "trampa 1" del plan: una canción cuesta
+# 2-3 peticiones según de dónde salga, así que RATE_LIMIT_PER_KEY/DAILY_QUOTA
+# de arriba no pueden hacer las veces de esto). 0 desactiva, igual que el
+# resto de los límites — un servidor personal no lo necesita.
+DAILY_SONGS_PER_USER = _int_env("HEARDY_DAILY_SONGS_PER_USER", 0)
+
+# Cadena de conexión a Postgres (Neon en el servidor oficial). Sólo hace
+# falta si DAILY_SONGS_PER_USER > 0: un cupo diario necesita almacenamiento
+# persistente para significar algo (hallazgo S3 del plan de seguridad — en
+# memoria, Render lo resetea solo al dormirse o redesplegar). Vacía por
+# defecto; main.py aborta el arranque si el cupo está activo sin esto.
+DATABASE_URL = os.environ.get("HEARDY_DATABASE_URL", "").strip()

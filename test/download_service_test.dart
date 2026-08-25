@@ -103,6 +103,9 @@ class _FakeSource implements DownloadSource {
 
   @override
   Future<DownloadSourceStatus> probe() => throw UnimplementedError();
+
+  @override
+  Future<UsageStatus> usage() => throw UnimplementedError();
 }
 
 /// Cliente HTTP que solo sirve para la miniatura; devuelve 404 siempre, para

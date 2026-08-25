@@ -11,3 +11,8 @@ pytest-asyncio==0.25.2
 # test_firebase_auth.py firma tokens de prueba con una clave RSA propia
 # (nunca contra Google) — necesita PyJWT[crypto], igual que el runtime.
 PyJWT[crypto]==2.10.1
+# app.main importa asyncpg a nivel de módulo (para el pool de Postgres del
+# cupo diario, ver app/quota.py) — test_url_validation.py ya importa
+# app.main, así que hace falta acá aunque test_quota.py en sí no necesite
+# conectarse a nada real.
+asyncpg==0.30.0

@@ -251,5 +251,7 @@
   "settingsAccountSignedInAs": "Signed in as {email}",
   "@settingsAccountSignedInAs": {"placeholders": {"email": {"type": "String"}}},
   "settingsAccountNotSignedIn": "Not signed in — only needed to download",
-  "settingsAccountManageButton": "Manage account"
+  "settingsAccountManageButton": "Manage account",
+  "importDailyQuotaRemaining": "{remaining} of {dailyLimit} songs left today",
+  "@importDailyQuotaRemaining": {"placeholders": {"remaining": {"type": "int"}, "dailyLimit": {"type": "int"}}}
 }

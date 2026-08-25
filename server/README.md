@@ -149,7 +149,8 @@ está en `HEARDY_ADMIN_LABELS`.
 | `POST` | `/resolve` | X-Api-Key o Bearer | `{id, title, artist, album, durationSeconds, thumbnailUrl, sourceUrl}`. Cuerpo: `{"url": "…"}` |
 | `POST` | `/playlist` | X-Api-Key o Bearer | `{id, name, sourceUrl, entries:[…]}`. Cuerpo: `{"url": "…"}` |
 | `GET` | `/search?q=&limit=` | X-Api-Key o Bearer | `{results:[…]}` |
-| `GET` | `/audio/{videoId}` | X-Api-Key o Bearer | los bytes M4A. Soporta `Range` |
+| `GET` | `/audio/{videoId}` | X-Api-Key o Bearer | los bytes M4A. Soporta `Range`. `429` con `reason: "daily_song_quota"` si se agotó el cupo diario (ver más abajo) |
+| `GET` | `/usage` | X-Api-Key o Bearer | `{usedToday, dailyLimit}` — cupo diario de quien pide. `dailyLimit: 0` = sin cupo activo |
 | `DELETE` | `/cache` | Admin | vacía la caché de audio |
 
 `/docs` (documentación interactiva) y `/openapi.json` están apagados por
@@ -212,6 +213,34 @@ endpoints que le cuestan presupuesto a la IP (`/resolve`, `/playlist`,
 
 ---
 
+## Cupo diario de canciones
+
+Fase 3 del plan de seguridad. Distinto del "Límite de peticiones" de arriba
+en lo que importa: cuenta **canciones**, no peticiones (una canción cuesta
+2-3 según de dónde salga — pegar una URL, un resultado de búsqueda, una
+entrada de playlist), y es **persistente en Postgres**, no en memoria — un
+cupo diario que Render se resetea solo al dormirse o redesplegar no es un
+cupo (ver `app/quota.py`).
+
+`HEARDY_DAILY_SONGS_PER_USER` (0 = desactivado) más `HEARDY_DATABASE_URL`
+(Neon: el plan gratuito de 0.5 GB sobra por años para esto). Si el primero
+está puesto sin el segundo, **la API se niega a arrancar** — mismo criterio
+que `HEARDY_API_KEY` faltante, mejor no arrancar que mentir que el límite
+existe. Sólo cuenta contra `/audio` cuando entrega los bytes de verdad — un
+vídeo borrado, bloqueado o sin pista de audio no le gasta cupo a quien lo
+pidió, no es su culpa.
+
+Al agotarse, `/audio` responde `429` con `Retry-After` (segundos hasta la
+medianoche UTC siguiente, nunca un número inventado) y un cuerpo con
+`reason: "daily_song_quota"` — distinto del `429` genérico del limitador de
+peticiones, para que la app pueda mostrar "llegaste a tus 150 de hoy" en vez
+de un error genérico. `GET /usage` (cualquier identidad autenticada, sin
+pasar por `enforce_rate_limit` — leer el propio cupo no toca YouTube)
+devuelve `{usedToday, dailyLimit}` para que `ImportScreen` lo muestre antes
+de que alguien se choque contra el límite sin aviso.
+
+---
+
 ## Tests
 
 ```bat
@@ -237,6 +266,8 @@ tokens instalados. No toca YouTube ni el `.venv` de `run.bat`/`setup.bat`.
 | 404 en `/cache` o `/health/detail` con una clave que sí funciona en el resto | Esa clave es válida pero su etiqueta no está en `HEARDY_ADMIN_LABELS` — no es un error, es que no es admin |
 | 403 / "Sign in to confirm you're not a bot" | El proveedor de PO tokens está caído, o su versión no coincide con la del plugin. Volvé a ejecutar `setup.bat` |
 | 415 | Ese vídeo no tiene pista AAC/M4A. Es definitivo para ese vídeo, no un fallo del servidor |
+| El servidor no arranca, se queja de `HEARDY_DATABASE_URL` | `HEARDY_DAILY_SONGS_PER_USER` está puesto sin `HEARDY_DATABASE_URL` — el cupo diario necesita Postgres persistente, ver "Cupo diario de canciones" |
+| 429 con `reason: "daily_song_quota"` | Esa identidad agotó su cupo diario de canciones — no es un error del servidor, ni el límite de peticiones (ese no trae `reason`) |
 | 429 | Se agotó el límite de peticiones (por clave o el tope diario global). Trae `Retry-After` con los segundos exactos — solo pasa si `HEARDY_RATE_LIMIT_PER_KEY`/`HEARDY_DAILY_QUOTA` están configurados |
 | Error de posprocesado al descargar | Falta ffmpeg en el PATH |
 | `node` o `git` no reconocidos en `setup.bat` | Instalados pero sin reabrir la terminal |

@@ -4,6 +4,7 @@ Ver ../README.md para despliegue y CLAUDE.md (DD1) para por qué existe este
 servicio en vez de un extractor embebido en la app.
 """
 import asyncio
+import datetime
 import logging
 import os
 import re
@@ -12,13 +13,14 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlparse
 
+import asyncpg
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import config, ytdlp_client
-from .auth import require_admin
+from . import config, quota, ytdlp_client
+from .auth import require_admin, resolve_identity
 from .rate_limit import enforce_rate_limit
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -60,16 +62,38 @@ def _prepare_writable_cookies() -> None:
         log.warning("no se pudo hacer una copia escribible de %s: %s", source, e)
 
 
+_quota_pool: asyncpg.Pool | None = None
+_quota_store: quota.QuotaStore | None = None
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global _quota_pool, _quota_store
+
     if not config.API_KEYS and not config.ALLOW_NO_AUTH:
         raise RuntimeError(
             "Falta HEARDY_API_KEY o HEARDY_API_KEYS. Generá una clave y ponela en "
             "server/.env, o arrancá con HEARDY_ALLOW_NO_AUTH=1 si solo escuchás en "
             "loopback. Ver server/README.md."
         )
+    if config.DAILY_SONGS_PER_USER > 0 and not config.DATABASE_URL:
+        # Mismo espíritu que el chequeo de arriba: un cupo diario sin
+        # persistencia no es un cupo (hallazgo S3) — mejor no arrancar que
+        # arrancar mintiendo que el límite existe.
+        raise RuntimeError(
+            "HEARDY_DAILY_SONGS_PER_USER está activo pero falta HEARDY_DATABASE_URL. "
+            "El cupo diario necesita Postgres persistente (Neon) para sobrevivir un "
+            "reinicio — ver server/README.md, sección 'Cupo diario'."
+        )
     config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
     _prepare_writable_cookies()
+
+    if config.DAILY_SONGS_PER_USER > 0:
+        _quota_pool = await asyncpg.create_pool(config.DATABASE_URL, min_size=1, max_size=5)
+        store = quota.PostgresQuotaStore(_quota_pool)
+        await store.create_table()
+        _quota_store = store
+        log.info("cupo diario: %s canciones/usuario, Postgres conectado", config.DAILY_SONGS_PER_USER)
     log.info("yt-dlp %s", ytdlp_client.version())
     log.info("proveedor de PO tokens: %s", config.POT_PROVIDER_URL)
     log.info("caché: %s", config.CACHE_DIR)
@@ -90,7 +114,11 @@ async def lifespan(_: FastAPI):
             "HEARDY_ADMIN_LABELS vacío: DELETE /cache y GET /health/detail no los "
             "puede usar nadie hasta configurarlo"
         )
-    yield
+    try:
+        yield
+    finally:
+        if _quota_pool is not None:
+            await _quota_pool.close()
 
 
 # /docs y /openapi.json quedan apagados salvo HEARDY_ENABLE_DOCS=1 (ver
@@ -264,6 +292,14 @@ async def health_detail() -> JSONResponse:
                 "perKeyWindowSeconds": config.RATE_LIMIT_WINDOW_SECONDS,
                 "dailyQuota": config.DAILY_QUOTA,
             },
+            # Fase 3 del plan de seguridad: cupo de CANCIONES por usuario,
+            # distinto de dailyQuota de arriba (que cuenta peticiones — ver
+            # app/quota.py). "connected" en false con dailyLimit > 0 sería el
+            # estado roto que el chequeo del lifespan ya impide arrancar.
+            "dailySongQuota": {
+                "limitPerUser": config.DAILY_SONGS_PER_USER,
+                "connected": _quota_store is not None,
+            },
         }
     )
 
@@ -315,6 +351,43 @@ async def search(
     return {"results": results}
 
 
+def _daily_quota_response(e: quota.QuotaExceeded) -> JSONResponse:
+    """A diferencia de `enforce_rate_limit` (que también manda 429), este
+    cuerpo lleva `reason`/`usedToday`/`dailyLimit` como campos de primer
+    nivel — no anidados bajo `detail`, porque HTTPException sólo deja poner
+    ahí un string — para que la app pueda mostrar "llegaste a tus 150 de
+    hoy" en vez de un error genérico (D-2 del plan de seguridad)."""
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        headers={"Retry-After": str(e.retry_after_seconds)},
+        content={
+            "detail": f"Llegaste a tu cupo diario de {e.limit} canciones. Volvé mañana.",
+            "reason": "daily_song_quota",
+            "usedToday": e.used,
+            "dailyLimit": e.limit,
+        },
+    )
+
+
+async def _record_song_delivered(identity: str) -> None:
+    if config.DAILY_SONGS_PER_USER > 0 and _quota_store is not None:
+        await quota.record_song(_quota_store, identity, config.DAILY_SONGS_PER_USER)
+
+
+@app.get("/usage")
+async def usage(identity: str = Depends(resolve_identity)) -> dict:
+    """Cupo diario de CANCIONES restante para quien pide (no de peticiones —
+    ver `rate_limit.py`), lo que `ImportScreen` enseña para que llegar al
+    límite no sea una sorpresa (D-2 del plan de seguridad). Sin
+    `enforce_rate_limit` a propósito: leer el propio cupo no toca YouTube ni
+    gasta ese presupuesto, así que no tiene sentido limitarlo igual."""
+    if config.DAILY_SONGS_PER_USER <= 0 or _quota_store is None:
+        return {"usedToday": 0, "dailyLimit": 0}
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    used = await _quota_store.get_count(identity, today)
+    return {"usedToday": used, "dailyLimit": config.DAILY_SONGS_PER_USER}
+
+
 @app.get("/audio/{video_id}")
 async def audio(video_id: str, request: Request, identity: str = Depends(enforce_rate_limit)):
     """Devuelve el M4A original, sin recodificar.
@@ -326,6 +399,14 @@ async def audio(video_id: str, request: Request, identity: str = Depends(enforce
     """
     if not _VIDEO_ID_RE.match(video_id):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="id de vídeo inválido")
+
+    if config.DAILY_SONGS_PER_USER > 0 and _quota_store is not None:
+        # Antes de gastar presupuesto de extracción: si ya no queda cupo, ni
+        # siquiera vale la pena pedirle el vídeo a yt-dlp.
+        try:
+            await quota.check_quota(_quota_store, identity, config.DAILY_SONGS_PER_USER)
+        except quota.QuotaExceeded as e:
+            return _daily_quota_response(e)
 
     log.info("/audio por %s", identity)
     log.info("/audio: %s", video_id)
@@ -346,6 +427,14 @@ async def audio(video_id: str, request: Request, identity: str = Depends(enforce
 
     range_header = request.headers.get("range")
     if not range_header:
+        # Se cuenta acá, no en un `finally`: FileResponse todavía no mandó un
+        # solo byte en este punto, pero yt-dlp ya hizo el trabajo real (bajar
+        # el vídeo) — que es el presupuesto que el cupo protege. Un corte de
+        # red DESPUÉS de esto (mientras Starlette transmite el archivo) queda
+        # sin cubrir a propósito: distinguirlo exigiría enganchar el fin real
+        # de la transferencia, que StreamingResponse no expone barato, y el
+        # cupo es un límite de producto (150/día), no un contador exacto.
+        await _record_song_delivered(identity)
         return FileResponse(path, media_type="audio/mp4", headers=headers)
 
     # Range parcial, para que la app pueda reanudar una transferencia cortada
@@ -375,6 +464,14 @@ async def audio(video_id: str, request: Request, identity: str = Depends(enforce
                 remaining -= len(chunk)
                 yield chunk
 
+    # Igual que la rama sin Range: se cuenta acá porque yt-dlp ya hizo el
+    # trabajo real, no cuando el stream termina de transmitirse de verdad.
+    # El cliente de la app hoy nunca manda Range al pedir /audio (sólo lo
+    # soporta el servidor, para reanudar una transferencia cortada más
+    # adelante) — si algún día lo hace, un mismo vídeo pedido primero entero
+    # y luego reanudado por Range podría contar dos veces; un límite de
+    # producto de 150/día no necesita ser un contador exacto para eso.
+    await _record_song_delivered(identity)
     return StreamingResponse(
         _iter(),
         status_code=status.HTTP_206_PARTIAL_CONTENT,

@@ -387,5 +387,7 @@
   "settingsAccountSignedInAs": "Sesión iniciada como {email}",
   "@settingsAccountSignedInAs": {"placeholders": {"email": {"type": "String"}}},
   "settingsAccountNotSignedIn": "Sin sesión iniciada — hace falta sólo para descargar",
-  "settingsAccountManageButton": "Gestionar cuenta"
+  "settingsAccountManageButton": "Gestionar cuenta",
+  "importDailyQuotaRemaining": "Te quedan {remaining} de {dailyLimit} canciones hoy",
+  "@importDailyQuotaRemaining": {"placeholders": {"remaining": {"type": "int"}, "dailyLimit": {"type": "int"}}}
 }

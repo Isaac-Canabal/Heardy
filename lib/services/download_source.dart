@@ -120,6 +120,16 @@ enum DownloadSourceErrorKind {
   /// docs/arquitectura_servidor_hibrido.md, sección 5.
   quotaExceeded,
 
+  /// Se agotó el cupo diario de CANCIONES de esta cuenta (Fase 3 del plan de
+  /// seguridad) — distinto de [quotaExceeded], que es el límite de
+  /// PETICIONES del servidor (protección anti-abuso). Éste es un límite de
+  /// producto: "150 al día", y el servidor lo distingue con
+  /// `reason: "daily_song_quota"` en el cuerpo del 429 (ver
+  /// `YtdlpServerSource._checkStatus`). También trae
+  /// [DownloadSourceException.retryAfterSeconds] — segundos hasta la
+  /// medianoche UTC siguiente, calculados por el servidor, nunca inventados.
+  dailyQuotaExceeded,
+
   /// El muro anti-bot de YouTube específicamente ("Sign in to confirm you're
   /// not a bot"), distinto de [extraction] genérico (HTTP 503, no 502 — ver
   /// `server/app/ytdlp_client.py`'s `AntiBotBlockError`). Temporal, pero con
@@ -159,6 +169,7 @@ class DownloadSourceException implements Exception {
       kind == DownloadSourceErrorKind.network ||
       kind == DownloadSourceErrorKind.extraction ||
       kind == DownloadSourceErrorKind.quotaExceeded ||
+      kind == DownloadSourceErrorKind.dailyQuotaExceeded ||
       kind == DownloadSourceErrorKind.antiBotBlocked;
 
   /// Mensaje para enseñar al usuario, ya en el idioma de la app.
@@ -177,6 +188,10 @@ class DownloadSourceException implements Exception {
         DownloadSourceErrorKind.quotaExceeded => retryAfterSeconds != null
             ? 'Límite del servidor alcanzado. Probá de nuevo en ${_formatRetryAfter(retryAfterSeconds!)}'
             : 'Límite del servidor alcanzado. Probá de nuevo más tarde',
+        // message trae el texto que el servidor ya redactó ("Llegaste a tu
+        // cupo diario de 150 canciones..."), no un genérico — es lo que D-2
+        // del plan de seguridad pide mostrar en vez de un error cualquiera.
+        DownloadSourceErrorKind.dailyQuotaExceeded => message,
         // Sin número: el rango de 20-40 min es lo único medido de verdad
         // (docs/investigacion_muro_antibot.md), inventar una cifra exacta
         // sería mentirle al usuario. Se reintenta solo igual.
@@ -220,6 +235,27 @@ class DownloadSourceStatus {
   });
 }
 
+/// Cupo diario de canciones de quien está autenticado (Fase 3 del plan de
+/// seguridad, `GET /usage`). [dailyLimit] == 0 significa "sin cupo activo"
+/// — el servidor personal por defecto, o el oficial antes de configurarlo —
+/// y es la señal para que la UI no muestre nada, no un error.
+class UsageStatus {
+  final int usedToday;
+  final int dailyLimit;
+
+  const UsageStatus({required this.usedToday, required this.dailyLimit});
+
+  bool get isEnabled => dailyLimit > 0;
+  int get remaining => isEnabled ? (dailyLimit - usedToday).clamp(0, dailyLimit) : 0;
+
+  factory UsageStatus.fromJson(Map<String, dynamic> json) => UsageStatus(
+        usedToday: (json['usedToday'] as num?)?.toInt() ?? 0,
+        dailyLimit: (json['dailyLimit'] as num?)?.toInt() ?? 0,
+      );
+
+  static const disabled = UsageStatus(usedToday: 0, dailyLimit: 0);
+}
+
 typedef ProgressCallback = void Function(int receivedBytes, int? totalBytes);
 typedef CancellationCheck = bool Function();
 
@@ -246,4 +282,11 @@ abstract class DownloadSource {
 
   /// Diagnóstico para Ajustes. No lanza: devuelve el estado.
   Future<DownloadSourceStatus> probe();
+
+  /// Cupo diario de canciones de quien está autenticado (Fase 3 del plan de
+  /// seguridad). No lanza por un fallo de red/autenticación — devuelve
+  /// [UsageStatus.disabled], que es exactamente cómo se ve "no hay cupo
+  /// activo": la UI no tiene por qué distinguir "no hay límite" de "no se
+  /// pudo consultar", ninguno de los dos amerita bloquear nada.
+  Future<UsageStatus> usage();
 }

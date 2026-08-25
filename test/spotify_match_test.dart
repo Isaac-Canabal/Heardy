@@ -33,6 +33,8 @@ class _FakeDownloadSource implements DownloadSource {
       throw UnimplementedError();
   @override
   Future<DownloadSourceStatus> probe() => throw UnimplementedError();
+  @override
+  Future<UsageStatus> usage() => throw UnimplementedError();
 }
 
 RemoteTrack _yt(String id, {required int durationSeconds, String title = 'T', String artist = 'Canal'}) {

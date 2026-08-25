@@ -58,10 +58,46 @@ class _ImportScreenState extends State<ImportScreen> {
   SpotifyAnalysisResult? _analyzedSpotify;
   List<SpotifyMatch>? _analyzedSpotifyMatches;
 
+  /// Cupo diario de canciones (Fase 3 del plan de seguridad, D-2: mostrar el
+  /// resto disponible para que no sea una sorpresa al chocarse contra el
+  /// límite). `null` mientras no se conoce todavía; `UsageStatus.disabled`
+  /// (dailyLimit == 0) esconde el indicador — no hay cupo activo, o no se
+  /// pudo consultar, y ninguno de los dos amerita mostrar nada.
+  UsageStatus? _usage;
+
+  /// Guardado una vez en [initState], nunca vuelto a leer de [context] en
+  /// [dispose] — hacerlo ahí es inseguro (el árbol de widgets ya puede estar
+  /// desactivado cuando `dispose()` corre), y es exactamente el error que
+  /// `flutter test` detectó al principio de esta implementación.
+  late final DownloadProvider _downloadProvider;
+
+  @override
+  void initState() {
+    super.initState();
+    _downloadProvider = context.read<DownloadProvider>();
+    _refreshUsage();
+    // Una descarga real (no sólo encolarla) es lo que de verdad cambia el
+    // cupo usado — se entera server-side recién cuando /audio entrega los
+    // bytes. `isProcessing` pasando a false es la señal más barata de "la
+    // cola acaba de dejar de trabajar", sin inventar un polling propio.
+    _downloadProvider.addListener(_onQueueChanged);
+  }
+
   @override
   void dispose() {
+    _downloadProvider.removeListener(_onQueueChanged);
     _urlController.dispose();
     super.dispose();
+  }
+
+  void _onQueueChanged() {
+    if (!_downloadProvider.isProcessing) _refreshUsage();
+  }
+
+  Future<void> _refreshUsage() async {
+    final result = await context.read<DownloadSource>().usage();
+    if (!mounted) return;
+    setState(() => _usage = result);
   }
 
   void _clearAnalysis() {
@@ -311,6 +347,14 @@ class _ImportScreenState extends State<ImportScreen> {
               style: const TextStyle(color: Colors.white, fontSize: 28, fontWeight: FontWeight.w800, letterSpacing: -0.5),
             ),
           ),
+          if (_usage != null && _usage!.isEnabled)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+              child: Text(
+                l10n.importDailyQuotaRemaining(_usage!.remaining, _usage!.dailyLimit),
+                style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12),
+              ),
+            ),
           Padding(
             padding: const EdgeInsets.fromLTRB(20, 18, 20, 0),
             child: Row(

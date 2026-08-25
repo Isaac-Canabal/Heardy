@@ -12,6 +12,13 @@ python-dotenv==1.0.1
 # que hace falta para verificar firmas RS256.
 PyJWT[crypto]==2.10.1
 
+# Cupo diario de canciones por identidad (Fase 3 del plan de seguridad, ver
+# app/quota.py) — persistente en Postgres (Neon), a diferencia del rate
+# limiting de rate_limit.py, que vive en memoria a propósito. asyncpg (no un
+# ORM) porque lo único que hace falta es un upsert y una lectura: SQLAlchemy
+# sería una dependencia entera para dos consultas.
+asyncpg==0.30.0
+
 # yt-dlp NO se fija a propósito, al contrario que el resto. Es la única pieza
 # cuyo valor está en ser la más nueva posible: los arreglos a los cambios de
 # YouTube llegan en días y fijar una versión es exactamente cómo se acaba con
