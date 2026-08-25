@@ -246,19 +246,22 @@ Same non-negotiable rule as the pivot: every stage ends with the app compiling a
 
 ### Próxima sesión — retomar aquí
 
-**Estado:** identidad delegada (Fase 2) y cupo diario (Fase 3) están implementadas y con tests en verde, pero **ninguna de las dos se verificó contra infraestructura real** — ni un dispositivo Android, ni el despliegue de Render, ni un Postgres de Neon.
+**Estado (2026-08-24, fin de sesión):** identidad delegada (Fase 2) y cupo diario (Fase 3) están implementadas y con tests en verde, pero **ninguna de las dos se verificó ni se activó contra infraestructura real** — ni un dispositivo Android, ni el despliegue de Render, ni un Postgres de Neon. Se decidió explícitamente dejar esto para la sesión siguiente en vez de avanzar a ciegas.
 
-Hay un plan por fases del 2026-08-24 en las notas de trabajo locales; **leerlo antes de empezar**, tiene el detalle completo de qué falta y en qué orden. Rumbo decidido, en una línea:
+Hay un plan por fases del 2026-08-24 en las notas de trabajo locales; **leerlo antes de empezar**, tiene el detalle completo. Rumbo decidido, en una línea:
 
 - **El APK se reparte abiertamente**, identidad por **Firebase Auth**, correo verificado como control de alta. **Implementado (Etapa 14).**
-- **Cuota de 150 canciones/día en Postgres persistente (Neon).** **Implementado en código (Etapa 15); sin desplegar** — falta aprovisionar Neon y encender las dos variables en Render.
-- **La expansión a PC sigue congelada** (sin decidir programa vs. web). No bloquea nada.
+- **Cuota de 150 canciones/día en Postgres persistente (Neon).** **Implementado en código (Etapa 15); sin desplegar.**
+- **La expansión a PC sigue congelada — decisión D-3 sin tomar.** No es "hacerlo después de lo de arriba": es una pregunta pendiente de responder (programa de escritorio, recomendado por el plan, vs. web) antes de que la Fase 4 pueda ni empezarse a planificar en detalle.
 
-**Antes de considerar esto cerrado, en orden:**
-1. Confirmar `HEARDY_FIREBASE_PROJECT_ID` en el entorno de Render (Fase 2 — sin esto, ningún token de Firebase se acepta en producción).
-2. Probar el flujo de cuenta completo (registro, correo de verificación, login, una descarga real) en un dispositivo Android real.
-3. Crear el proyecto en Neon, poner `HEARDY_DATABASE_URL`/`HEARDY_DAILY_SONGS_PER_USER` en Render, redesplegar, y confirmar `GET /health/detail` → `dailySongQuota.connected: true`.
-4. Verificar en vivo que el cupo persiste: agotarlo (o bajarlo a 2-3 para probar rápido), reiniciar el servicio de Render a mitad, confirmar que el contador sobrevivió.
+**Checklist concreto para retomar, en orden:**
+1. **`HEARDY_FIREBASE_PROJECT_ID` en Render** — el valor es `heardy-001` (el Project ID del proyecto de Firebase ya creado, `android/app/google-services.json`; no es secreto). Confirmar que está puesto; sin él, todo token de Firebase se rechaza en producción.
+2. Crear un proyecto en Neon (plan gratuito), copiar su cadena de conexión.
+3. En Render: agregar `HEARDY_DATABASE_URL` (la cadena de Neon) y `HEARDY_DAILY_SONGS_PER_USER=150`.
+4. Redesplegar (Manual Deploy — Render no auto-desplegó la última vez, ver Etapa 14/nota de Fase 1) y confirmar con `GET /health/detail` (clave admin): `dailySongQuota: {"limitPerUser": 150, "connected": true}`.
+5. Verificar que el cupo persiste de verdad: agotarlo (o bajarlo a 2-3 para probar rápido), reiniciar el servicio de Render a mitad, confirmar que el contador sobrevivió — el motivo entero de haberlo puesto en Postgres.
+6. Probar el flujo de cuenta completo (registro, correo de verificación, login, una descarga real) en un dispositivo Android real.
+7. Recién ahí, si corresponde: decidir D-3 y destrabar la Fase 4.
 
 **Nota sobre este archivo:** este repositorio es **público**. Al escribir aquí, asumir lector externo: arquitectura y decisiones de diseño sí, detalle operativo no.
 
