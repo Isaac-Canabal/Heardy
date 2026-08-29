@@ -87,8 +87,21 @@ class HeardyAuthProvider with ChangeNotifier {
   /// Vuelve a leer el estado de la cuenta desde Firebase — hace falta tras
   /// verificar el correo en otra pestaña, porque el token en memoria no se
   /// entera solo.
+  ///
+  /// Y por eso mismo fuerza un token nuevo en cuanto el correo consta como
+  /// verificado: `User.reload()` refresca el registro de la cuenta, pero
+  /// **no** el token de ID cacheado, que sigue llevando
+  /// `email_verified: false` hasta que caduque (una hora). El servidor mira
+  /// ese claim del token, no el estado local (ver `verify_id_token` en
+  /// `server/app/firebase_auth.py`), así que sin este refresco la app daría
+  /// la cuenta por lista ([isReady]) y la primera descarga se comería un 403
+  /// — justo en el minuto siguiente a verificar el correo, que es cuando
+  /// todo el mundo lo prueba.
   Future<void> reload() async {
     await _auth!.currentUser?.reload();
+    if (_auth.currentUser?.emailVerified ?? false) {
+      await _auth.currentUser?.getIdToken(true);
+    }
     notifyListeners();
   }
 

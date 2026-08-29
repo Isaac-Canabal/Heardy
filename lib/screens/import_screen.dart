@@ -70,11 +70,16 @@ class _ImportScreenState extends State<ImportScreen> {
   /// desactivado cuando `dispose()` corre), y es exactamente el error que
   /// `flutter test` detectó al principio de esta implementación.
   late final DownloadProvider _downloadProvider;
+  late final HeardyAuthProvider _authProvider;
+  bool _wasAuthReady = false;
 
   @override
   void initState() {
     super.initState();
     _downloadProvider = context.read<DownloadProvider>();
+    _authProvider = context.read<HeardyAuthProvider>();
+    _wasAuthReady = _authProvider.isReady;
+    _authProvider.addListener(_onAuthChanged);
     _refreshUsage();
     // Una descarga real (no sólo encolarla) es lo que de verdad cambia el
     // cupo usado — se entera server-side recién cuando /audio entrega los
@@ -86,12 +91,28 @@ class _ImportScreenState extends State<ImportScreen> {
   @override
   void dispose() {
     _downloadProvider.removeListener(_onQueueChanged);
+    _authProvider.removeListener(_onAuthChanged);
     _urlController.dispose();
     super.dispose();
   }
 
   void _onQueueChanged() {
     if (!_downloadProvider.isProcessing) _refreshUsage();
+  }
+
+  /// El cupo se consulta con la identidad de quien esté en sesión, así que
+  /// la consulta de [initState] se va con un 401 (y queda en
+  /// `UsageStatus.disabled`) si la pantalla se abrió sin sesión lista. Esta
+  /// pantalla vive en un IndexedStack y no se reconstruye al volver del
+  /// login, así que sin esto la línea "te quedan N de 150" no aparecería
+  /// hasta después de la primera descarga. Sólo en el flanco false -> true:
+  /// [HeardyAuthProvider] notifica también en cada refresco de token, y no
+  /// hace falta repreguntar por eso.
+  void _onAuthChanged() {
+    final ready = _authProvider.isReady;
+    if (ready == _wasAuthReady) return;
+    _wasAuthReady = ready;
+    if (ready) _refreshUsage();
   }
 
   Future<void> _refreshUsage() async {
