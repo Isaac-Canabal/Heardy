@@ -230,6 +230,38 @@ existe. Sólo cuenta contra `/audio` cuando entrega los bytes de verdad — un
 vídeo borrado, bloqueado o sin pista de audio no le gasta cupo a quien lo
 pidió, no es su culpa.
 
+### La cadena de conexión de Neon, con dos trampas
+
+En el proyecto de Neon: **Connect** → copiar la cadena de conexión. Tiene esta
+forma:
+
+```
+postgresql://USUARIO:CLAVE@ep-loquesea-123456.REGION.aws.neon.tech/neondb?sslmode=require
+```
+
+Antes de pegarla en `HEARDY_DATABASE_URL`, dos ajustes — ninguno es opcional:
+
+1. **Borrar `channel_binding=require`** si la cadena copiada lo trae. asyncpg
+   reconoce `sslmode` y unos pocos parámetros más de la query; **todo lo que
+   no reconoce lo manda como *startup parameter* al servidor**
+   (`connect_utils.py`, lo que sobra acaba en `server_settings`), y Postgres
+   corta la conexión con `unrecognized configuration parameter
+   "channel_binding"`. `sslmode=require` sí lo entiende y hay que dejarlo.
+2. **Usar el endpoint directo, no el que lleva `-pooler` en el host.** El
+   pooler de Neon es PgBouncer en modo transacción y asyncpg usa sentencias
+   preparadas, que ahí necesitarían `statement_cache_size=0`. Este pool es de
+   1-5 conexiones sobre una sola instancia, así que el endpoint directo sobra
+   y evita el problema entero. En el diálogo de Neon es la casilla
+   *Connection pooling*, desmarcada.
+
+**No hay que crear ninguna tabla ni ejecutar SQL a mano:**
+`PostgresQuotaStore.create_table()` corre en el arranque con `CREATE TABLE IF
+NOT EXISTS` (ver el `lifespan` de `app/main.py`). La base recién creada y
+vacía es exactamente lo que espera.
+
+Para comprobar que quedó bien, `GET /health/detail` (clave de administrador)
+responde `dailySongQuota: {"limitPerUser": N, "connected": true}`.
+
 Al agotarse, `/audio` responde `429` con `Retry-After` (segundos hasta la
 medianoche UTC siguiente, nunca un número inventado) y un cuerpo con
 `reason: "daily_song_quota"` — distinto del `429` genérico del limitador de
