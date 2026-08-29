@@ -19,8 +19,8 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import config, quota, ytdlp_client
-from .auth import require_admin, resolve_identity
+from . import accounts, config, friends, library_store, presence, quota, usernames, ytdlp_client
+from .auth import require_account, require_admin, resolve_identity
 from .rate_limit import enforce_rate_limit
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -62,13 +62,23 @@ def _prepare_writable_cookies() -> None:
         log.warning("no se pudo hacer una copia escribible de %s: %s", source, e)
 
 
-_quota_pool: asyncpg.Pool | None = None
+_pool: asyncpg.Pool | None = None
 _quota_store: quota.QuotaStore | None = None
+_account_store: accounts.AccountStore | None = None
+_usage_store: accounts.UsageStore | None = None
+_library_store: library_store.LibraryStore | None = None
+_friends_store: friends.FriendsStore | None = None
+
+# En memoria a propósito, sin pool — ver presence.py. Vive a nivel de módulo
+# porque no necesita ninguna preparación async, igual que _extraction_semaphore.
+_presence = presence.PresenceTracker(
+    max_entries=config.PRESENCE_MAX_ENTRIES, max_ttl_seconds=config.PRESENCE_MAX_TTL_SECONDS
+)
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    global _quota_pool, _quota_store
+    global _pool, _quota_store, _account_store, _usage_store, _library_store, _friends_store
 
     if not config.API_KEYS and not config.ALLOW_NO_AUTH:
         raise RuntimeError(
@@ -85,15 +95,44 @@ async def lifespan(_: FastAPI):
             "El cupo diario necesita Postgres persistente (Neon) para sobrevivir un "
             "reinicio — ver server/README.md, sección 'Cupo diario'."
         )
+    if config.ACCOUNTS_ENABLED and not config.DATABASE_URL:
+        # Cuentas sin persistencia no son cuentas.
+        raise RuntimeError(
+            "HEARDY_ACCOUNTS_ENABLED está activo pero falta HEARDY_DATABASE_URL."
+        )
+    if config.ACCOUNTS_ENABLED and not config.FIREBASE_PROJECT_ID:
+        # La importante: sin Firebase no hay identidades por persona, y la
+        # única etiqueta de X-Api-Key compartida se convertiría en una sola
+        # cuenta dueña de la biblioteca de todos.
+        raise RuntimeError(
+            "HEARDY_ACCOUNTS_ENABLED está activo pero falta HEARDY_FIREBASE_PROJECT_ID."
+        )
     config.CACHE_DIR.mkdir(parents=True, exist_ok=True)
     _prepare_writable_cookies()
 
-    if config.DAILY_SONGS_PER_USER > 0:
-        _quota_pool = await asyncpg.create_pool(config.DATABASE_URL, min_size=1, max_size=5)
-        store = quota.PostgresQuotaStore(_quota_pool)
-        await store.create_table()
-        _quota_store = store
-        log.info("cupo diario: %s canciones/usuario, Postgres conectado", config.DAILY_SONGS_PER_USER)
+    if config.DATABASE_URL:
+        # min_size=0, no 1: una conexión ociosa permanente impide que el
+        # compute de Neon se suspenda y se come las horas del plan gratuito.
+        # El coste (arranque en frío ~1-1.5s en la primera petición tras un
+        # rato) ya se paga igual porque Render duerme el servicio a los 15 min.
+        _pool = await asyncpg.create_pool(config.DATABASE_URL, min_size=0, max_size=5)
+
+        if config.DAILY_SONGS_PER_USER > 0:
+            store = quota.PostgresQuotaStore(_pool)
+            await store.create_table()
+            _quota_store = store
+            log.info("cupo diario: %s canciones/usuario, Postgres conectado", config.DAILY_SONGS_PER_USER)
+
+        if config.ACCOUNTS_ENABLED:
+            _account_store = accounts.PostgresAccountStore(_pool)
+            await _account_store.create_table()
+            _usage_store = accounts.PostgresUsageStore(_pool)
+            _library_store = library_store.LibraryStore(_pool)
+            await _library_store.create_table()
+            _friends_store = friends.FriendsStore(_pool)
+            await _friends_store.create_table()
+            log.info("cuentas: activas, Postgres conectado")
+
     log.info("yt-dlp %s", ytdlp_client.version())
     log.info("proveedor de PO tokens: %s", config.POT_PROVIDER_URL)
     log.info("caché: %s", config.CACHE_DIR)
@@ -117,8 +156,8 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
-        if _quota_pool is not None:
-            await _quota_pool.close()
+        if _pool is not None:
+            await _pool.close()
 
 
 # /docs y /openapi.json quedan apagados salvo HEARDY_ENABLE_DOCS=1 (ver
@@ -299,6 +338,11 @@ async def health_detail() -> JSONResponse:
             "dailySongQuota": {
                 "limitPerUser": config.DAILY_SONGS_PER_USER,
                 "connected": _quota_store is not None,
+            },
+            # Sin COUNT(*): un diagnóstico no hace recuentos sobre la tabla de usuarios.
+            "accounts": {
+                "enabled": config.ACCOUNTS_ENABLED,
+                "connected": _account_store is not None,
             },
         }
     )
@@ -495,6 +539,396 @@ async def clear_cache() -> dict:
             except OSError:
                 continue
     return {"removed": removed}
+
+
+# --- Cuentas, biblioteca en la nube, amigos (Etapa 16) ----------------------
+#
+# Ninguna de las rutas de acá abajo pasa por enforce_rate_limit: ese
+# limitador administra el presupuesto de extracciones frente a YouTube, y
+# cobrarle una búsqueda de usuario haría que la sección de amigos le robara
+# descargas al usuario. El presupuesto aquí es accounts.check_and_add — un
+# presupuesto diario POR CUENTA, que exige correo verificado y por tanto
+# tiene un coste real de creación (rotar de cuenta no es gratis como rotar
+# de IP).
+
+
+async def _require_accounts_enabled() -> None:
+    if not config.ACCOUNTS_ENABLED or _account_store is None or _usage_store is None:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Cuentas no disponibles")
+
+
+async def current_account(
+    identity: str = Depends(require_account),
+    _: None = Depends(_require_accounts_enabled),
+) -> accounts.Account:
+    return await _account_store.get_or_create(identity)
+
+
+async def require_upload_size(request: Request) -> None:
+    """Rechaza por Content-Length ANTES de parsear el cuerpo.
+    `Field(max_length=...)` de Pydantic valida DESPUÉS de leer el cuerpo
+    entero, así que no protege de nada — un cuerpo de 500 MB tumba por
+    memoria una instancia de Render de 512 MB."""
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            size = int(content_length)
+        except ValueError:
+            return
+        if size > config.MAX_UPLOAD_BYTES:
+            raise HTTPException(
+                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Cuerpo demasiado grande"
+            )
+
+
+def _usage_exceeded_response(e: accounts.UsageExceeded) -> HTTPException:
+    return HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=str(e))
+
+
+@app.get("/account")
+async def get_account(account: accounts.Account = Depends(current_account)) -> dict:
+    """Lo que la app llama tras el primer inicio de sesión: la fila de
+    `users` que crea `get_or_create` es lo que hace que la cuenta "adopte"
+    la biblioteca que ya vive en el dispositivo — no hay paso de migración,
+    la biblioteca sigue en SQLite local y sólo gana un dueño en el primer
+    `PUT /library`. `username == null` es la señal de "pedile que elija
+    nombre" (428 en las rutas sociales, ver más abajo)."""
+    friend_count = await _friends_store.count_accepted(account.id) if _friends_store else 0
+    return {
+        "identity": account.identity,
+        "username": account.username,
+        "libraryVersion": account.library_version,
+        "hasLibrary": account.library_version > 0,
+        "friendCount": friend_count,
+    }
+
+
+class UsernameRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+
+
+@app.put("/account/username")
+async def set_username(
+    body: UsernameRequest, account: accounts.Account = Depends(current_account)
+) -> dict:
+    valid, reason = usernames.validate_username(body.username)
+    if not valid:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=reason)
+
+    changed_at = await _account_store.username_changed_at(account.id)
+    now = datetime.datetime.now(datetime.timezone.utc)
+    if changed_at is not None:
+        cooldown_ends = changed_at + datetime.timedelta(days=config.USERNAME_COOLDOWN_DAYS)
+        if now < cooldown_ends:
+            retry_after = int((cooldown_ends - now).total_seconds())
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                headers={"Retry-After": str(max(1, retry_after))},
+                detail=f"Podés cambiar tu nombre de usuario de nuevo en {config.USERNAME_COOLDOWN_DAYS} días",
+            )
+
+    username_key = usernames.normalize_username(body.username)
+    try:
+        await _account_store.set_username(account.id, body.username, username_key, now)
+    except accounts.UsernameTaken as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ese nombre ya está en uso") from e
+    return {"username": body.username}
+
+
+def _require_username(account: accounts.Account) -> None:
+    """428 Precondition Required — E-5 hace que un `username` nulo sea un
+    estado normal y duradero (los usuarios migrados no eligen nombre al
+    vincular su cuenta), no un error. Toda ruta social lo exige antes de
+    dejar seguir."""
+    if not account.username:
+        raise HTTPException(
+            status_code=428,
+            detail="Elegí un nombre de usuario antes de usar esta función",
+        )
+
+
+async def _charge_usage(account: accounts.Account, kind: str, amount: int, limit: int) -> None:
+    try:
+        await accounts.check_and_add(_usage_store, account.id, kind, amount, limit)
+    except accounts.UsageExceeded as e:
+        raise _usage_exceeded_response(e) from e
+
+
+@app.get("/users/lookup")
+async def lookup_user(
+    username: str = Query(min_length=1, max_length=64),
+    account: accounts.Account = Depends(current_account),
+) -> dict:
+    """Coincidencia EXACTA, nunca prefijos ni listados — "buscar por
+    nombre" es un oráculo de pertenencia y no se puede cerrar teniendo la
+    función, sólo encarecer (ver CLAUDE.md)."""
+    _require_username(account)
+    await _charge_usage(account, "lookup", 1, config.LOOKUP_PER_DAY)
+
+    key = usernames.normalize_username(username)
+    target = await _account_store.find_by_username(key)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No encontrado")
+
+    if target.id == account.id:
+        relation = "self"
+    else:
+        pair = await _friends_store.status_between(account.id, target.id)
+        if pair is None:
+            relation = "none"
+        elif pair[0] == "accepted":
+            relation = "friend"
+        elif pair[1] == account.id:
+            relation = "pending_outgoing"
+        else:
+            relation = "pending_incoming"
+    return {"username": target.username, "relation": relation}
+
+
+class FriendRequestBody(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+
+
+async def _resolve_target(username: str) -> accounts.Account:
+    key = usernames.normalize_username(username)
+    target = await _account_store.find_by_username(key)
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No encontrado")
+    return target
+
+
+@app.post("/friends/requests")
+async def create_friend_request(
+    body: FriendRequestBody, account: accounts.Account = Depends(current_account)
+) -> dict:
+    _require_username(account)
+    # El 404 de un nombre inexistente también revela existencia, así que se
+    # cobra contra el mismo presupuesto que /users/lookup.
+    await _charge_usage(account, "lookup", 1, config.LOOKUP_PER_DAY)
+    target = await _resolve_target(body.username)
+
+    await _charge_usage(account, "friend_request", 1, config.FRIEND_REQUESTS_PER_DAY)
+    if await _friends_store.count_pending_outgoing(account.id) >= config.MAX_PENDING_REQUESTS:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Demasiadas solicitudes pendientes")
+    if await _friends_store.count_accepted(account.id) >= config.MAX_FRIENDS:
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Llegaste al máximo de amigos")
+
+    try:
+        result = await _friends_store.request(account.id, target.id)
+    except friends.SelfRequest as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No podés agregarte a vos mismo") from e
+    except friends.AlreadyFriends as e:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ya son amigos") from e
+    return {"status": result.status}
+
+
+@app.post("/friends/requests/{username}/accept")
+async def accept_friend_request(
+    username: str, account: accounts.Account = Depends(current_account)
+) -> dict:
+    _require_username(account)
+    target = await _resolve_target(username)
+    try:
+        await _friends_store.accept(account.id, target.id)
+    except friends.RequestNotFound as e:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No encontrado") from e
+    return {"status": "accepted"}
+
+
+@app.delete("/friends/requests/{username}", status_code=status.HTTP_204_NO_CONTENT)
+async def reject_or_cancel_friend_request(
+    username: str, account: accounts.Account = Depends(current_account)
+) -> None:
+    """Cubre las dos direcciones (rechazar una entrante, cancelar una
+    saliente) — en la base las dos son la misma fila."""
+    target = await _resolve_target(username)
+    await _friends_store.remove(account.id, target.id)
+
+
+@app.delete("/friends/{username}", status_code=status.HTTP_204_NO_CONTENT)
+async def remove_friend(username: str, account: accounts.Account = Depends(current_account)) -> None:
+    target = await _resolve_target(username)
+    await _friends_store.remove(account.id, target.id)
+
+
+@app.get("/friends")
+async def list_friends(account: accounts.Account = Depends(current_account)) -> dict:
+    result = await _friends_store.list_for(account.id)
+    all_ids = result["friends"] + result["incoming"] + result["outgoing"]
+
+    def _resolve(ids: list[int]) -> list[dict]:
+        return [{"username": by_id[i].username} for i in ids if by_id.get(i) and by_id[i].username]
+
+    by_id: dict[int, accounts.Account | None] = {}
+    for uid in set(all_ids):
+        by_id[uid] = await _account_store.get_by_id(uid)
+
+    now_playing_raw = _presence.get_many(result["friends"])
+    titles = await _library_store.get_titles(list(now_playing_raw.items())) if now_playing_raw else {}
+    friends_out = []
+    for uid in result["friends"]:
+        acc = by_id.get(uid)
+        if acc is None or not acc.username:
+            continue
+        song_id = now_playing_raw.get(uid)
+        now_playing = titles.get((uid, song_id)) if song_id else None
+        friends_out.append({"username": acc.username, "nowPlaying": now_playing})
+
+    return {
+        "friends": friends_out,
+        "incoming": _resolve(result["incoming"]),
+        "outgoing": _resolve(result["outgoing"]),
+    }
+
+
+@app.get("/library")
+async def get_library(
+    request: Request, account: accounts.Account = Depends(current_account)
+) -> Response:
+    etag = str(account.library_version)
+    if request.headers.get("if-none-match") == etag:
+        return Response(status_code=status.HTTP_304_NOT_MODIFIED, headers={"ETag": etag})
+    data = await _library_store.get_library(account.id)
+    return JSONResponse(
+        {"version": account.library_version, **data},
+        headers={"ETag": etag},
+    )
+
+
+@app.put("/library", dependencies=[Depends(require_upload_size)])
+async def put_library(
+    payload: library_store.LibraryPushPayload, account: accounts.Account = Depends(current_account)
+) -> dict:
+    if len(payload.songs) > config.LIBRARY_MAX_SONGS:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Biblioteca demasiado grande")
+    await _charge_usage(account, "library_push", 1, config.LIBRARY_PUSHES_PER_DAY)
+
+    # Atajo por contentHash: si no cambió nada, 200 sin escribir — mata el
+    # caso dominante ("no cambió nada") y evita tuplas muertas en Neon.
+    if payload.contentHash and payload.contentHash == await _account_store.library_content_hash(account.id):
+        return {"version": account.library_version}
+
+    new_version = await _account_store.bump_library_version(account.id, payload.baseVersion, payload.contentHash)
+    if new_version is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"reason": "library_version_conflict"},
+        )
+    await _library_store.push_library(account.id, payload)
+    return {"version": new_version}
+
+
+@app.post("/history", dependencies=[Depends(require_upload_size)])
+async def post_history(
+    payload: library_store.HistoryPushPayload, account: accounts.Account = Depends(current_account)
+) -> dict:
+    if len(payload.rows) > config.HISTORY_MAX_ROWS_PER_REQUEST:
+        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Demasiadas filas")
+
+    sanitized = library_store.sanitize_history_rows(
+        payload.rows,
+        now=datetime.datetime.now(datetime.timezone.utc),
+        backfill_max_days=config.HISTORY_BACKFILL_MAX_DAYS,
+    )
+    await _charge_usage(account, "history_upload", len(sanitized.accepted), config.HISTORY_ROWS_PER_DAY)
+
+    stored = await _library_store.push_history(account.id, sanitized.accepted)
+    if config.PLAY_HISTORY_RETENTION_DAYS > 0:
+        await _library_store.prune_old_history(account.id, config.PLAY_HISTORY_RETENTION_DAYS)
+
+    return {
+        "received": len(payload.rows),
+        "stored": stored,
+        "skippedTooOld": sanitized.skipped_too_old,
+    }
+
+
+@app.get("/stats/me")
+async def stats_me(
+    period: str = Query(default="week", pattern="^(week|month)$"),
+    utcOffsetMinutes: int | None = Query(default=None),
+    account: accounts.Account = Depends(current_account),
+) -> dict:
+    if utcOffsetMinutes is not None:
+        await _account_store.set_utc_offset(account.id, utcOffsetMinutes)
+    offset = utcOffsetMinutes if utcOffsetMinutes is not None else 0
+    start = library_store.period_start_utc(period, datetime.datetime.now(datetime.timezone.utc), offset)
+    return await _library_store.get_stats(account.id, period_start_utc=start)
+
+
+@app.get("/stats/{username}")
+async def stats_friend(
+    username: str,
+    period: str = Query(default="week", pattern="^(week|month)$"),
+    account: accounts.Account = Depends(current_account),
+) -> dict:
+    """404 si no son amigos — igual que require_admin, no distingue "no
+    existe" de "no tenés permiso"."""
+    _require_username(account)
+    await _charge_usage(account, "stats_view", 1, config.STATS_VIEWS_PER_DAY)
+    target = await _resolve_target(username)
+    pair = await _friends_store.status_between(account.id, target.id)
+    if pair is None or pair[0] != "accepted":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="No encontrado")
+
+    # El huso de la cuenta MIRADA, no del que mira (ver library_store.week_start_utc).
+    async with _pool.acquire() as conn:
+        target_offset = await conn.fetchval(
+            "SELECT utc_offset_minutes FROM users WHERE id = $1", target.id
+        )
+    start = library_store.period_start_utc(period, datetime.datetime.now(datetime.timezone.utc), target_offset or 0)
+    stats = await _library_store.get_stats(target.id, period_start_utc=start)
+
+    song_id = _presence.get(target.id)
+    now_playing = None
+    if song_id:
+        titles = await _library_store.get_titles([(target.id, song_id)])
+        now_playing = titles.get((target.id, song_id))
+    return {**stats, "nowPlaying": now_playing}
+
+
+class PresenceBody(BaseModel):
+    songId: str = Field(min_length=1, max_length=128)
+    expiresInSeconds: int = Field(ge=1, le=config.PRESENCE_MAX_TTL_SECONDS)
+
+
+@app.put("/presence", status_code=status.HTTP_204_NO_CONTENT)
+async def put_presence(body: PresenceBody, account: accounts.Account = Depends(current_account)) -> None:
+    # Ninguna línea de log aquí, ni siquiera la identidad sola — se dispara
+    # decenas de veces al día por usuario; ver presence.py.
+    if not await _account_store.share_now_playing(account.id):
+        return  # apagado se aplica al escribir: el dato no llega a entrar al proceso
+    _presence.publish(account.id, body.songId, body.expiresInSeconds)
+
+
+@app.delete("/presence", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_presence(account: accounts.Account = Depends(current_account)) -> None:
+    _presence.clear(account.id)
+
+
+class AccountSettingsBody(BaseModel):
+    shareNowPlaying: bool | None = None
+
+
+@app.patch("/account/settings")
+async def patch_account_settings(
+    body: AccountSettingsBody, account: accounts.Account = Depends(current_account)
+) -> dict:
+    if body.shareNowPlaying is not None:
+        await _account_store.set_share_now_playing(account.id, body.shareNowPlaying)
+        if not body.shareNowPlaying:
+            _presence.clear(account.id)
+    return {"shareNowPlaying": await _account_store.share_now_playing(account.id)}
+
+
+@app.delete("/account/data", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_account_data(account: accounts.Account = Depends(current_account)) -> None:
+    """La válvula de escape de privacidad: borra biblioteca/historial/
+    amistades de la cuenta. No borra la cuenta en sí (identity/username
+    quedan) para que un revínculo posterior no tenga que reclamar el nombre
+    de nuevo."""
+    await _account_store.delete_account_data(account.id)
+    _presence.clear(account.id)
 
 
 if __name__ == "__main__":

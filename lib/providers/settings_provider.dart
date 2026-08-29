@@ -23,6 +23,8 @@ class SettingsProvider with ChangeNotifier {
   static const _customPrimaryKey = 'custom_theme_primary';
   static const _customSecondaryKey = 'custom_theme_secondary';
   static const _customCombinedKey = 'custom_theme_combined';
+  static const _accountPromptSeenKey = 'account_prompt_seen';
+  static const _shareNowPlayingKey = 'share_now_playing';
 
   AppThemePreset _preset = AppThemePreset.navy;
   bool _loaded = false;
@@ -36,6 +38,8 @@ class SettingsProvider with ChangeNotifier {
   Color _customPrimary = const Color(0xFF2563EB);
   Color _customSecondary = const Color(0xFF38BDF8);
   bool _customCombined = true;
+  bool _accountPromptSeen = false;
+  bool _shareNowPlaying = false;
 
   AppThemePreset get preset => _preset;
   bool get isLoaded => _loaded;
@@ -45,6 +49,8 @@ class SettingsProvider with ChangeNotifier {
   Color get customPrimary => _customPrimary;
   Color get customSecondary => _customSecondary;
   bool get customCombined => _customCombined;
+  bool get accountPromptSeen => _accountPromptSeen;
+  bool get shareNowPlaying => _shareNowPlaying;
 
   /// Dirección del microservidor de descargas (`server/` en este repo).
   /// **Fija, compilada en el binario** (ver [OfficialServer]): ya no se
@@ -65,9 +71,26 @@ class SettingsProvider with ChangeNotifier {
   String get downloadServerUrl => OfficialServer.url;
   bool get hasDownloadServer => OfficialServer.url.trim().isNotEmpty;
 
+  /// Guardado en un campo (no re-invocado) para que [ensureLoaded] pueda
+  /// esperar la MISMA carga que ya disparó el constructor — un callback de
+  /// una sola pasada (el popup de vinculación de cuenta) no puede sondear
+  /// [isLoaded] sin inventar un bucle de polling.
+  late final Future<void> _loadFuture = _load();
+
   SettingsProvider() {
-    _load();
+    // Fuerza la creación del Future de arriba sin duplicar la carga: un
+    // campo `late final` con inicializador se dispara solo en su primer
+    // acceso, y este es ese primer acceso. `.ignore()` es la forma explícita
+    // de "no me interesa esperarlo acá" (ensureLoaded() sí lo espera).
+    _loadFuture.ignore();
   }
+
+  /// Espera a que termine la carga inicial desde SharedPreferences. Sin
+  /// esto, un callback de una sola pasada (ver `shouldShowAccountPrompt`)
+  /// leería siempre el valor por defecto de [accountPromptSeen] (false) y el
+  /// popup reaparecería en cada arranque — el bug más probable de toda esta
+  /// función.
+  Future<void> ensureLoaded() => _loadFuture;
 
   Future<void> _load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -90,8 +113,29 @@ class SettingsProvider with ChangeNotifier {
     final customSecondaryArgb = prefs.getInt(_customSecondaryKey);
     if (customSecondaryArgb != null) _customSecondary = Color(customSecondaryArgb);
     _customCombined = prefs.getBool(_customCombinedKey) ?? true;
+    _accountPromptSeen = prefs.getBool(_accountPromptSeenKey) ?? false;
+    _shareNowPlaying = prefs.getBool(_shareNowPlayingKey) ?? false;
     _loaded = true;
     notifyListeners();
+  }
+
+  /// Se pone en TODAS las salidas del popup (la X, tocar afuera, el botón
+  /// atrás, y los dos botones) — nunca sólo en "Ahora no". Registra
+  /// "preguntamos", no "comprobamos": una instalación nueva sin canciones
+  /// nunca llega a llamar esto, así que ver 0 canciones y luego importar 40
+  /// archivos sigue mostrando la invitación una vez.
+  Future<void> markAccountPromptSeen() async {
+    _accountPromptSeen = true;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_accountPromptSeenKey, true);
+  }
+
+  Future<void> setShareNowPlaying(bool enabled) async {
+    _shareNowPlaying = enabled;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_shareNowPlayingKey, enabled);
   }
 
   Future<void> setPreset(AppThemePreset preset) async {

@@ -2,487 +2,444 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+**This repository is public.** Document architecture and design decisions here; never document credentials,
+hostnames, personal infrastructure, or operational/session history. See "Security rules" at the end for what
+belongs in this file versus in the gitignored local notes.
+
 ## Project overview
 
-Heardy is a Flutter (Android-only) app that downloads music from YouTube/YouTube Music/Spotify and plays it back fully offline. No backend — everything (audio files, thumbnails, lyrics, metadata) lives on-device in SQLite + the filesystem. README.md (Spanish) has the full feature list and dependency rationale.
-
-> **As of 2026-07-30 this description is being retired.** Heardy is pivoting from *downloader* to *local-library player*: the user supplies their own `.mp3`/`.mp4` files and Heardy indexes, organizes and plays them. Read "Pivot to local library" immediately below before touching anything — the decisions there are settled and are not to be re-litigated mid-implementation.
-
-## Pivot to local library (decided 2026-07-30 — settled, do not re-open)
-
-Everything in this section was decided after investigation and measurement. Implement it as written. If a decision turns out to be wrong *in practice*, say so explicitly with the evidence and ask — do not silently pick a different design.
-
-### Where the previous work lives
-
-The entire YouTube/Spotify download layer (~5,500 lines) plus the anti-bot wall investigation is preserved at the annotated git tag **`youtube-downloader-final`** (commit `3e25daf`). This includes `docs/investigacion_muro_antibot.md`, the six `test/` files and five `tool/` probes. Nothing there is lost by deleting it from the working tree; recover any piece with `git checkout youtube-downloader-final -- <path>`. Everything below the "Download pipeline" heading in this file describes code that the pivot deletes and is kept only until Stage 5 lands.
-
-### D1 — Storage access: Storage Access Framework, one persisted tree URI
-
-`minSdkVersion` resolves to **24** (Flutter 3.44's `FlutterExtension.kt` default, `minSdkVersion flutter.minSdkVersion` in `android/app/build.gradle`) and `targetSdk` is **36**. Scoped storage is therefore mandatory and `requestLegacyExternalStorage` is not available (it stopped working at target 30).
-
-The user picks a folder once via `ACTION_OPEN_DOCUMENT_TREE`; the app calls `takePersistableUriPermission` and stores the tree URI in `SharedPreferences`. Heardy creates/uses a `Heardy/` folder inside it, with one subfolder per playlist.
-
-Rejected alternatives, with reasons — **do not revisit**:
-- `MANAGE_EXTERNAL_STORAGE`: Play Store's declaration form only accepts file managers, antivirus and a short list of other categories. Media players are explicitly *not* eligible. This would block publication.
-- MediaStore + `READ_MEDIA_AUDIO`: does not index `.mp4` as audio, so covering video containers would also require `READ_MEDIA_VIDEO` — and on Android 14+ that permission is subject to the partial-access selector ("allow access to selected videos"), so the user could grant 3 of 30 files without understanding why the rest never appear. Unacceptable for a library scanner.
-
-Consequences that all downstream code must respect:
-- **`dart:io File` no longer addresses user media.** Audio is addressed by `content://` URIs. `just_audio`/ExoPlayer plays `content://` natively — pass the URI straight to `AudioSource.uri`.
-- Directory enumeration is a `DocumentsContract` cursor query, not `Directory.list()`. Query children in **one batched call per folder** with a projection (`DOCUMENT_ID`, `DISPLAY_NAME`, `SIZE`, `LAST_MODIFIED`, `MIME_TYPE`); a per-child round trip is an IPC each and is far too slow for hundreds of files.
-- Intended packages: `saf_util` (tree picking, persisted permission, batched child listing) + `saf_stream` (read/write streams). Validate them at `flutter pub add` time; if they don't cover a case, write a small platform channel rather than falling back to a permission-heavy approach.
-
-**Amendment 2026-08-03 — Settings' storage total was reading the wrong storage.** `SettingsScreen._calculateStorageUsage` summed `File(song.filePath).length()` for every song — a leftover from before this pivot that only ever sees legacy app-private downloads. For SAF-imported/downloaded songs `filePath == ''`, so the reported total (e.g. "200 MB") ignored gigabytes of real audio sitting in the user's SAF folder, exactly the "no addresses user media" consequence stated above applied to a screen nobody had revisited since the pivot. Fixed by `StorageService.calculateLibrarySize(rootUri)` — a two-level `SafUtil.list()` walk (root's loose files + each playlist subfolder's files, matching the exact depth this app itself manages) summing the `length` field the batched projection already returns, no per-file round trip. Settings now adds that to what's still legitimately a `File` (legacy audio + thumbnails, which stay app-private per D5 regardless of a song's origin).
-
-### D2 — File identity: hash the audio payload, not the file
-
-A naive `(size + first 64 KB + last 64 KB)` hash breaks on ID3 tag edits, because ID3v2 lives at the *start* of the file and changes both offsets and total size. Editing tags on hand-managed files is a normal thing for this user to do, and a false "new file" verdict would drop the song into the inbox and lose its playlist membership — exactly what the tombstone rule exists to prevent.
-
-**Identity = hash of the audio payload only, at content offsets:**
-- MP3: skip the ID3v2 block (10-byte header, syncsafe size field, +10 more if the footer flag is set) and any trailing ID3v1 (last 128 bytes if they start with `TAG`) or APEv2 block.
-- MP4/M4A: hash the `mdat` atom payload (metadata lives in `moov/udta/meta/ilst`, which may sit before *or* after `mdat`).
-- Hash = MD5 of `(payload length + first 64 KB of payload + last 64 KB of payload)`.
-- Store a `hashKind` column (`mp3-audio` / `mp4-mdat` / `raw-file`) so a later parser fix can selectively invalidate. `raw-file` is the fallback when parsing fails — hash the whole file.
-
-**Plus URI continuity as a second matcher.** Reconciliation order during a scan, per file found on disk:
-1. URI already in DB and `(size, mtime)` unchanged → skip, no hashing. This is the common case and keeps rescans cheap.
-2. URI in DB but `(size, mtime)` changed → **same song row.** Re-hash, update, keep playlist membership. Tags were edited in place.
-3. URI unknown → hash → hash matches an existing row → **move or rename.** Update the URI, keep playlist membership.
-4. No match → genuinely new song → insert with no `playlist_songs` rows, i.e. it lands in the inbox.
-
-And per DB row *not* found on disk: set `missing = 1`. **Never auto-delete.** A row revived by hash in a later scan comes back with its playlists intact. Only an explicit user action deletes a song row.
-
-The two matchers cover different failures: URI continuity catches tag edits in place, payload hashing catches moves and renames. Only re-encoding *and* moving a file in the same interval looks like a new song, which is the correct verdict anyway.
-
-### D3 — Playlists live in SQLite; folders are an import mechanism only
-
-The subfolder name determines a song's playlist **only on first insert**. After that `playlist_songs` is the sole truth. This preserves multi-playlist membership without duplicating bytes, and keeps `orderIndex`/reordering and all of `PlaylistDetailScreen` working unchanged.
-
-**Sync is one-way: disk → DB.** Moving a song between playlists inside the app must never move or rewrite the file on disk — these are the user's own files and Heardy is not entitled to reorganize them. An explicit "export playlist to folder" action is acceptable later; implicit writes are not.
-
-**Amendment 2026-08-03 — explicit deletion now deletes the real file, in the SAF folder too.** `DatabaseHelper.deleteSong`/`deleteAllSongsForPlaylist` previously only deleted `File(song.filePath)` — a no-op for every SAF-imported or downloaded song, since those have `filePath == ''` and their real bytes live at `song.uri` (`content://...`). The DB row disappeared but the actual file never did, so "eliminar canción"/"eliminar playlist" silently left the user's storage exactly as full as before — reported directly by the user as a bug, not a design question to relitigate. This does **not** reopen the "sync is one-way" rule above: that rule is about the app never *reorganizing* files the user didn't ask it to touch (moving between playlists, retagging); this is about honoring an *explicit* delete the user asked for, the same distinction DD3 already draws for downloads writing new files into that folder. `deleteSong` now also calls `SafUtil().delete(song.uri!, false)` when `uri` is set, alongside the pre-existing `File(filePath)` deletion for legacy rows; `deleteAllSongsForPlaylist` got the same addition. Deleting a playlist still doesn't remove its now-possibly-empty SAF subfolder — a cosmetic leftover, not a storage-space problem, out of scope for this fix.
-
-### D4 — `.mp4`: play the audio track directly, never transcode
-
-ExoPlayer demuxes the container and plays the AAC track with no video output. Extracting to `.mp3` would need `ffmpeg_kit_flutter`, which was **retired in January 2025**, would add 30–60 MB to the APK, and would lose quality to a re-encode. The only case to handle is an `.mp4` with no audio track: mark it invalid during the scan and keep it out of the library.
-
-### D5 — Metadata: `audio_metadata_reader`, with a filename fallback
-
-Pure Dart, no native dependency, reads ID3v1/v2 plus MP4/M4A atoms plus embedded artwork. Because SAF hands out streams rather than paths, copy each file to the cache **once at import**, read the tags, persist them in `songs`, delete the temp copy, and never touch the file for metadata again.
-
-No tags → parse the filename (`Artista - Título`, stripping leading track numbers and junk like `[Official Video]` / `(Lyrics)` / `_320kbps`), album = folder name, artist = "Desconocido", artwork = a gradient generated from the title hash (reuse `palette_generator` / `AppTheme`). **Manual tag editing is in scope, not a nice-to-have** — with hand-imported files, missing or wrong tags are the common case rather than the edge.
-
-**Resolved during Stage 2 implementation (2026-07-30):**
-- **Temp copy for tag reading:** `audio_metadata_reader.readMetadata` needs a `dart:io File`, but SAF only hands out streams. `MetadataService.extract` copies the SAF uri to `<temp dir>/heardy_tag_read_<songId>.<ext>` via `SafStream.copyToLocalFile`, reads it, and deletes it in a `finally` — so the copy never survives past that one `extract()` call regardless of success or failure. This only runs on insert and on an in-place tag edit (matcher 1 with changed size/mtime); a move/rename (matcher 2) reuses the cached tags, since the audio payload — and ordinarily its tags — didn't change.
-- **Artwork storage: files in the app-private dir, not SQLite blobs.** Reuses the exact convention downloaded songs already use (`youtube_service.dart`'s `downloadThumbnail`: `<app documents>/thumbnails/<id>.<ext>`), one small file per song. Rejected blobs: a large library means many rows with embedded images, which bloats the single `.db` file and forces loading the blob into memory even for list views that only need the title/artist. `artPath` already models "no artwork" as `''`; `MetadataService` leaves it that way when there's no embedded picture — **no placeholder file is ever written to disk**. The title-hash gradient (previous paragraph) is a pure render-time fallback (`AppTheme.gradientForTitle`, wired into `song_tile.dart`/`mini_player.dart`/`now_playing_screen.dart`'s `SmartAlbumArt`), not a generated image — this is what keeps "many songs with no cover art" cheap.
-- **Per-field fallback, not all-or-nothing:** if a tag has a title but no artist, the artist still falls back to the filename-derived one (or "Desconocido") rather than discarding the whole filename-parse just because *some* tag existed. Verified by the "partial tags" test case.
-
-### D6 — Inbox for unassigned files: batch screen, never a per-song dialog
-
-No new table required — the inbox is `songs LEFT JOIN playlist_songs ... WHERE playlistId IS NULL`. A list with multi-select, "select all", and a fixed bottom bar "Asignar a…" opening a sheet with the existing playlists plus "crear nueva", able to assign to several playlists in one action. Badge with the pending count on the bottom nav. Importing 30 files at once must cost the user one interaction, not 30.
-
-**Resolved during Stage 4 implementation (2026-07-30):**
-- **In-app assignment vs. a later physical move: the app's own assignment always wins, and it's already guaranteed by D2's matchers — no new code needed for this specifically.** `assignSongsToPlaylists` only ever inserts into `playlist_songs`; it never touches SAF, so the folder is never rewritten (D3's one-way sync holds by construction — the app has no code path that writes to the picked folder). If the user later moves that same file into a *different* playlist's folder, the rescan matches it by **audio-payload hash** (matcher 2, `LibraryScanService._reconcileFile`'s "moved" branch), which updates `uri`/`fileSize`/`modifiedAt` but deliberately never calls `addSongToPlaylist` — a folder only assigns a playlist on a song's very first import, never again after. Verified in `test/library_scan_service_test.dart`: assign via the inbox, then move the file into a different playlist's folder, rescan, and confirm the song is still only in the originally-chosen playlist.
-- **Dismissing without assigning: a persistent "ignorar" flag (`songs.ignoredFromInbox`, schema v9), not a "just reappears" no-op — and reversible, closed 2026-07-30.** Considered doing nothing (song just stays visible next time) — rejected: a stray non-music file that slipped past the extension filter, or a duplicate the user consciously doesn't want in any playlist, would nag on every single visit to the inbox, which is exactly the friction D6 exists to avoid. `ignoredFromInbox` is set only by this explicit user action and is **never touched by the scanner** — set once, stays set across rescans. Exposed as a bulk action alongside "Asignar a…" in the selection bar, not a separate per-row gesture, since multi-select is already the screen's one interaction model. `inbox_screen.dart` has an "Ignoradas" `ChoiceChip` tab (`getIgnoredSongs`) with the same multi-select model and a single "Restaurar" bulk action (`unignoreSongsFromInbox`) — a dismiss is reversible, never a dead end.
-- **Reload button: lives on the inbox screen itself (refresh icon, top-right), not in Settings.** Settings now only keeps "Elegir carpeta" (the rare, one-time setup action); the frequent workflow action ("I dropped files in, now show me what's new") moved to the tab whose badge it directly affects — the "recargar → asignar lo suelto" loop the user actually repeats now happens on one screen instead of two. Feedback while scanning is a blocking modal (spinner dialog, same pattern already used by `RepairService`'s repair flow) rather than a progress bar — the scan API returns one final `LibraryScanResult` summary, not incremental per-file events, and blocking navigation during the scan avoids the confusing partial states of, e.g., jumping to Home mid-scan while playlists are still being created underneath. A streaming per-file progress callback would need `LibraryScanService.scan()` restructured to accept one — worth doing if libraries turn out large enough that the blocking dialog feels too long, but not built now.
-
-### D7 — Waveform seek bar: deleted, not ported
-
-Measured, not assumed: **`audio_waveforms` is declared in `pubspec.yaml` but never imported anywhere in `lib/`.** `AudioAnalysisService` (322 lines) does not extract a waveform at all — it reads the whole file with `readAsBytes()` and derives pseudo-amplitudes from byte patterns seeded by `filePath.hashCode`, falling back to `Random()` when that fails. The bars have never corresponded to the audio.
-
-So: delete `audio_analysis_service.dart`, drop the `audio_waveforms` dependency, and collapse `WaveformSeekBar` (`now_playing_screen.dart:1046`) into the plain `SeekBar` that already extends it (`:1278`). This also removes the only component that would have needed a temp file copy under SAF just to render. Do not port a decorative feature into the new architecture.
-
-### D8 — `flutter_background_service` and `wakelock_plus` both go
-
-Verified by grep, not assumed:
-- `flutter_background_service` is **imported nowhere in `lib/`** — it appears only in the auto-generated `GeneratedPluginRegistrant.java`. It is dead weight today and contributes nothing to playback.
-- `wakelock_plus` is used **only in `download_provider.dart`** (12 call sites, all bracketing downloads). It leaves with the download layer.
-
-`audio_service` alone covers background playback and lock-screen/notification controls: it owns the foreground service declared in `AndroidManifest.xml` with `android:foregroundServiceType="mediaPlayback"`, and the MediaSession that drives the lock screen. Keep the `FOREGROUND_SERVICE`, `FOREGROUND_SERVICE_MEDIA_PLAYBACK` and `WAKE_LOCK` manifest permissions — `audio_service` needs them.
-
-**Both removed for real in Stage 5 (2026-07-30) — what's confirmed vs. still open.** `flutter pub get` dropped both plus their platform-interface packages with zero compile errors anywhere touching `AudioPlayerHandler`/`audio_service`, and `GeneratedPluginRegistrant.java` no longer references either after a full `flutter clean` + rebuild — confirming they were never load-bearing for playback, not just unused Dart-side. `AndroidManifest.xml` and `main.dart`'s `AudioServiceConfig` are untouched by this removal, so the actual mechanism providing background playback and lock-screen controls is unchanged. **Still open, and this is the one real gap**: no Android device was available in this environment (`flutter devices` only lists Windows/Chrome/Edge) to confirm background playback and lock-screen controls behaviorally — background it, lock the screen, use the notification's play/pause/skip, confirm it survives — before this is considered fully settled. Do this before Stage 6 closes it out.
-
-### D9 — Schema v8: additive, no risky data migration
-
-Add to `songs`: `uri TEXT`, `fileHash TEXT`, `hashKind TEXT`, `fileSize INTEGER`, `modifiedAt INTEGER`, `album TEXT`, `missing INTEGER NOT NULL DEFAULT 0`. Keep `filePath` — legacy downloaded songs in app-private storage keep working. Playback resolves `uri ?? filePath`, so both generations coexist and no user data is rewritten.
-
-New imported songs use `fileHash` as their `id`; legacy rows keep their YouTube video id. `songs`, `playlists`, `playlist_songs` and `play_history` are otherwise unchanged. `download_queue` is dropped in **v10, at Stage 5** (bumped from the originally-planned v9 — Stage 4 used v9 for `songs.ignoredFromInbox`), not before — the download code still reads it until then.
-
-### Implementation stages — every stage ends with a compiling, runnable app
-
-Non-negotiable: no stage may leave the project unable to build or the app unable to play music. Run `flutter analyze` at the end of each.
-
-1. **SAF access + scan into SQLite — done 2026-07-30.** `storage_service.dart` (`saf_util`: tree picking via `mkdirp('Heardy')`, persisted permission) and `library_scan_service.dart` (reconciliation per D2 via `saf_stream.readFileBytes`, MD5 of length+head+tail). Schema v8 landed per D9, plus `Song.playablePath` (`uri ?? filePath`). Entry point is a temporary "Biblioteca local (beta)" card in Settings with "Elegir carpeta"/"Escanear" buttons. The old download UI stays fully in place and functional — verified with `flutter build apk --debug`. `test/library_scan_service_test.dart` runs the whole reconciliation lifecycle on desktop (`sqflite_common_ffi` + fake `SafUtilPlatform`/`SafStreamPlatform`, no device needed) and is the reference for how the two matchers are meant to behave — read it before changing scan logic. Not yet done: metadata (title/artist are filename/"Desconocido" placeholders until Stage 2), and real-device verification of the picker/SAF permissions (only exercised via the fake backend and a desktop build so far — do that before considering this stage fully closed).
-2. **Metadata — mostly done 2026-07-30.** `metadata_service.dart` wraps `audio_metadata_reader` with the temp-copy/cleanup and filename-fallback rules resolved above; wired into `library_scan_service.dart` on insert and on in-place tag edits. `test/library_scan_service_test.dart` covers full tags (+ embedded cover extraction), no tags (filename parsing), and partial tags (per-field fallback). Placeholder art is now a per-song gradient (`AppTheme.gradientForTitle`) instead of the old fixed color, wired into every album-art fallback site. Not yet done: manual tag editing UI (D5 said in-scope, not built this stage) and real-device verification of the SAF-copy-then-delete step — only exercised via a fake `SafStreamPlatform` on desktop so far.
-3. **Playback on URIs — done 2026-07-30.** Every `MediaItem` construction site (3 in `music_provider.dart`, 6 in `download_provider.dart`, 1 in `playlist_detail_screen.dart`) now puts `song.playablePath` (`uri ?? filePath`, `Song.playablePath` added in Stage 1) into the existing `extras['filePath']` key — same key, so `AudioPlayerHandler` didn't need new extras plumbing, just to handle both kinds of values in what's already there. `AudioPlayerHandler._isPlayable`/`_sourceUriFor` replace every `File(path).existsSync()`/`Uri.file(path)` call site (`playPlaylist`, `restorePlaylist`, `addQueueItem`, `addQueueItems`, `_finalizePlay`): a `content://` uri is checked with `SafUtil.exists(uri, false)` (metadata-only, no bytes read) instead of `File`, and a `SafUtil.exists` failure (revoked folder permission, unmounted volume, provider gone) is caught and treated as "not playable" — same outcome as a legacy deleted file, silently skipped from the queue rather than crashing `setAudioSource()`. This live check turned out to subsume the `missing` DB flag rather than needing to thread it through `MediaItem` separately: a tombstoned song's stale uri fails `exists()` too, so one mechanism now covers "known missing since the last scan," "deleted between scans," and "permission revoked" uniformly. `playPlaylist`/`restorePlaylist`'s filters became async (`_filterPlayable`, checks run via `Future.wait` — local SAF/filesystem calls, not network, so no circuit-breaker-style concern) but every caller already `await`s them, so no signature changes rippled outward. `artUri`/notification/lock-screen art needed **no changes** — verified by inspection that all 10 `artUri:` construction sites already build from `song.artPath` (`Uri.file`, never a SAF uri), which Stage 2 already made point at real app-private files for both legacy and imported songs. `PlaybackStateService` and `play_history` needed no changes either — both only ever persisted song ids/strings, never a path shape, so they were never coupled to the choice between `filePath` and `uri` to begin with. Not yet done: real-device verification of `SafUtil.exists` behavior on an actually-revoked permission (only inspected the plugin's contract, not exercised against a live revoke on hardware).
-4. **Inbox + batch assignment — done 2026-07-30.** `inbox_screen.dart` (new bottom-nav tab, replacing `AddFromYouTubeScreen`'s slot — the download screen/code still compile, just unreachable from the UI now) lists `DatabaseHelper.getInboxSongs()`, with multi-select, "seleccionar todo", and a bottom bar offering "Ignorar" and "Asignar a…" (opens a bottom sheet: checkboxes over existing playlists + a "crear nueva" field, assigns to several at once via `assignSongsToPlaylists`). Reload lives as a refresh icon on this screen per the decision above. `MusicProvider.inboxCount`/`refreshInboxCount()` drive a `Badge` on the tab's icon, refreshed after every scan and after every assign/ignore action. Schema v9 added `songs.ignoredFromInbox`. `test/library_scan_service_test.dart` gained a third group covering: a loose root file reaching the inbox, ignoring surviving a rescan, the ignore/restore round trip, batch-assign-to-a-new-playlist removing it from the inbox, and the in-app-assignment-survives-a-physical-move case from the D6 addendum above. Not yet done — same gap as every stage so far: no verification on real hardware, only the fake SAF backend and a desktop build.
-5. **Prune — done 2026-07-30.** Deleted whole: `youtube_service.dart`, `ytmusic_service.dart`, `spotify_service.dart`, `download_provider.dart`, `add_from_youtube_screen.dart`, `download_progress_card.dart`, `log_service.dart`, `error_provider.dart`, `audio_analysis_service.dart`, and — going further than the original "most of" for `repair_service.dart`, per an explicit instruction that superseded that plan — **all** of `repair_service.dart` (its "Reparar reproductor"/"Ver Log de Errores" UI in Settings went with it). Also every download-era `test/`+`tool/` file, including 5 older probes (`manifest_probe.dart`, `pacing_probe.dart`, `client_sweep_probe.dart`, `solver_probe.dart`, `watchpage_probe.dart`) that predated this pivot. **~6,000 lines gone from `lib/`, ~1,800 more from `test/`+`tool/`** — roughly 7,800 lines total, none of it reachable from the UI anymore. `pubspec.yaml` lost `youtube_explode_dart`, `dart_ytmusic_api`, `flutter_background_service`, `wakelock_plus`, and `audio_waveforms` (D7, deferred from Stage 1's analysis to land here) — 20 packages total once transitive dependencies are included, per `flutter pub get`'s own accounting. Schema v10 drops `download_queue` (v9 went to `ignoredFromInbox` in Stage 4, so this bumped by one from the original plan). Every file that referenced deleted code was fixed, not just had imports removed — see the four real cross-cutting fixes below.
-   - **`search_screen.dart`: adapted now, not deferred.** Its old body was entirely YouTube-search code that would no longer compile once the download layer left — there was no version of "prune" that left it alone. Rewritten as local search: substring filter over `DatabaseHelper.getSongs()` (title/artist, excluding `missing` rows), reusing `SongTile` for results and a new `MusicProvider.playSearchResults` (queues the matched result set, not just the tapped song, so next/previous stay inside it). The existing "Resultados máximos" setting in `SettingsScreen` — previously capping a YouTube API call — now caps how many local matches are shown; kept and repointed rather than deleted, since the setting itself wasn't orphaned, only its original justification.
-   - **`main.dart`**: dropped the `DownloadProvider` entry from `MultiProvider`. Its `flutterLocalNotificationsPlugin.initialize(...)` call broke — that global instance was declared in `download_provider.dart`, not `main.dart`; replaced with a fresh local `FlutterLocalNotificationsPlugin()` instance, since `initialize()` sets up the platform channel plugin-wide and any other instance (e.g. `AudioPlayerHandler`'s own for playback-error notifications) shares it.
-   - **`playlist_detail_screen.dart`**: removed the "Recargar Playlist" button, which re-downloaded a playlist from its `originalUrl` via `DownloadProvider` — meaningless with no download engine. The `originalUrl` column itself stays on legacy playlist rows; unused, harmless.
-   - **`now_playing_screen.dart`**: completed D7 (deferred from before Stage 1) — collapsed `WaveformSeekBar` into a plain `SeekBar` built on Flutter's `Slider`, deleting `audio_analysis_service.dart` with it. This was already broken for imported songs before this stage even started: `AudioAnalysisService` read `File(filePath)` directly, which can't open a SAF `content://` uri — one more confirmation this was dead weight, not a feature worth preserving.
-   
-   Verified: `flutter analyze` clean, `flutter clean` + rebuild succeeds, all 6 tests pass, and a grep across `lib/`, `pubspec.yaml`, and the manifest for every deleted symbol/package turns up nothing but two historical comments (harmless prose, not code). **Everything deleted here is preserved at the `youtube-downloader-final` tag** (`git checkout youtube-downloader-final -- <path>` to recover any of it) — pruning it from the working tree doesn't lose it.
-6. **Device verification and docs — done 2026-08-01, folded into `feature/youtube-downloads`' own Stage 9 below** (the download branch's device pass covered this pivot's remaining hardware gap too, D8 included). Architecture/README rewritten for the two-import-path reality rather than the download-era pipeline this note originally meant to delete — by the time this landed, that pipeline was back by design, not gone.
-
-## YouTube downloads — branch `feature/youtube-downloads` only (decided 2026-08-01)
-
-**This section describes work that exists only on `feature/youtube-downloads`. `main` stays a pure local-library player and none of this lands there.** The branch was cut from `559d8f0` (`Temp`, which already had `main` merged in).
-
-The framing that governs every decision below: **downloading is a second import path into the same library, not a parallel subsystem.** A downloaded file must be indistinguishable from one the user copied in by hand — same content hash, same `songs` row shape, same SAF folder, same scanner. The integration seam is `LibraryScanService._reconcileFile`'s "new song" branch, which already inserts songs with `id == fileHash`, `filePath == ''`, `uri == content://…`.
-
-**The invariant that defines "correctly integrated", and the acceptance test for the whole branch:** downloading a song and immediately rescanning the library must report `unchanged` — never `inserted`, never `moved`. Anything else means the downloader and the scanner disagree about identity, which produces duplicate rows and silently drops playlist membership.
-
-### Decisions (settled with the user before implementation)
-
-- **DD1 — Audio acquisition: a self-hosted yt-dlp microservice**, not an in-app extractor. `youtube_explode_dart` 3.1.0 (latest, ~May 2026) does not generate PO Tokens, which YouTube now requires bound per video id; its changelog mentions neither PO tokens nor SABR. `docs/investigacion_muro_antibot.md` already measured the ceiling on the old in-app approach (~12–24 manifests per IP; a 15-song run hit the wall at song 6). yt-dlp plus the `bgutil-ytdlp-pot-provider` sidecar is the only part of the ecosystem actively answering PO tokens and SABR, and it is Unlicense, so nothing licence-contaminating reaches the app. Rejected, **do not revisit without new evidence**: restoring `youtube_explode_dart` (re-imports the measured wall); NewPipeExtractor (GPLv3, needs a Kotlin platform channel plus a PO-token provider of our own, and NewPipe's development was declared discontinued in July 2026); commercial APIs such as video-download-api.com/savenow.to, Zyla and Apify (no published per-download price, rate limits or SLA; job+polling with a lossy MP3 transcode; and a third party in the middle of what the user listens to); Pafy (abandoned, original repo deleted, Python-only, depends on a stale youtube-dl).
-  - **Deploy the server on a residential IP** (home PC/Raspberry Pi + Tailscale), not a VPS. Datacenter IPs (Railway/Hetzner/DO) get blocked far faster — that is how the public Cobalt instance was blocked. This is cheaper too.
-  - The client talks to it through a `DownloadSource` interface so a different provider is a ~150-line implementation, not a redesign.
-- **DD2 — Downloads land in the user's SAF folder** (`Heardy/<Playlist>/`), not in app-private storage. This is what makes them ordinary library files: the scanner owns them, the user can move/retag/back them up, and they survive an uninstall.
-- **DD3 — Amendment to D3.** D3 says "sync is one-way disk → DB" and that the app must never write to the picked folder. **That rule is hereby scoped to: the app never reorganizes, renames or rewrites the user's existing files.** Creating *new* files in the folder the user picked precisely to hold their music is the import mechanism, not a violation — it is the moral equivalent of the user dropping a file in themselves. Everything else in D3 stands: moving a song between playlists inside the app still never touches the disk, and `playlist_songs` is still the sole truth for membership after first insert.
-- **DD4 — Format: original M4A/AAC, never transcoded.** `bestaudio[ext=m4a]`. This is the choice that costs nothing: `m4a` is already in `LibraryScanService._audioExtensions`, the `mp4-mdat` hash path already handles it, `audio_metadata_reader` can write its tags, and ExoPlayer plays it natively — so the scanner needs no changes at all. Opus/WebM would mean a new extension, a new `hashKind`, and no tag writing; MP3 would mean a lossy re-encode and ffmpeg on the server.
-- **DD5 — Scope: all four of** single video URL, YouTube playlist URL, in-app search, and the Spotify bridge.
-
-### Reuse policy for the code preserved at `youtube-downloader-final`
-
-- **Restored verbatim:** `spotify_service.dart` (pure HTTP scraping of `open.spotify.com/embed/*`, zero coupling to YouTube, `dart:io` or the old `Song`) and `download_progress_card.dart` (presentational only).
-- **Reused as design reference, rewritten:** `download_provider.dart` (1498 → ~400 lines). Keep the parts that were real bug fixes — session id + `isStale()` for clean cancellation, the per-id active lock, draining workers before declaring a batch cancelled, resetting flags in a single `finally`. Drop everything else, including the anti-bot circuit breaker (the server owns that now).
-- **Not restored:** `youtube_service.dart` and `ytmusic_service.dart` (~2,400 lines whose value was hard-won anti-bot knowledge that now lives in yt-dlp — restoring them re-imports the problem), plus `log_service.dart`, `error_provider.dart`, `audio_analysis_service.dart` and `repair_service.dart`, which were dead or superseded before the pivot.
-
-### Implementation stages
-
-Same non-negotiable rule as the pivot: every stage ends with the app compiling and able to play music; `flutter analyze` clean and `flutter test` green at the end of each. Full per-phase detail (risks, dependencies, validation) is in the approved plan file.
-
-0. **Branch + this section — done 2026-08-01.**
-1. **Extract `AudioIdentity`** — move the hashing out of `library_scan_service.dart` into a shared `audio_identity.dart` so downloader and scanner compute identity with the *same code*. Prerequisite for everything else; if they diverge, every download duplicates itself on the next scan. Hash always over SAF, never over the local temp copy.
-2. **`server/`** — FastAPI + yt-dlp as a library + the bgutil PO-token provider; `/health` `/resolve` `/playlist` `/search` `/audio/{id}`; `X-Api-Key` auth. **Verified end to end against real YouTube on 2026-08-01.**
-   - **Two interchangeable ways to run it, and neither needs the other: native Python (`setup.bat` → `run.bat`) for development, Docker for leaving it running.** `config.py`'s defaults target the native path (cache next to the project, loopback, provider at `127.0.0.1:4416`); the `Dockerfile`/`docker-compose.yml` env vars override them. Docker is a deployment option, not a requirement — do not reintroduce it as one.
-   - **The PO-token provider has two halves whose versions must match**: the yt-dlp plugin (pip) and the HTTP server (Node, built from its own repo). `tools/setup_pot.py` reads the installed plugin's version and clones the server at that exact tag. A mismatch is the most likely silent failure of the whole setup: the server starts, `/health` reports the provider as reachable, and downloads still fail with 403. Updating one half without the other has the same effect — `server/README.md`'s maintenance section updates both in one go for this reason.
-   - Verified: `/health` all green, 401 both with no key and with a wrong key, `/search`, `/resolve` and `/audio` against a real video (309 KB, valid `ftyp`), `Range` (206 + correct `Content-Range`, 416 out of range), and the disk cache (a repeat request for the same audio takes ~0.4 s instead of re-hitting YouTube). Not verified: `/playlist`'s happy path — it needs a real playlist URL; the error path returns 502 correctly.
-   - **`/search` uses `extract_flat`**, one request for N results instead of one per video. The cost is that `artist` comes from the channel name, which for a compilation channel is not the real artist. **Stage 7 must call `/resolve` on the chosen search result before enqueuing it**, rather than keeping the flat metadata — otherwise downloaded files get the channel name written into their tags.
-3. **`DownloadSource` + `YtdlpServerSource`** — HTTP client over the `http` package already in `pubspec.yaml`; server URL/key in `SettingsProvider`. Needs `network_security_config.xml`: Android 9+ blocks cleartext, and a home server on LAN/Tailscale is typically plain `http://`.
-4. **`DownloadService`** — the core. Fetch to temp → write tags with `updateMetadata` (so the file is self-describing on disk) → `pasteLocalFile` into `Heardy/<Playlist>/` → `SafUtil.stat` *after* the paste (the document provider sets `lastModified`, and it may rename on collision, so always use the returned uri) → `AudioIdentity` over SAF → dedupe by hash → insert. Schema **v11**: `songs.sourceUrl` plus a redesigned generic `download_queue`.
-5. **Persistent queue + `DownloadProvider` — done 2026-08-01, validated against the live server.**
-   - **DD6 — the `/resolve` rule.** `/search` and `/playlist` use `extract_flat`, so their `artist` is the channel name. Since tags are written *into* the file, that error survives a rescan. So: **every job whose metadata is flat gets a `/resolve` before a single byte is downloaded, and a resolve failure fails the job — flat metadata is never used as a fallback.** The step lives inside `DownloadService.download(resolveFirst:)`, not in the provider, so no future call site can skip it.
-   - **Schema v12 — `download_queue.metadataComplete`.** A job enqueued from a single URL already has definitive metadata (the preview resolved it); re-resolving it would waste a request. Without this column every download would go from 2 extractions to 3 against a per-IP budget measured at 12–24. `DatabaseHelper.markDownloadMetadataResolved` persists the resolved metadata **the moment the resolve succeeds, before downloading**, so a failed download that retries doesn't resolve again.
-   - **Permanent vs. transient errors, end to end.** The server used to return 502 for every extraction failure, which meant a deleted video would burn the whole retry budget on every app start. `ytdlp_client._classify` now maps known-permanent yt-dlp messages (deleted, private, members-only, age-restricted, region-blocked, invalid URL) to **HTTP 404**, which the client maps to `DownloadSourceErrorKind.notFound` — dropped on the first attempt. Transient failures (blocked IP, network) stay 502 → retried. **`"Sign in to confirm you're not a bot"` is deliberately NOT in the permanent list**: it's an IP block, and treating it as permanent would silently discard perfectly downloadable songs.
-   - **`processQueue` does not sleep inside its loop.** It drains what's runnable now and schedules a `Timer` for the next backoff. Sleeping in the loop kept `isProcessing` true for up to 45 s with nothing happening (the UI would say "downloading" with everything stalled) and made `cancelAll` unable to interrupt the `Future.delayed`. Found by a test, not by inspection.
-   - `attempts` lives in the DB, not memory, so restarting the app doesn't hand a doomed job a fresh budget; the backoff *is* in memory on purpose, since a user reopening the app wants a retry now. Concurrency is 1 (per-IP budget, not a rate limit). A job whose target playlist was deleted mid-batch is dropped as one job — that's why the queue has no FK to `playlists`.
-   - `DownloadProvider` reaches the library through an `onDownloadComplete(playlistId)` callback rather than holding a `MusicProvider`, which is what keeps it testable and a pure orchestrator.
-   - **Validation:** 14 unit tests plus `test/download_live_integration_test.dart`, which runs the whole chain (queue → HTTP → server → yt-dlp → SAF → SQLite) against the **real** server and real YouTube, and **skips itself cleanly when the server isn't running**. That live test is also the only place tag writing is genuinely exercised — the synthetic `.m4a` fixture elsewhere isn't parseable by `audio_metadata_reader`, so it always takes the non-fatal failure path. It asserts the file describes itself on disk *and* that a rescan reports `unchanged`.
-6. **Import UI — done 2026-08-01.** `import_screen.dart`, a fifth "Añadir" tab between Bandeja and Buscar (`main_shell_screen.dart`), with a `pendingCount`-driven `Badge` on its icon. Paste a URL → `DownloadSource.resolve`/`resolvePlaylist` (called directly from the screen, never through `DownloadService` — analysis doesn't need to download anything) → preview card → `_PlaylistTargetSheet` (single-select existing-or-new, unlike the inbox's multi-select assign sheet, because a download has exactly one target `playlistId`) → `DownloadProvider.enqueueTrack`/`enqueuePlaylist` with `metadataComplete: true` for a resolved single URL (DD6 — the preview *is* the resolve, repeating it would waste a request) and `false` for playlist entries (`extract_flat`). `playlist_detail_screen.dart` gained a sync icon (only when `originalUrl` is set) that re-expands the source playlist and enqueues only entries whose `sourceUrl` isn't already in the playlist — the diff lives in a pure top-level `missingPlaylistEntries()`, extracted specifically so it's testable without rendering the screen (see below). Removed the stale "Descargada" badge from `home_screen.dart`'s playlist cards — with both SAF-imported and downloaded songs able to sit in the same playlist now, no single per-playlist badge can be accurate, so misleading is worse than absent.
-   - **Widget-testing `sqflite_common_ffi` under `testWidgets` requires `tester.runAsync` for the ENTIRE interaction, not just setup — and `tester.pump(duration)` does not advance real time.** Found empirically, at cost: `sqflite_common_ffi` talks to a real background isolate; any `pump()`/`pumpWidget()` call that follows real DB I/O done *outside* `runAsync` hangs forever (confirmed down to the single-call level — not an animation-loop issue, a zone issue). The only reliable pattern is wrapping a test's entire body — pumps included — in one `runAsync`, and replacing `pumpAndSettle()` (which would also hang forever on `DownloadProgressCard`'s indeterminate spinner while the queue is `resolving`/`preparing`) with bounded, **real**-delay pump loops: `await Future.delayed(d); await tester.pump(d);` — `pump(d)` alone only advances the fake clock, so without the real delay the underlying isolate round-trip never gets wall-clock time to complete. `test/import_screen_test.dart`'s `_settle`/`_pumpUntil` helpers are the reference for this; reuse them for Stage 7/8 rather than rediscovering it. A corollary bug this surfaced: a test that doesn't wait for its own enqueued background download to fully finish before returning leaves `DownloadProvider.processQueue()` running into the *next* test (shared DB, shared isolate) — every interactive test must poll to a stable end state (queue empty / a specific fetch observed) before finishing, not a fixed pump count.
-   - **`PlaylistDetailScreen` cannot be widget-tested as it stands.** It reads a real `AudioPlayerHandler`, whose constructor eagerly creates a real `just_audio` `AudioPlayer` — a platform-channel object with no test fake anywhere in this codebase. Building one was out of scope for what the update-button logic actually needed, so the set-diff it depends on was pulled out as a standalone `@visibleForTesting` function and tested directly (`test/playlist_detail_youtube_update_test.dart`); the button's wiring (icon visibility, tap handler, snackbar copy) is unverified by an automated test. Whoever tackles Stage 9's device pass should exercise it by hand, and a real fake for `AudioPlayerHandler`/`AudioPlayer` would be a reasonable investment if more of `playlist_detail_screen.dart`/`now_playing_screen.dart` need widget coverage later.
-   - **Validation:** 70 total tests project-wide (14 new — 9 in `import_screen_test.dart`, 5 in `playlist_detail_youtube_update_test.dart`), `flutter analyze` clean (2 new `RadioListTile.groupValue`/`onChanged` deprecation infos from the playlist-target sheet, same tolerance already extended to the pre-existing `onReorder` ones), `flutter build apk --debug` succeeds.
-7. **In-app search — done 2026-08-01.** `Local`/`YouTube` `SegmentedButton` in `search_screen.dart`, debounced (500 ms, generation-counter guards a slow response from clobbering a newer one). Extracted `pickTargetPlaylist`/`resolveTargetPlaylistId`/`PlaylistTargetSheet` out of `import_screen.dart` into `widgets/playlist_target_sheet.dart` so this screen doesn't duplicate them — a maintainability call made mid-stage, not part of the original plan.
-   - **Turned out simpler than the Stage-2 note above assumed: no separate pre-resolve step was needed.** That note (written right after validating the server, before `DownloadService.download(resolveFirst:)` existed) suggested calling `/resolve` on the tapped result before enqueueing. By Stage 5 the queue already had a general mechanism for exactly this — any job enqueued with `metadataComplete: false` gets resolved by the worker before a single byte downloads (DD6). A search result is just another flat-metadata source, so it reuses that path unchanged (`enqueueTrack(track, metadataComplete: false)`); the DD6 test in `download_provider_test.dart` already covers this mechanism generically; and this screen adds no new logic worth a duplicate test.
-   - **`SearchScreen` cannot be widget-tested, for the same reason as `PlaylistDetailScreen` in Stage 6 — and this predates Stage 7.** It already read a real `AudioPlayerHandler` (for local-tab playback) before any of this branch's work; that was never coverable by a widget test in this codebase to begin with. The YouTube tab's debounce/tab-switch/tap-to-download wiring is unverified by an automated test for the same reason — same recommendation as Stage 6: a real `AudioPlayerHandler`/`AudioPlayer` fake is the actual fix, worth it once more screens need widget coverage.
-   - **Validation:** existing 70-test suite unchanged (no regressions), `flutter analyze` clean, `flutter build apk --debug` succeeds. No new tests added deliberately — the only genuinely new logic (debounce, tab wiring) is exactly what's blocked by the `AudioPlayerHandler` gap above, and duplicating the already-covered DD6 mechanism under a different test name would be padding, not coverage.
-8. **Spotify bridge — done 2026-08-01.** `spotify_service.dart` restored **verbatim** from `youtube-downloader-final` (the tag's `__NEXT_DATA__`-embed scraper) — **verified live against real Spotify first**, before writing any integration code: a playlist (50 tracks, full metadata) and 2 of 3 individually-tested track URLs resolved correctly; the one failure was a dead/removed track id, not a scraping-format break. No changes needed to the file at all.
-   - **Matching lives client-side, in a new pure `spotify_match.dart`, not as a new queue job type — a deliberate departure from this file's own earlier phrasing ("resolving the YouTube id at download time").** That phrasing predates DD6 and doesn't actually work once you take the plan's own hard requirement seriously: *"mostrar siempre qué resultado de YouTube se eligió antes de descargar, en lugar de resolver en silencio"* — for BOTH a single track and a collection (the plan's validation section says so explicitly). A background queue worker has no user present to show a match to or warn about a bad one; interactive analysis does. So: `ImportScreen._analyze()` detects a Spotify URL, calls `SpotifyService.analyze()`, then `matchSpotifyTrack()` **once per track, sequentially, at analyze time** — searching `'$artist $title'` via `DownloadSource.search` and picking the closest result by duration (`pickClosestByDuration`), **never by title/artist string similarity**, which is far less reliable across platforms (translations, "(Official Video)", casing). ≤3s difference is `isGoodMatch`; ≤30s is `isAcceptable`; above that, or no candidate with a known duration, the track is dropped from the batch and shown as "no se descargará" — never downloaded on a guess.
-   - **The whole match list is shown once, before one "Descargar N" button** — not N per-track confirmation dialogs. This directly extends this project's own established batch-action philosophy (D6: *"importing 30 files must cost the user one interaction, not 30"*) to a case the original D6 text never anticipated, rather than inventing a new UX policy from scratch.
-   - **The matched YouTube track re-enters the exact same pipe as a search result (Stage 7), enqueued with `metadataComplete: false`** — DD6 resolves it for real just before download. `sourceType: 'spotify'` is passed through purely for provenance/debugging (nothing in `DownloadProvider`/`DownloadService` branches on it); `sourceId`/`sourceUrl` are the **matched YouTube video's**, since that's what `/audio/{id}` actually needs. A Spotify-sourced playlist never gets `playlists.originalUrl` set — there's no YouTube playlist URL to re-expand later, so "Actualizar desde YouTube" (Stage 6) correctly never offers itself for one.
-   - **`ImportScreen` gained an injectable `spotifyService` constructor parameter** (default `SpotifyService()`), the same DI shape already used for `DownloadSource`/`DownloadProvider` — `SpotifyService` doesn't go through `Provider` because there's no second implementation to swap in, only a test fake, but the same reasoning that made the rest of this screen testable applies. This is also why `ImportScreen()` stopped being `const` — fixed the two call sites that assumed it still was (`main_shell_screen.dart`'s tab list, `import_screen_test.dart`'s test harness) — caught by a full-project `flutter test`/`flutter analyze` run, not by the file-scoped ones used mid-edit; scope test/analyze runs to the whole project before calling any stage done, not just the files touched.
-   - **Unlike Stage 6/7's screens, `ImportScreen` needed no `AudioPlayerHandler`**, so the entire flow — Spotify-vs-YouTube URL detection, good/acceptable/rejected match classification, batch enqueue, `sourceType`/`originalUrl` correctness — got real widget-level test coverage, closing the kind of gap Stage 6/7 had to leave open.
-   - **Validation:** 85 tests project-wide (10 in `spotify_match_test.dart` — pure matching logic, no widget/network — plus 5 in `import_screen_spotify_test.dart`), `flutter analyze` clean, `flutter build apk --debug` succeeds.
-9. **Device verification + docs — done 2026-08-01, on a real Android 14 device (LLY LX3, API 34) over USB with `adb reverse` forwarding the server's port.** Closed the walk of every real-hardware gap this file had accumulated since the pivot: SAF folder picker + persisted permission, the scan/metadata-read path, the whole download flow (single video, playlist, in-app search, Spotify bridge) against the **real, running server**, a rescan reporting `unchanged`/0 new after downloading, and — the one gap every stage since the pivot's Stage 1 had explicitly flagged and deferred — **D8's background playback and lock-screen/notification controls, confirmed working** now that `flutter_background_service`/`wakelock_plus` are gone.
-   - **One real bug found and fixed by this pass, not before it:** `search_screen.dart`'s `_buildHint` (Stage 7) overflowed 7px on a real device when the on-screen keyboard compressed the available height — invisible on every desktop/widget-test run because none of those simulate a keyboard. Fixed by wrapping it in a `SingleChildScrollView` with `mainAxisSize: MainAxisSize.min` instead of a bare `Column`, the general fix for "content might not fit, let it scroll rather than assert." `ImportScreen`'s analogous hint states weren't touched — they're gated before their screen's text field ever renders, so they're not reachable with a keyboard up in the first place; a speculative fix there without a reproduced failure would have been unjustified.
-   - **Still open, deliberately, going into the next session: Docker deployment was never actually run.** `server/`'s native path (`setup.bat`/`run.bat`) is what got exercised end-to-end, on this machine and now from the device; the `Dockerfile`/`docker-compose.yml` path has only been reviewed by inspection since it was written in Stage 2. Before relying on it: `docker compose up -d --build`, confirm `/health` the same way `server/README.md`'s own checklist describes, and confirm a real download through it from the app.
-10. **Hybrid architecture (official + custom server) — implemented 2026-08-02; hosting plan amended 2026-08-03 (Oracle Cloud → home PC + Tailscale Funnel), deployment itself still pending.** Full design in `docs/arquitectura_servidor_hibrido.md` (approved before implementation started, see that file's 2026-08-03 amendment section for the hosting change); this entry records what actually landed against that plan.
-    - **DD1/D-server invariant upheld throughout: `DownloadSource`/`DownloadService` are still the only communication layer, and there is still exactly one backend implementation.** "Automatic mode" vs. "custom server" turned out to be a configuration-default difference, not a second code path — verified by inspection at the end of every phase, not assumed at the start.
-    - **`server/app/config.py`** gained `parse_api_keys()` (pure function, tested directly) building `API_KEYS: dict[key, label]` from the new `HEARDY_API_KEYS` env var ("label:key,label:key,..."), always merging in the legacy single `HEARDY_API_KEY` under label "default" if set — a personal server that only ever defined `HEARDY_API_KEY` is byte-for-byte unaffected. `auth.require_api_key()` now returns the matching label (`"no-auth"` when auth is disabled) instead of `None`, which is what makes per-identity rate limiting and per-identity request logging possible without a second auth mechanism.
-    - **`server/app/rate_limit.py` (new)**: `RateLimiter` — sliding window per identity + a global daily cap, both `0` (disabled) by default, so a personal server's behavior doesn't change unless its `.env` explicitly sets `HEARDY_RATE_LIMIT_PER_KEY`/`HEARDY_DAILY_QUOTA`. No `asyncio.Lock` needed: `check()` has no internal `await`, so the event loop can't interleave two calls mid-function — same reasoning `MAX_CONCURRENT_EXTRACTIONS`'s semaphore already relies on. `enforce_rate_limit` (the FastAPI dependency wired into `/resolve`, `/playlist`, `/search`, `/audio` — not `/cache`, which never touches YouTube) raises `429` with a `Retry-After` header computed from the limiter's own window, never a guessed number. `/health` now also reports `rateLimiting` as pure diagnostic info.
-    - **`lib/services/download_source.dart`**: `DownloadSourceErrorKind.quotaExceeded` (distinct from `extraction`) plus `DownloadSourceException.retryAfterSeconds` — populated only from the server's real `Retry-After` header (`ytdlp_server_source.dart`'s `_checkStatus`, all three call sites), never fabricated client-side. This is the client-side half of the "don't invent wait times" rule from the architecture doc's section 5 — the YouTube-block case (502, unknown recovery window per `docs/investigacion_muro_antibot.md`) deliberately still carries no `retryAfterSeconds`.
-    - **`DownloadProvider._handleFailure`** treats `quotaExceeded` as its own branch, not as a variant of the existing retry policy: it does **not** consume `maxAttempts` (a quota wait isn't a failure of the job — it's the server saying "not yet") and reschedules at exactly `retryAfterSeconds` instead of the fixed `[5s, 15s, 45s]` backoff table. `DownloadFailure` gained `retryAfterSeconds`; `import_screen.dart`'s `_FailureRow` renders that case in amber with an hourglass icon instead of the red "gave up" styling, since the job is still queued, not discarded.
-    - **`lib/services/official_server.dart` (new)**: `OfficialServer.url`/`apiKey` — the URL is a plain compiled-in constant (it's just a hostname); the key is `String.fromEnvironment('HEARDY_OFFICIAL_SERVER_API_KEY')`, empty unless a build passes `--dart-define`, specifically so no secret — not even a closed-beta one — ever gets committed. `SettingsProvider._downloadServerUrl`/`_downloadServerApiKey` now default to `OfficialServer` instead of `''`, so `hasDownloadServer` is `true` out of the box: install-and-download-immediately, per the architecture doc's "modo automático," works through the exact same `probe()`/error-handling path that already existed, no new code needed for that part. `isOfficialServer` + `restoreOfficialServer()` (reuses `setDownloadServer`, doesn't duplicate persistence) back the new "Restaurar servidor oficial" button. `settings_screen.dart`'s always-visible "Servidor de descargas" section is now `_AdvancedSettingsSection`, an `ExpansionTile` titled "Ajustes avanzados", collapsed by default — the average user never has a reason to open it.
-    - **`server/docker-compose.yml`** originally gained a `caddy` service (automatic Let's Encrypt TLS via `server/Caddyfile`, hostname from `HEARDY_OFFICIAL_DOMAIN`) with `profiles: ["official"]`, so it wouldn't start on a plain `docker compose up -d`. **Removed 2026-08-03** along with `server/Caddyfile` and the `HEARDY_OFFICIAL_DOMAIN` var — see the amendment below.
-    - **Amendment 2026-08-03: Oracle Cloud and Google Cloud both turned out unusable — account verification friction, exactly the risk `docs/arquitectura_servidor_hibrido.md` section 9.3 had already flagged before anyone tried.** The official server's hosting moved to a home PC, made public with **Tailscale Funnel** (`tailscale funnel 8080` on the host, no router port-forwarding, TLS handled by Tailscale itself) instead of a cloud VM + Caddy + DuckDNS. This is not a downgrade: per the architecture doc's own section 1 finding, a residential IP is the *one* category measured without the elevated anti-bot block rate that datacenter IPs (including Oracle's) get — so the hosting change actually helps the problem the whole rate-limiting/caching design exists to mitigate. The real cost, accepted explicitly: the official server only answers while that PC is on. `server/docker-compose.yml` lost the `caddy` service/profile entirely — the official deployment is now byte-for-byte the same `docker compose up -d` as any personal server; publishing it is a host-level `tailscale funnel` command, not a compose difference. `OfficialServer.url` in `lib/services/official_server.dart` holds a placeholder (`https://heardy-oficial.ts.net`) until the real PC is set up and `tailscale funnel status` gives the actual `<machine>.<tailnet>.ts.net` hostname to paste in.
-    - **Done 2026-08-03, later the same day:** Tailscale installed on the dev PC via `winget install Tailscale.Tailscale` (already logged in under the user's account, no separate auth step needed), the server set up natively (`setup.bat`, no Docker) with a real `HEARDY_API_KEY` (`make-key.bat`) and the official-deployment mitigations from the architecture doc's section 3 turned on (`HEARDY_MAX_CONCURRENT=1`, `HEARDY_RATE_LIMIT_PER_KEY=20`/`HEARDY_DAILY_QUOTA=150`). Funnel needed one manual step outside this session's reach — visiting `https://login.tailscale.com/f/funnel?node=...` to enable Funnel on the tailnet, since it's a browser-authenticated account action — after which `tailscale funnel --bg 8080` gave the real hostname, confirmed with a real `/health` 200 from outside the LAN, and `OfficialServer.url` was pointed at it. **(Superseded on 2026-08-22 by the move to Render — see Etapa 13.)** `flutter build apk --release --dart-define=HEARDY_OFFICIAL_SERVER_API_KEY=...` succeeded (61.6 MB, signed with the real release keystore — which also had to be restored into place: `heardy-release-key.jks` belongs at the repo root, not `android/`, per `build.gradle`'s `../../heardy-release-key.jks`, a placement that isn't obvious from the filename alone). **Still ahead:** `HEARDY_API_KEYS` only has one key so far (this session's own testing key, not one per real beta user), and the actual distribution/onboarding of the 5 beta users hasn't happened.
-    - **Made persistent across logins, same day:** the server was only running in ad-hoc background shells, which die with the terminal (or this session). `server/run-official-service.bat` (new) is a `run.bat` variant for unattended starts — launches both halves `start /min` instead of in foreground windows, same ~6s wait before the API so the PO-token provider is already listening. Registering it as a Windows Scheduled Task (`Register-ScheduledTask`, trigger `AtLogOn`, `RestartCount 3`) needed an elevated PowerShell — this session's tool access runs at standard integrity (confirmed: admin group present but "deny only" in the token, the classic UAC-filtered-token signature), so the user ran the one-time registration command themselves. Verified end to end: stopped the ad-hoc shells, `Start-ScheduledTask` fired the real task, `python`/`node` came up under it, and `/health` answered 200 through Funnel — confirming the task actually reproduces what a real logon would do, not just that it registered without erroring.
-    - **Rate limiting turned back off, same day — explicit user call, overriding this same section's earlier choice.** `HEARDY_RATE_LIMIT_PER_KEY`/`HEARDY_DAILY_QUOTA` (set to 20/hour and 150/day earlier this session) are back to `0` (disabled) in `server/.env`. The instruction was explicit: if a download stalls, it should be YouTube's own anti-bot wall doing it, not a ceiling the app imposed on itself — and by this point in the session that wall already degrades gracefully (`antiBotBlocked`, waits 30 min, never drops the song) rather than the queue silently discarding work, which was the main risk the self-imposed limit was mitigating in the first place. `HEARDY_MAX_CONCURRENT=1` was left untouched — that's not a "daily limit," it's concurrency, and wasn't part of this instruction. Restarted the live server and confirmed via `/health` → `rateLimiting: {perKeyLimit: 0, dailyQuota: 0}`.
-    - **Validation:** 22 new `pytest` tests (`server/tests/`, all pure-logic — no `yt-dlp`/PO-provider dependency needed to run them, see `server/requirements-dev.txt` and `test.bat`), 10 new Dart tests (`ytdlp_server_source_test.dart`, `download_provider_test.dart`, `settings_provider_test.dart`) bringing the project total to 95 (93 passing + 2 that skip themselves by design, same as before). `flutter analyze` clean (same 5 pre-existing tolerated infos, none new). `flutter build apk --debug` succeeds. One pre-existing test (`import_screen_test.dart`'s "sin servidor configurado") had its premise invalidated by this stage — "no server" is no longer the fresh-install default — and was updated to construct that state explicitly (the user clearing the field) rather than deleted, since the UI state itself is still real and still worth covering.
-11. **Lista de espera para cuando el servidor oficial está apagado — implemented 2026-08-03.** Direct consequence of Etapa 10's hosting change: a home PC is off far more plausibly than a cloud VM, and unlike a mid-queue network hiccup, `ImportScreen._analyze()` calling `DownloadSource.resolve`/`resolvePlaylist` directly (Stage 6) meant a pasted URL couldn't even become a queued job if the server never answered the initial preview — there was nothing to retry, the URL was just lost.
-    - **Schema v13 — new `pending_imports` table** (`sourceId`-less by necessity: without a `/resolve`, there's no id yet, only `kind` ('video'/'playlist'), the raw `sourceUrl`, and the already-resolved-or-created target `playlistId`). No FK to `playlists`, same reasoning as `download_queue` — a deleted target playlist should fail that one entry, not cascade. Unique index on `(sourceUrl, playlistId)` for the same dedupe-in-the-database reason `download_queue` has one.
-    - **`ImportScreen._analyze()`**: a `DownloadSourceException` with `kind == network` now sets `_errorIsOffline = true` alongside the existing error message, which surfaces a second action under the error banner — "Guardar para cuando el servidor esté disponible" (`_saveForLater`). It reuses the exact same `pickTargetPlaylist`/`resolveTargetPlaylistId` sheet the normal download flow already uses, so choosing a target playlist works identically whether the server is up or down. Every *other* `DownloadSourceErrorKind` (401, 404, unsupported media) does **not** get this action — those aren't fixed by the server coming back, so offering to "wait" for them would be a false promise.
-    - **Opportunistic resume, not polling.** `DownloadProvider.retryPendingImports()` is never called from a timer. It's called from three places that already prove or plausibly restore connectivity: cold start (`main.dart`, next to the existing `processQueue()` restore call), the end of any *successful* `_analyze()` call (proof the server just answered, for free — no extra request spent checking), and a manual "Reintentar ahora" button on the waiting-list section itself. This matches the project's existing aversion to invented polling loops (D6's inbox reload button, the blocking-dialog-over-streaming-progress choice in Stage 4).
-    - **`DownloadProvider.retryPendingImports()` stops at the first `network` or `quotaExceeded` failure** in a pass — both mean "still can't really talk to the server," so trying the rest of the list would just repeat the same failure for no reason. Any *other* failure (404, unsupported media) is definitive for that one URL specifically: it's removed and recorded as an ordinary failure, same as a queue job that hits a permanent error — waiting for the server to come back was never going to fix a deleted video.
-    - **`DownloadProvider._handleFailure`'s `network` branch changed too, not just the new pending-imports path.** Previously `network` was just another entry in `isRetryable`, sharing the fixed `[5s, 15s, 45s]` / `maxAttempts = 3` backoff table with `extraction` — fine for a second-long network blip, hopelessly short for "the PC is off for the evening." `network` now gets its own branch, treated like `quotaExceeded`: it doesn't consume `attempts`, and reschedules on a fixed `_networkRetryWaitSeconds = 60` (there's no `Retry-After` header for "nobody answered" the way there is for a 429, so this is a plain constant, not computed). This is a real behavior change for **already-queued** jobs, not just newly-pasted URLs — existing tests that used `network` to exercise the generic finite-retry path (`download_provider_test.dart`'s attempts-budget test) were repointed to `extraction`, which still behaves the old way, since that's what those tests were actually about.
-    - **`DownloadProvider` gained a required `DownloadSource source` constructor parameter** (previously it only held a `DownloadService`, which doesn't expose `resolve`/`resolvePlaylist` directly) — `main.dart` already builds `downloadSource` before `DownloadProvider`, so this was a same-object wiring change, not a new dependency. Every test constructing `DownloadProvider` needed the same parameter; all of them already had a `DownloadSource` fake in scope for `DownloadService(source: source)`, so it was a mechanical addition everywhere except `download_provider_test.dart`, which gained its own minimal `_FakeDownloadSource`.
-    - **UI placement, confirmed with the user before building:** inside the existing "Añadir" tab, not a new bottom-nav tab — a `_buildPendingImportsSection()` under the live download queue, listing each waiting URL with its target playlist name and a per-row cancel, plus the "Reintentar ahora" button. No sixth permanent tab for something that, working as intended, is usually empty.
-    - **Validation:** 4 new tests in `download_provider_test.dart` (`servidor apagado (error de red)` group: the new indefinite-retry behavior; `lista de espera` group: resolve-and-download end to end, stays queued while still unreachable, discarded on a genuine 404) — project total 99. `flutter analyze` clean (same 5 pre-existing infos). No widget-level test added for `ImportScreen`'s new banner button or waiting-list section — same pre-existing gap as the rest of `ImportScreen`'s interactive widget coverage, not a new one introduced here.
-12. **Funcionalidades de app + i18n + temas — done 2026-08-21/22** (commit `8ec49a3`). Siete cambios pedidos en bloque, todos en `feature/youtube-downloads`:
-    - **Cola "reproducir a continuación"** (`AudioPlayerHandler.insertPlayNext`): deslizar una canción a la derecha en `playlist_detail_screen.dart` la coloca tras la actual, en orden FIFO entre sí (`_playNextInsertIndex`, que se resetea en `currentIndexStream`). **El bug que casi lo deja inservible, corregido después:** el chequeo anti-duplicados descartaba en silencio cualquier canción que YA estuviera en la cola — que es el caso normal, porque se desliza una canción de la misma playlist que suena. Ahora, si ya está, se **mueve** con `moveQueueItem` en vez de ignorarse.
-    - **Repetición cuenta como segunda escucha**: `_hasRecordedCurrentTrack` sólo se reseteaba en `_startTracking`, que sólo corre cuando cambia `currentIndex` — así que `LoopMode.one` nunca contaba una segunda vuelta. Se re-arma en `processingStateStream` cuando el loop es `one`, y en `seek()` cuando el usuario rebobina cerca del inicio habiendo ya contado.
-    - **i18n ES/EN**: `flutter_localizations` + ARB (`lib/l10n/`, `l10n.yaml`), `AppLanguage` en `SettingsProvider`, y toda la UI migrada. Los `.arb` se versionan; `app_localizations*.dart` es generado y está en `.gitignore`.
-    - **Traducción de letras**: `translation_service.dart` (MyMemory, sin API key, caché en disco junto al `.lrc`). **Cuidado si se toca `LyricsBottomSheet`:** el resaltado sincronizado usa un `StreamSubscription` con `_activeIndex` como estado, NO un `StreamBuilder` envolviendo la lista — envolverla reconstruía todas las líneas en cada tick de posición y el resaltado se sentía desincronizado (regresión real introducida y luego corregida al añadir la traducción, que duplicaba el costo por línea).
-    - **Temas**: presets verde/naranja/rojo + modo `custom` con color principal/secundario elegidos por el usuario y toggle de degradado combinado (`AppTheme._customPalette` deriva fondo y superficie del matiz, nunca negro puro). `snackBarTheme` e `inputDecorationTheme.fillColor` pasaron a salir de `AppTheme` — antes tenían colores fijos que ignoraban el preset.
-    - **Menú de mantener pulsado** en canciones (mover/copiar/cambiar posición) y **cabecera "Reproduciendo desde ⟨playlist⟩"** pulsable, que necesitó estampar `playlist_id` en `extras` en los 3 sitios que construían `MediaItem` sin él.
-    - **Responsividad**: la carátula de `now_playing_screen.dart` tenía 300px fijos (desbordaba a lo ancho en pantallas de 360dp y a lo alto en pantallas bajas); ahora sale de un `LayoutBuilder`. **No verificado en hardware real** — no había dispositivo Android en el entorno.
-
-13. **El servidor oficial vive en Render, y las cookies fueron la pieza que lo hizo viable — cerrado 2026-08-24.** Esto **revierte** la conclusión de la Etapa 12 ("Render descartado, volver a un equipo casero"), y conviene entender por qué antes de tocar nada:
-    - **Lo que se midió el 2026-08-22 sigue siendo cierto:** con una IP de datacenter *pelada*, Render se cae a la primera descarga (`Sign in to confirm you're not a bot`). Eso no cambió. Lo que cambió es que la **palanca que ese mismo análisis dejaba anotada como "sin probar" — cookies de sesión de una cuenta de YouTube (`HEARDY_COOKIES_FILE`) — se probó y funciona.** Con cookies cargadas, la reputación de la IP deja de ser el factor decisivo.
-    - **Estado real, verificado el 2026-08-24 contra el despliegue en vivo:** `/health` responde 200, `cookies.enabled: true`, `potProvider.mode: "script"` y `reachable: true`, yt-dlp `2026.08.19`. **No hace falta nada local**: ni el PC encendido, ni Tailscale, ni `run-official-service.bat`, ni la tarea programada de Windows. Todo eso queda como registro histórico de la Etapa 10, no como el montaje vigente.
-    - **La fragilidad real, y es la única que importa vigilar:** las cookies caducan. La expectativa medida es de días, no meses, y el disco efímero de Render *free* pierde en cada reinicio la copia con las cookies rotadas, así que envejecen desde las originales. `/health` expone `cookies.enabled` justamente para poder vigilarlo sin leer logs. **Cuando dejen de funcionar, el síntoma será exactamente el de la Etapa 12** (`Sign in to confirm you're not a bot`), y la respuesta es renovar cookies, no volver a diagnosticar la IP desde cero.
-    - **Procedimiento de renovación (crítico, se rompe fácil):** perfil de navegador aparte (o incógnito con la extensión habilitada) → login con una **cuenta secundaria**, nunca la personal → abrir `youtube.com/robots.txt` en esa pestaña → exportar → **no cerrar sesión nunca ni volver a abrir YouTube en ese perfil**. Cerrar sesión invalida la sesión del lado de Google; navegar la rota.
-    - **El plan B, si las cookies acaban siendo demasiado frágiles, sigue siendo el de la Etapa 12** y no hay que volver a razonarlo: cualquier equipo barato siempre encendido en casa (Raspberry Pi, portátil viejo, Android con Termux) con Tailscale Funnel, que conserva la IP residencial. Se descartó *por ahora* porque Render + cookies cumple el requisito original ("que no dependa de mi computador") sin hardware extra.
-    - **También en esta etapa: el servidor dejó de ser configurable desde la app.** `SettingsProvider` ya no guarda dirección ni clave — ambas salen de `OfficialServer` (compiladas, con `--dart-define` como única forma de pisarlas, en tiempo de build). La sección "Ajustes avanzados" de `settings_screen.dart` se colapsó en una sección "Servidor de descargas" **de sólo diagnóstico**: un botón "Probar conexión" y la línea de estado, sin campos. Motivo: el servidor oficial es uno solo y estable, y un campo editable sólo servía para que alguien se rompiera las descargas sin saber volver. `SettingsProvider._load` **borra** (no ignora) las claves `download_server_url`/`download_server_api_key` de una instalación anterior — ignorarlas habría dejado clavado en un servidor muerto a quien hubiera configurado uno propio, sin UI para deshacerlo. Cubierto en `settings_provider_test.dart` y, a nivel de pantalla, en `import_screen_test.dart`.
-
-14. **Identidad delegada (Fase 2 del plan de seguridad) — implementada 2026-08-24.** El servidor ya sabía verificar un token de Firebase junto con `X-Api-Key` en paralelo (`server/app/firebase_auth.py`, `auth.py:resolve_identity`) desde una sesión anterior; esta sesión cerró el lado de la app, que hasta entonces sólo tenía las dependencias instaladas y ningún código de cuenta.
-    - `HeardyAuthProvider` (`lib/providers/auth_provider.dart`) — **no `AuthProvider`**: `firebase_auth` ya exporta una clase pública con ese nombre (la base de `GoogleAuthProvider` y similares) y el nombre colisiona; lo delató `flutter analyze` (`ambiguous_import`). Envuelve `FirebaseAuth`: `isReady` = sesión + correo verificado, `idToken()` para el header de las llamadas al servidor. Gana un constructor `.fake({isReady, email})` que nunca toca `FirebaseAuth.instance`, porque los widget tests existentes no corren `Firebase.initializeApp()`.
-    - `lib/screens/auth/login_screen.dart` — login/registro con toggle, recuperar contraseña, y el estado intermedio "verificá tu correo" (reenviar, "ya lo verifiqué", cerrar sesión por si es la cuenta equivocada).
-    - **`OfficialServer.apiKey` eliminado por completo — cierra A1.** Ya no hay ninguna clave compilada dentro del APK. `YtdlpServerSource` manda `Authorization: Bearer <token>` cuando hay sesión; sin ella, la llamada sale sin autenticar y el servidor la rechaza. Conserva, aparte, un parámetro `apiKey` opcional sin usar por la app real — sólo lo usa `test/download_live_integration_test.dart` para seguir pudiendo ejercitar un servidor de desarrollo con `X-Api-Key`, sin necesitar una sesión de Firebase para correr.
-    - **No es un gate global.** `ImportScreen`/`SearchScreen` (las únicas dos pantallas que hablan con el servidor) muestran un estado "iniciá sesión para descargar" — mismo patrón visual que el "sin servidor" que ya existía — cuando no hay sesión lista; el resto de la app (biblioteca local, playlists, reproducción, búsqueda local) sigue sin necesitar cuenta para nada, a propósito: la premisa del pivot (D1) nunca dejó de ser "todo vive en el teléfono, sin cuentas ni nube" para la reproducción en sí.
-    - `android/settings.gradle`/`android/app/build.gradle` ganaron el plugin `com.google.gms.google-services`, que lee `android/app/google-services.json` (comitea la config pública del proyecto de Firebase, no un secreto).
-    - `settingsAboutExternalServices` (Ajustes → Acerca de) se corrigió: ya no dice "ninguno recibe tu correo" sin matices — eso sigue siendo cierto para LRCLIB/MyMemory, pero descargar ahora sí implica una cuenta con correo (gestionada por Firebase/Google, nunca visible para el servidor de descargas en sí).
-    - **Validación:** `flutter analyze` limpio (mismos 5 infos preexistentes), 104 tests de Dart en verde, 83 tests de servidor en verde, `flutter build apk --debug` compiló con el plugin de Google Services activo. **No verificado — mismo patrón que arrastra el resto del proyecto:** registrarse de verdad, recibir el correo de verificación, iniciar sesión y descargar contra Render con un token real, todo en un dispositivo Android real. Tampoco se confirmó que `HEARDY_FIREBASE_PROJECT_ID` esté puesto en el entorno de Render — sin esa variable, todo token de Firebase se rechaza.
-
-15. **Cupo diario de canciones (Fase 3 del plan de seguridad) — implementada en código 2026-08-24, sin desplegar.** Escrita y probada de punta a punta contra un store falso; lo único que falta es aprovisionar un Postgres real y encenderla en producción (ver el pendiente al final).
-    - **`server/app/quota.py` (nuevo).** Distinto a propósito de `rate_limit.py`: éste cuenta **canciones** (sólo `/audio`, y sólo cuando entrega bytes con éxito), no peticiones — una canción cuesta 2-3 peticiones según de dónde salga (URL pegada, resultado de búsqueda, entrada de playlist), así que el limitador de peticiones nunca puede hacer de límite de producto sin, en la práctica, dejar un cupo real de 50-75. Y es **persistente en Postgres** (Neon), no en memoria: un cupo diario que Render resetea solo al dormirse o redesplegar no es un cupo. `QuotaStore` es un `Protocol` — `PostgresQuotaStore` es la única implementación real; los tests usan un store en memoria, sin Postgres de verdad.
-    - **`HEARDY_DAILY_SONGS_PER_USER` (0 = desactivado) + `HEARDY_DATABASE_URL`.** Si el primero está puesto sin el segundo, **la API se niega a arrancar** — mismo criterio que la falta de `HEARDY_API_KEY`, mejor no arrancar que mentir que el límite existe.
-    - **`/audio` responde 429 con `reason: "daily_song_quota"`** cuando se agota — distinto del 429 genérico del limitador de peticiones (que no trae `reason`), para que la app muestre "llegaste a tus 150 de hoy" en vez de un error cualquiera (D-2 del plan de seguridad). `GET /usage` (nuevo, cualquier identidad autenticada, sin pasar por el limitador de peticiones — leer el propio cupo no toca YouTube) devuelve `{usedToday, dailyLimit}`.
-    - **Cliente:** `DownloadSourceErrorKind.dailyQuotaExceeded` (nuevo, distinto de `quotaExceeded`) — `YtdlpServerSource._checkStatus` lo distingue mirando `reason` en el cuerpo del 429. `DownloadProvider` lo trata igual que `quotaExceeded`/`antiBotBlocked` (no gasta `maxAttempts`, se reprograma para cuando el servidor diga, nunca un número inventado) y `retryPendingImports()` también se detiene ante él. `ImportScreen` consulta `GET /usage` al abrir la pantalla y cada vez que la cola deja de procesar, mostrando "Te quedan N de 150 canciones hoy" — oculto entero si `dailyLimit == 0`.
-    - **No reactivado a propósito: el límite de peticiones (S2, `HEARDY_RATE_LIMIT_PER_KEY`/`HEARDY_DAILY_QUOTA`).** El plan original de esta fase lo pedía como paso explícito; se dejó fuera porque la Etapa 10 de este mismo archivo ya registra una decisión posterior y deliberada del usuario de mantenerlo apagado ("si una descarga se traba, que sea el muro de YouTube, no un techo que la app se puso sola"). Tocarlo aquí habría revertido esa decisión sin que nadie la pidiera de nuevo.
-    - **Validación:** 14 tests nuevos en `server/tests/test_quota.py` (reloj falso para el cruce de medianoche, un fallo de extracción no descuenta cupo, un acierto de caché sigue contando como canción entregada, el SQL de `PostgresQuotaStore` contra un pool falso) — 94 tests de servidor en verde. 6 tests nuevos en `test/ytdlp_server_source_test.dart` (parseo de `reason`, `GET /usage`) — 110 tests de Dart en verde. `flutter analyze` limpio, `flutter build apk --debug` compila.
-    - **No verificado, y es lo único que falta para dar esto por cerrado:** nada de esto se probó contra un Postgres real — no hay Neon disponible en este entorno. Antes de repartir: crear el proyecto en Neon, poner `HEARDY_DATABASE_URL`/`HEARDY_DAILY_SONGS_PER_USER` en Render, y el propio criterio que motivó guardar esto en Postgres en primer lugar — **reiniciar el servicio de Render a mitad de uso y confirmar que el contador sigue donde estaba**.
-
-16. **Cuentas con biblioteca en la nube, amigos y compartir estadísticas — decisiones tomadas 2026-08-29, implementación en curso.** Extiende la cuenta de la Etapa 14 de "permiso para descargar" a "centro de gravedad de la biblioteca". El plan por fases vive en las notas de trabajo locales; acá quedan las decisiones, que es lo que no se debe volver a discutir a mitad de la implementación.
-    - **La cuenta guarda un ÍNDICE, nunca audio.** Títulos, artistas, playlists, pertenencias e historial. Nunca los archivos, y nunca `uri`/`filePath`/`artPath` (una URI SAF es del dispositivo, no significa nada en otro equipo y filtra la estructura de carpetas del usuario). Esto es lo que impide que el servidor se convierta en alojador de contenido con la responsabilidad que eso trae — el mismo razonamiento que la sección 5.2 del plan de seguridad ya había usado para descartar la web que reproduce desde el servidor.
-    - **D-3 queda decidida: PC como programa de escritorio**, más adelante, encima de la base de sincronización que se construye ahora. El audio en el PC sale de una estrategia **híbrida**: emparejar por hash de payload de audio lo que ya esté en su disco (el mismo `AudioIdentityService` que ya comparten el escáner y el descargador, justamente para que la identidad nunca diverja) y descargar sólo lo que falte. Nada de re-descargar la biblioteca entera, y nada de transmitir desde el teléfono.
-    - **Los usuarios que ya tienen biblioteca se migran con un popup de una sola vez**, disparado desde `MainShellScreen` sólo si hay canciones y no hay sesión. Si lo cierran, no vuelve nunca (queda en Ajustes → Cuenta). Vincular la cuenta **es** aceptar que el índice y el historial viajen, y el diálogo lo dice con todas las letras antes de que el usuario toque nada: no existe el estado intermedio "tengo cuenta para descargar pero no subo nada".
-    - **Amigos con solicitud y aceptación**, nunca seguimiento unilateral. El **nombre de usuario se reclama bajo demanda** (al abrir Amigos o al compartir), nunca en el registro: los usuarios actuales tienen que poder vincular su biblioteca sin elegir un handle, así que una cuenta con biblioteca completa y `username` nulo es un estado normal y duradero, no un error. Restringido a `a-z0-9_`: con alfabetos mezclados, un handle en cirílico se dibuja idéntico a uno latino y la suplantación es trivial justo en la función cuyo objetivo es encontrar a tu amigo.
-    - **Buscar usuarios es coincidencia exacta, con presupuesto diario por cuenta.** Dicho sin adornos: buscar por nombre *es* un oráculo de pertenencia y no se puede cerrar teniendo la función. Se encarece (nada de prefijos ni listados, presupuesto por cuenta —que exige correo verificado—, y una respuesta que sólo dice el handle y tu relación con él), no se elimina.
-    - **Reversión acotada de D-4.** Sincronizar el historial completo y publicar "escuchando ahora" revierte, **sólo para datos de usuario**, la decisión de no guardar qué escucha cada quién. La regla sobre los **logs del servidor sigue intacta**: identidad y contenido nunca en la misma línea, y `PUT /presence` no escribe ninguna línea (ni la identidad sola: a esa frecuencia sería una línea temporal de actividad de alta resolución). Trampa concreta a evitar en las rutas nuevas: **el texto de una excepción de asyncpg incluye los valores implicados**, así que se registra el tipo, nunca `str(e)`.
-    - **"Escuchando ahora": en memoria del proceso, sin latidos, y el TTL lo calcula el cliente.** En memoria porque una presencia que se pierde al reiniciar *revoca* algo efímero (la dirección segura), al revés que un cupo, que *concedería*; y porque en Postgres serían ~1.400 escrituras diarias por usuario, cada una una tupla muerta, para un dato que vale dos minutos. Sin latidos porque un temporizador contradice la cultura anti-polling de este proyecto y gasta batería. El cliente manda `expiresInSeconds` = lo que le queda a la canción + 60, así **la presencia caduca exactamente cuando la canción habría terminado**: si se sigue escuchando, el cambio de pista republica solo; si la app murió, se apaga sola. Viaja **sólo el `songId`** y el servidor resuelve el título contra el índice de quien publica — así nadie puede falsear un título que no posee. Apagado es indistinguible de "no está escuchando nada", a propósito.
-    - **`PUT /library` combina por clave, nunca reemplaza.** Es la misma regla de D2 ("never auto-delete") aplicada a la nube: un teléfono con la tarjeta desmontada no puede borrar la mitad del PC. Encima va una versión optimista (`baseVersion` → 409) que convierte la pérdida silenciosa en un conflicto visible el día que existan dos dispositivos.
-    - **Amigos es una ruta empujada, no una sexta pestaña** — misma decisión, y por la misma razón, que la Etapa 11 tomó para la lista de espera.
-    - **Escala, dicha por adelantado:** el historial completo cuesta ~200 bytes por reproducción. A escala de amigos y familia (decenas de usuarios) hay años de margen en el plan gratuito de Neon; con cientos de usuarios se llena en cosa de un año. La palanca de retención y un tope de historial retroactivo quedan puestos desde el día uno.
-    - **Estado al 2026-08-29 — F0 y F1 hechas, quedan F2 a F9.** El plan completo por fases está en las notas de trabajo locales; acá sólo el mapa, para saber por dónde se sigue.
-      - **F0 — hecha.** Decisiones escritas (esta misma entrada) y árbol limpio.
-      - **F1 — hecha.** Refactor de estadísticas: `models/statistics_data.dart`, `services/statistics_service.dart` y `widgets/statistics_view.dart` extraídos de `settings_screen.dart`, que baja de ~530 líneas de estadísticas a ~60 sin cambiar visualmente. `StatisticsView` acepta `decorated`/`headerLabel`/`trailing`/`onPeriodChanged` para que el perfil de un amigo y la imagen compartida la reutilicen tal cual. **Y arregla un bug real:** la carga se llamaba dentro de `FutureBuilder(future: ...)`, así que cada reconstrucción disparaba cuatro consultas a SQLite — incluida cada notificación de `MusicProvider`, o sea cada descarga que terminaba en cualquier otra parte de la app. 20 tests nuevos (130 en total).
-      - **F2 — servidor, cuentas.** Pool gobernado por `DATABASE_URL` con `min_size=0` (con `min_size=1` el pool impide que Neon suspenda su computación y se come las horas del plan gratuito), las dos guardas de arranque nuevas, `users` + contadores por cuenta, `require_account`/`require_username`, y `GET /account` con *get-or-create* — eso último es lo que hace que la cuenta adopte la biblioteca ya existente, sin ningún paso de migración. **Con esto solo ya se puede publicar el popup.**
-      - **F3 — servidor, índice e historial.** Las tres tablas de biblioteca, `play_history`, `GET`/`PUT /library` con versión optimista y `ETag`, `POST /history` con inserción por `unnest` (a 2.000 filas la forma del INSERT decide si la migración tarda segundos o minutos), y el tope de `Content-Length` **antes** de parsear.
-      - **F4 — cliente, sincronización.** Esquema v14 (`play_history.syncedAt` + `playedAtUtc`), `CloudSource`/`HeardyCloudSource`, `SyncProvider` y la sección de Ajustes → Cuenta, incluida la válvula de "borrar mis datos de la cuenta".
-      - **F5 — popup de migración.** Depende de F4 para que su promesa sea cierta.
-      - **F6 — nombre de usuario + compartir imagen.** Añade `share_plus` (ojo: rompió su API entre la v10 y la v11, hay que mirar la versión instalada).
-      - **F7 — amigos.** `friendships` y las cinco rutas en el servidor; `FriendsScreen`/`FriendProfileScreen` en el cliente.
-      - **F8 — escuchando ahora.** Deliberadamente la última: es lo de mayor coste de privacidad y lo único sin persistencia, así que se puede revertir sola sin consecuencias sobre los datos.
-      - **F9 — pase en dispositivo y docs.**
-
-### Próxima sesión — retomar aquí
-
-**Estado (2026-08-29):** las Fases 2 y 3 del plan de seguridad (identidad delegada y cupo diario) están implementadas, con tests en verde, y **el código está desplegado en Render** — verificado indirectamente: `/usage` responde 401 en vez de 404, y `/docs` da 404. Las variables de entorno (`HEARDY_FIREBASE_PROJECT_ID`, `HEARDY_DATABASE_URL`, `HEARDY_DAILY_SONGS_PER_USER`) las configuró el usuario ese mismo día, **pero todavía no se confirmaron contra el servidor**.
-
-**Ojo con un detalle de Render al comprobarlo:** si un despliegue no arranca, Render **sigue sirviendo la versión anterior**. Un `/health` con 200 es compatible tanto con "todo bien" como con "el despliegue nuevo se cayó y sigue vivo el viejo". Sólo `/health/detail` (clave admin) o el estado del despliegue en el panel distinguen una cosa de la otra.
-
-**Pendiente de verificación, en orden:**
-1. `GET /health/detail` debe decir `dailySongQuota: {"limitPerUser": 150, "connected": true}`.
-2. Que el cupo sobreviva de verdad a un reinicio: bajarlo a 2-3, agotarlo, reiniciar el servicio a mitad, confirmar que el contador siguió donde estaba — el motivo entero de haberlo puesto en Postgres.
-3. El flujo de cuenta completo (registro, correo de verificación, login, una descarga real) en un dispositivo Android real. Nada de la Fase 2 se ha ejercitado nunca con un token real.
-
-**D-3 ya no está abierta.** Se decidió el 2026-08-29 a favor del programa de escritorio, con sincronización de metadatos (no de archivos) — ver la Etapa 16, que es el trabajo en curso.
-
-**Nota sobre este archivo:** este repositorio es **público**. Al escribir aquí, asumir lector externo: arquitectura y decisiones de diseño sí, detalle operativo no.
-
-## Commands
-
-```bash
-flutter pub get                  # install dependencies
-flutter run                      # run on connected device/emulator (Android only, no iOS config)
-flutter build apk                # release APK
-flutter analyze                  # static analysis (flutter_lints)
-flutter test                     # run tests (no test/ directory exists yet)
-flutter clean                    # wipe build/ and .dart_tool/ — use if you hit stale-build/plugin-registration issues
-```
-
-No CI config, no `analysis_options.yaml` beyond `flutter_lints` default. Signing config for release builds lives in `android/keystore.properties` (gitignored) and `heardy-release-key.jks`.
+Heardy is a Flutter (Android-only) music library and player app. There is no backend for audio: every song's
+bytes live on-device, addressed via Android's Storage Access Framework (SAF), and playback is fully offline.
+An optional backend exists for two things only — downloading audio from YouTube/Spotify into the local
+library, and syncing a lightweight index (titles, playlists, play history) across a user's own devices. The
+backend never stores audio and never needs to for the app to work.
+
+Two ways a song enters the library, and this is the load-bearing idea of the whole app: **however a song
+arrives, it ends up as one ordinary row in `songs`, indistinguishable from the others.**
+
+1. **Local import** — the user drops files into the SAF folder from outside the app; a scan reconciles disk
+   against SQLite.
+2. **Download** — the download service writes a new file into the same SAF folder, using the exact same
+   content-identity computation the scanner uses. **Acceptance test for this equivalence, everywhere in this
+   codebase: download a song, then immediately rescan — it must report `unchanged`, never `inserted`.** If it
+   ever reports `inserted`, the downloader and the scanner have diverged on identity, and every future download
+   will duplicate itself.
+
+## Core rules
+
+- Every change must leave the app compiling and able to play music. Run `flutter analyze` (and `flutter test`)
+  before considering a change finished.
+- **State management: Provider only.** No Riverpod, Bloc, GetX, or Redux. Every stateful piece of app state is
+  a `ChangeNotifier` registered in `main.dart`'s `MultiProvider`. Screens hold local UI state (search text,
+  sort mode) directly in `State` objects rather than lifting it into a provider.
+- **Storage access is SAF-only for user media** — see "Local library" below for why. Never reach for
+  `dart:io File`, `MANAGE_EXTERNAL_STORAGE`, or MediaStore as a shortcut; those were evaluated and rejected.
+- **Sync between the app and any of its data stores is additive, never destructive by default.** A missing
+  row/file on one side is treated as "not seen yet," not "delete this" — see D2 and the cloud-sync section.
+  Only an explicit user action (a delete button, a confirmed "remove my data") ever deletes something.
+- **Downloading is a second import path into the same library, not a parallel subsystem.** Any new download
+  source must integrate at the scanner's reconciliation seam, not bypass it.
+- **Loading flags reset in a single `finally`**, not at each return site — a `State` with multiple early exits
+  after an `await` can otherwise brick its own UI on an untested exit path.
+- **Dependency injection for testability.** External-facing services (a download source, a cloud sync client,
+  anything that talks to a server or a plugin with no test double) are constructor/`Provider`-injected so
+  tests can substitute a fake. Follow this shape for new external dependencies.
+- **Models are hand-rolled, uniformly:** every model implements `toMap()`/`fromMap(Map)`/`toJson()`/
+  `fromJson(String)` by hand — no `json_serializable`/`freezed`/`equatable`.
+- **`MediaItem` construction is duplicated, not factored out**, across the few call sites that build one.
+  Match the existing `extras` keys exactly (`filePath`, `artPath`, `playlist_id`) — the audio handler reads
+  them by string key.
+- **Error handling is print-and-swallow by default** in `services/`/`providers/` — intentional for a
+  single-user-per-device app with no crash reporting. Boundary code (parsing a network response, validating a
+  payload) should still fail loudly.
+- **File naming:** snake_case files, one primary PascalCase class per file. Private helpers/fields are
+  `_camelCase`.
+- **Spanish throughout:** UI strings, most comments, and `print()` messages are in Spanish; match whichever
+  language surrounds the code you're editing. `server/` (Python) follows the same convention.
+- Default to writing no comments; add one only when the *why* is genuinely non-obvious (a hidden constraint, a
+  workaround for a specific bug, a rejected alternative worth remembering).
 
 ## Architecture
-
-*(This section describes the state after the local-library pivot AND the `feature/youtube-downloads` branch. On `main`, ignore every mention of `server/`, `DownloadSource`, `DownloadService`, `DownloadProvider`, `import_screen.dart` and the Spotify bridge — none of that exists there.)*
 
 ### Directory map
 
 ```
 lib/
 ├── main.dart                        # entrypoint: DB init, notifications, AudioService init, permission
-│                                     # requests, Provider tree wiring (incl. DownloadSource/DownloadProvider),
-│                                     # RouteGenerator (only "/" and "/playlist")
+│                                     # requests, Provider tree wiring, RouteGenerator ("/" and "/playlist")
 ├── models/
-│   ├── song.dart                    # id, title, artist, duration, filePath, artPath, format, downloadDate,
-│   │                                 # + local-library fields (uri, fileHash, hashKind, fileSize, modifiedAt,
-│   │                                 # album, missing) + sourceUrl (download branch, schema v11)
+│   ├── song.dart                    # id, title, artist, duration, filePath, artPath, format, uri, fileHash,
+│   │                                 # hashKind, fileSize, modifiedAt, album, missing, sourceUrl
 │   ├── playlist.dart                # id, name, creationDate, sortOrder, optional originalUrl
-│   └── playlist_song.dart           # mirrors playlist_songs join table; mostly unused since DatabaseHelper
-│                                     # queries the join table with raw SQL instead
-├── providers/                       # ChangeNotifier state holders (see "State management" below)
+│   └── playlist_song.dart           # mirrors the playlist_songs join table
+├── providers/                       # ChangeNotifier state holders
 │   ├── music_provider.dart          # playlists + current playlist songs + cold-start playback restoration +
-│   │                                 # library-root/inbox-count/librarySongsVersion bookkeeping
-│   ├── settings_provider.dart       # theme preset + max search results + download-server URL (all
-│   │                                 # SharedPreferences-backed)
-│   ├── auth_provider.dart           # (download branch, Etapa 14) HeardyAuthProvider: Firebase Auth session
-│   │                                 # (isReady = signed in + email verified), the id token downloads send
-│   └── download_provider.dart       # (download branch) the persistent download queue: enqueue, processQueue,
-│                                     # retry/backoff, cancellation — see "Download pipeline" below
+│   │                                 # library-root/inbox-count bookkeeping
+│   ├── settings_provider.dart       # theme, max search results, language — SharedPreferences-backed
+│   ├── auth_provider.dart           # HeardyAuthProvider: account session state, email verification, id token
+│   ├── download_provider.dart       # persistent download queue: enqueue, processQueue, retry/backoff,
+│   │                                 # cancellation
+│   └── sync_provider.dart           # cloud sync orchestrator: history upload, content-hash-gated library
+│                                     # push, "now playing" presence publishing off the playback handler
 ├── services/                        # business logic, no Flutter widget dependencies
 │   ├── database_helper.dart         # SQLite schema, migrations, all CRUD/queries — single source of truth
-│   ├── storage_service.dart         # SAF library-root lifecycle: pick, recognize an already-initialized
-│   │                                 # root, resolve/create a per-playlist folder for downloads
-│   ├── library_scan_service.dart    # reconciles the SAF folder into SQLite (D2's two matchers); the local
-│   │                                 # import path
-│   ├── audio_identity.dart          # content-hash of a song's audio payload only (skips ID3/MP4 tag blocks);
-│   │                                 # shared by the scanner AND the downloader so identity never diverges
-│   ├── metadata_service.dart        # audio_metadata_reader wrapper: SAF-copy-then-read tags, filename
-│   │                                 # fallback, embedded-cover extraction
-│   ├── download_source.dart         # (download branch) abstract DownloadSource interface + RemoteTrack/
-│   │                                 # RemotePlaylist DTOs — the only thing the app knows about "a server"
-│   ├── ytdlp_server_source.dart     # (download branch) the one real DownloadSource: HTTP client for server/
-│   ├── download_service.dart        # (download branch) turns a RemoteTrack into a library song: fetch →
-│   │                                 # write tags → SAF paste → AudioIdentity → dedupe → insertSong
-│   ├── spotify_service.dart         # (download branch) scrapes open.spotify.com/embed/* __NEXT_DATA__ for
-│   │                                 # metadata (no official API) — restored verbatim from the pre-pivot code
-│   ├── spotify_match.dart           # (download branch) pure Spotify→YouTube matching by duration proximity
+│   ├── storage_service.dart         # SAF library-root lifecycle: pick, recognize, resolve/create per-playlist
+│   │                                 # folders
+│   ├── library_scan_service.dart    # reconciles the SAF folder into SQLite — the local import path
+│   ├── audio_identity.dart          # content-hash of a song's audio payload only; shared by the scanner and
+│   │                                 # the downloader so identity never diverges
+│   ├── metadata_service.dart        # tag reading wrapper: SAF-copy-then-read, filename fallback, embedded
+│   │                                 # cover extraction
+│   ├── download_source.dart         # abstract interface + DTOs — the only thing the app knows about "a server"
+│   ├── ytdlp_server_source.dart     # the one real DownloadSource implementation: HTTP client for server/
+│   ├── download_service.dart        # turns a resolved remote track into a library song: fetch → write tags →
+│   │                                 # SAF paste → identity compute → dedupe → insertSong
+│   ├── spotify_service.dart         # scrapes public Spotify embed metadata (no official API), no coupling to
+│   │                                 # YouTube or dart:io
+│   ├── spotify_match.dart           # pure Spotify→YouTube matching by duration proximity
 │   ├── audio_player_handler.dart    # audio_service/just_audio bridge: queue, background playback, lock-screen
 │   │                                 # controls, play-history recording, playback-state persistence
 │   ├── playback_state_service.dart  # SharedPreferences read/write for "resume where I left off"
-│   ├── lyrics_service.dart          # fetches/caches synced .lrc lyrics from LRCLIB
-│   └── translation_service.dart     # traduce las letras línea a línea vía MyMemory (sin API key),
-│                                     # con caché en disco junto al .lrc
+│   ├── lyrics_service.dart          # fetches/caches synced .lrc lyrics from a public lyrics API
+│   ├── translation_service.dart     # line-by-line lyrics translation, disk-cached next to the .lrc
+│   ├── cloud_source.dart            # abstract interface + DTOs for the account/sync/friends/presence surface
+│   ├── heardy_cloud_source.dart     # the one real CloudSource implementation: HTTP client for server/
+│   ├── account_prompt.dart          # pure decision function for the one-time account-linking prompt
+│   └── share_image_service.dart     # RepaintBoundary → PNG capture + share-sheet handoff for stats images
 ├── screens/                         # one file per screen/tab, StatefulWidget + Provider consumers directly
 │   ├── main_shell_screen.dart       # bottom-nav shell + persistent MiniPlayer
 │   ├── home_screen.dart             # playlist library: create/rename/reorder/delete
-│   ├── inbox_screen.dart            # D6 batch triage for songs imported loose in the library root
-│   ├── import_screen.dart           # (download branch) "Añadir": paste a YouTube/Spotify URL → preview →
-│   │                                 # pick playlist → enqueue; also the live download-queue UI
-│   ├── auth/login_screen.dart       # (download branch, Etapa 14) sign in/register/reset password, and the
-│   │                                 # "verify your email" interstitial — pushed from ImportScreen/SearchScreen/
-│   │                                 # Settings, never a global gate
+│   ├── inbox_screen.dart            # batch triage for songs imported loose in the library root
+│   ├── import_screen.dart           # paste a YouTube/Spotify URL → preview → pick playlist → enqueue; also
+│   │                                 # the live download-queue UI
+│   ├── auth/login_screen.dart       # sign in/register/reset password, "verify your email" interstitial —
+│   │                                 # pushed from a screen that needs an account, never a global gate
 │   ├── search_screen.dart           # Local/YouTube segmented search
-│   ├── playlist_detail_screen.dart  # song list for one playlist: search/sort/reorder/delete/play; "Actualizar
-│   │                                 # desde YouTube" for playlists with `originalUrl` (download branch)
-│   ├── now_playing_screen.dart      # full player UI — largest screen by far
-│   └── settings_screen.dart         # theme picker, max search results, library-folder picker, download-server
-│                                     # URL diagnostic, account section (download branch)
+│   ├── playlist_detail_screen.dart  # song list for one playlist: search/sort/reorder/delete/play
+│   ├── now_playing_screen.dart      # full player UI
+│   ├── settings_screen.dart         # theme picker, library-folder picker, download-server diagnostic,
+│   │                                 # account section (sync status, delete-my-data, presence toggle)
+│   ├── friends_screen.dart          # exact-match username search, requests, friends list with "now playing"
+│   └── friend_profile_screen.dart   # a friend's stats, rendered with the same StatisticsView as one's own
 ├── widgets/                         # glass_card, mini_player, song_tile, playlist_target_sheet,
-│                                     # download_progress_card (download branch)
-├── l10n/                            # app_es.arb + app_en.arb (se versionan); AppLocalizations es
-│                                     # generado por `flutter gen-l10n` y está en .gitignore
-└── theme/app_theme.dart             # presets navy/violet/rose/verde/naranja/rojo + modo `custom`
-                                      # (color principal y secundario elegidos por el usuario)
+│                                     # download_progress_card, statistics_view, username_claim_sheet,
+│                                     # share_stats_card
+├── l10n/                            # app_es.arb + app_en.arb (versioned); AppLocalizations is generated by
+│                                     # `flutter gen-l10n` and is gitignored
+└── theme/app_theme.dart             # color presets + a custom mode (user-chosen primary/secondary)
 
-server/                              # (download branch only) FastAPI + yt-dlp microservice — see server/README.md
+server/                              # FastAPI + yt-dlp microservice — see server/README.md
 ```
 
 ### State management: Provider
 
-- `MusicProvider` — owns playlists and the songs of the currently-viewed playlist (queried fresh from SQLite on every mutation, not cached/derived). Also owns playback-state restoration on cold start, and the library-root/inbox-count/`librarySongsVersion` state every screen watches to know when to reload.
-- `SettingsProvider` — theme preset, max search results, and (download branch) the download server's URL — all persisted to `SharedPreferences`. Authentication against that server is `HeardyAuthProvider`'s job (Firebase Auth, Etapa 14), not this provider's.
-- `DownloadProvider` *(download branch)* — the persistent download queue and its processing loop. Reaches the library through an `onDownloadComplete(playlistId)` callback rather than holding a `MusicProvider` reference, which is what keeps it unit-testable and a pure orchestrator. Knows nothing about HTTP or the server — talks only to `DownloadSource`.
-- `HeardyAuthProvider` *(download branch, Etapa 14)* — wraps `FirebaseAuth`: session state, email-verification status, and the id token `YtdlpServerSource` sends as `Authorization: Bearer`. Not a gate on the rest of the app — only `ImportScreen`/`SearchScreen` read `isReady` before letting a download start.
+- `MusicProvider` — owns playlists and the songs of the currently-viewed playlist (queried fresh from SQLite
+  on every mutation). Also owns playback-state restoration on cold start, and inbox/library-version state every
+  screen watches to know when to reload.
+- `SettingsProvider` — theme, language, and other locally-persisted preferences. Does not hold auth state.
+- `DownloadProvider` — the persistent download queue and its processing loop. Reaches the library through a
+  callback rather than holding a `MusicProvider` reference, which keeps it unit-testable and a pure
+  orchestrator. Knows nothing about HTTP or the server — talks only to `DownloadSource`.
+- `HeardyAuthProvider` — wraps the account/auth SDK: session state, email-verification status, and the id
+  token sent as `Authorization: Bearer` on server calls. Not a gate on the rest of the app — only the
+  screens that talk to the server read `isReady` before letting a network action start.
 
-`AudioPlayerHandler` is provided directly via `Provider<AudioPlayerHandler>.value`, not a `ChangeNotifier` — screens read it via `context.read`/`context.watch` and react to its `mediaItem`/`playbackState`/`queue` streams directly. `DownloadSource` *(download branch)* is provided the same way, via `Provider<DownloadSource>.value`.
+`AudioPlayerHandler` and `DownloadSource` are provided via `Provider<T>.value`, not as `ChangeNotifier`s —
+screens read them via `context.read`/`context.watch` and react to their streams directly.
 
-### Data layer: `DatabaseHelper` (SQLite via sqflite), single source of truth, schema v13
+### Data layer: `DatabaseHelper` (SQLite via sqflite), single source of truth
 
-Tables: `songs`, `playlists`, `playlist_songs` (join table, `ON DELETE CASCADE` both ways, ordered by `orderIndex`), `play_history` (top songs/artists this week/month), and *(download branch)* `download_queue` (persists an in-progress batch across app kill/restart; generic `sourceType`/`sourceId` shape, not YouTube-specific) and `pending_imports` (a pasted URL that couldn't even reach `/resolve` because the server didn't answer at all — see Etapa 11, "Lista de espera").
+Tables: `songs`, `playlists`, `playlist_songs` (join table, cascading both ways, ordered by `orderIndex`),
+`play_history`, `download_queue` (persists an in-progress download batch across app kill/restart), and
+`pending_imports` (a pasted URL that couldn't reach the server at all).
 
-Schema changes go through `_onUpgrade` with sequential `if (oldVersion < N)` blocks — bump `version` in `_initDB` and add a new block, never rewrite an existing one.
+Schema changes go through `_onUpgrade` with sequential `if (oldVersion < N)` blocks — bump `version` in
+`_initDB` and add a new block, **never rewrite an existing one**.
 
-Songs are content-addressed: imported/downloaded songs use `id == fileHash` (the audio-payload hash from `AudioIdentityService`, see D2); legacy pre-pivot rows keep their YouTube video id via `filePath`. `Song.playablePath` (`uri ?? filePath`) is what actually gets handed to the player, so both generations coexist without a migration. A song can belong to multiple playlists via `playlist_songs`; deletion always checks `getPlaylistCountForSong` first.
+Songs are content-addressed: imported/downloaded songs use `id == fileHash` (the audio-payload hash — see
+"Local library" below); legacy rows keep whatever id they were created with. `Song.playablePath`
+(`uri ?? filePath`) is what actually gets handed to the player, so both generations coexist without a
+migration. A song can belong to multiple playlists via `playlist_songs`; deletion always checks
+`getPlaylistCountForSong` first, and an explicit delete removes the underlying file too (both `File(filePath)`
+for legacy rows and the SAF `uri` for imported/downloaded ones) — the DB row and the real bytes are kept in
+sync on every deletion path.
 
-### Two ways a song enters the library
+## Local library
 
-This is the load-bearing idea of the whole post-pivot app: **however a song arrives, it ends up as one ordinary row in `songs`, indistinguishable from the others.**
+### Storage access: SAF, one persisted tree URI
 
-1. **Local import** (`library_scan_service.dart`) — the user drops files into the SAF folder from outside the app; a scan reconciles disk against SQLite via D2's two matchers (same uri+size/mtime → unchanged; unknown uri but same audio hash → moved/renamed).
-2. **Download** *(download branch)* — `DownloadService.download()` writes a new file into the same SAF folder (`Heardy/<Playlist>/`), computed with the exact same `AudioIdentityService` the scanner uses. **The acceptance test for this equivalence, everywhere in this codebase: download a song, then immediately rescan — it must report `unchanged`, never `inserted`.** If it ever reports `inserted`, the downloader and the scanner have diverged on what a song's identity is, and every future download will duplicate itself.
+Scoped storage is mandatory on this app's minimum/target SDKs, so audio is addressed by `content://` URIs, not
+file paths. The user picks a folder once via `ACTION_OPEN_DOCUMENT_TREE`; the app takes a persistable
+permission and stores the tree URI. Heardy creates/uses a `Heardy/` folder inside it, with one subfolder per
+playlist.
 
-### Download pipeline *(download branch only)*
+Rejected alternatives, do not revisit without new evidence:
+- `MANAGE_EXTERNAL_STORAGE` — the Play Store's declaration form does not accept media players for this
+  permission.
+- MediaStore + `READ_MEDIA_AUDIO`/`READ_MEDIA_VIDEO` — doesn't index `.mp4` reliably as audio, and Android 14+'s
+  partial-access selector for video makes a library scanner see an arbitrary subset of files with no clear
+  signal to the user about why.
 
-The app never talks to YouTube directly — all extraction fragility lives in `server/`, a small FastAPI + yt-dlp microservice (see `server/README.md` for running it, and DD1 above for why it's a separate service instead of an in-app extractor).
+Consequences: `dart:io File` never addresses user media — pass `content://` URIs straight into the audio
+player, which handles them natively. Directory enumeration is a batched, projected query per folder (id, name,
+size, modified time, mime type) — never a per-child round trip, which is far too slow for large libraries.
 
-1. `DownloadSource` (`download_source.dart`) is the abstract seam — `resolve`/`resolvePlaylist`/`search`/`fetchAudio`/`probe`. `YtdlpServerSource` is the only real implementation; a second provider (e.g. a commercial API) would be a new class behind the same interface, not a rewrite.
-2. **`ImportScreen`/`SearchScreen` call `DownloadSource` directly** for previews/search — no download happens yet, just metadata.
-3. **`DownloadProvider.enqueueTrack`/`enqueuePlaylist`** write rows into `download_queue` and kick `processQueue()` (fire-and-forget from the UI's perspective; safe to call redundantly, a no-op if already running).
-4. **`processQueue()` drains what's runnable, one job at a time** (concurrency 1 — the extraction budget is per-IP, not per-app, and the server already serializes it too), then schedules a `Timer` for the next backoff-eligible job rather than sleeping inside its loop (a real bug found by a test: sleeping there left `isProcessing` true with nothing happening, and blocked `cancelAll`).
-5. **DD6 — the `/resolve` rule.** A job whose metadata came from `extract_flat` (search results, playlist entries, Spotify matches — `metadataComplete: false`) gets resolved for real via `/resolve` **inside `DownloadService.download(resolveFirst: true)`, before a single byte downloads** — otherwise the channel name (not the real artist) would get written into the file's tags. A job whose metadata already came from `/resolve` (a pasted single URL's own preview, `metadataComplete: true`) skips this — repeating it would waste a request for nothing. The resolved metadata is persisted to `download_queue` **the moment the resolve succeeds**, so a subsequent retry after a failed download doesn't resolve twice.
-6. **Permanent vs. transient failures.** The server classifies extraction failures: known-permanent ones (video deleted/private/members-only/age-restricted/region-blocked, bad URL) return **404**, mapped client-side to `DownloadSourceErrorKind.notFound` and dropped from the queue on the first attempt. Everything else (blocked IP, network hiccup) is **502**, retried up to 3 times with backoff `[5s, 15s, 45s]`. `attempts` lives in the DB (a restart doesn't hand a doomed job a fresh budget); the backoff timing is in-memory only (a user reopening the app wants a retry *now*). A `415` from `/audio` (no AAC/M4A track) is definitive and never retried.
-   - **The YouTube anti-bot wall specifically gets its own status and its own retry treatment (added 2026-08-03).** Before this, "Sign in to confirm you're not a bot" collapsed into the same generic 502/`extraction` bucket as any other transient server-side hiccup, so a big batch (e.g. a 60-song playlist) would exhaust `maxAttempts` (3 tries, ~65s total) on this error long before the wall's real **20-40+ minute** recovery window (`docs/investigacion_muro_antibot.md`) — the rest of the batch just got dropped as failures needing a manual retry. `ytdlp_client._classify` now matches that specific message to a new `AntiBotBlockError` (still a subclass of the retryable `ExtractionError`, so every existing `except EXTRACTION_ERRORS` keeps working unchanged) and `main.py`'s `_extraction_error` maps it to **503** instead of 502. Client-side, `DownloadSourceErrorKind.antiBotBlocked` gets the same "doesn't consume `attempts`, reschedules and waits" treatment as `quotaExceeded`/`network`, but with its own fixed `_antiBotBlockWaitSeconds = 1800` (30 min — a reasonable point inside the measured range, not a promise; if still blocked, the same mechanism just waits again). No fabricated countdown shown to the user — the copy says "puede tardar entre 20 y 40 minutos" per the architecture doc's own section 5.2 rule against inventing a precise number for this specific case. `DownloadProvider.retryPendingImports()` also stops its pass early on this error, same as it already did for `network`/`quotaExceeded`.
-7. **`DownloadService.download()`** does the actual work once a job is due: fetch to temp → write tags with `audio_metadata_reader.updateMetadata` (the file becomes self-describing on disk) → `SafStream.pasteLocalFile` into `Heardy/<Playlist>/` → `SafUtil.stat` **after** the paste (the document provider sets `lastModified` and may rename on a name collision — always use the returned uri, never reconstruct it) → `AudioIdentityService.compute` over SAF → dedupe by hash (if the same audio already exists as a different song, delete the just-pasted duplicate file and just add the *existing* song to the target playlist) → `insertSong`.
+### File identity: hash the audio payload, not the file
 
-### Spotify bridge *(download branch only)*
+A naive whole-file hash breaks on tag edits (ID3v2 lives at the start of an MP3 and changes both offset and
+size on edit). Identity is the hash of the audio payload only, at content offsets — skipping ID3/APEv2 blocks
+for MP3, and hashing the media atom for MP4/M4A. A `hashKind` column records which strategy produced the hash,
+with a whole-file fallback when parsing fails, so a later parser fix can selectively invalidate.
 
-Not a queue job type — matching happens **client-side, interactively, at analyze time** in `ImportScreen`, not deferred into the background queue. `spotify_match.dart`'s `matchSpotifyTrack` searches YouTube for `'$artist $title'` and picks the closest result **by duration only** (never by title/artist string similarity, which is far less reliable across platforms): ≤3s is a clean match, ≤30s is acceptable, above that — or no comparable candidate — the track is dropped from the batch and shown as "no se descargará". The whole match list is shown once, before a single "Descargar N" button (extending this project's own batch-action philosophy from D6, rather than either silently guessing or demanding N per-track confirmations). A matched track re-enters the ordinary download pipeline exactly like a search result (`metadataComplete: false`); `sourceType: 'spotify'` is provenance only, nothing branches on it.
+Reconciliation per file found on disk, in order:
+1. Known URI, unchanged size/mtime → skip, no hashing (the common case, keeps rescans cheap).
+2. Known URI, changed size/mtime → same song row, re-hash, update, keep playlist membership (a tag edit in
+   place).
+3. Unknown URI, hash matches an existing row → update the URI, keep playlist membership (a move/rename).
+4. No match → new song, inserted with no playlist membership (lands in the inbox).
 
-### Background downloads *(download branch, fixed 2026-08-21)*
+Per DB row *not* found on disk: mark `missing`, **never auto-delete**. A row later revived by hash comes back
+with its playlists intact. Only an explicit user action deletes a song row.
 
-**Root cause, confirmed by reading the code, not assumed.** `DownloadProvider` had zero background-execution protection — no foreground service, no wakelock — unlike playback, which already has `audio_service`'s own foreground service (see D8/Playback below). `processQueue()` processes the queue one job at a time, `await`ing each HTTP call in turn; with no protection, Android freezes or throttles the app's network/CPU as soon as it's not the foreground app, so each queued job hits the same restriction in its turn. A beta user reported exactly this: left the app mid-playlist-download to browse YouTube, came back to "no server connection" and every song in the batch reported failed. A second, independent gap made it worse: `processQueue()`/`retryPendingImports()` were only ever called at cold start (`main.dart`) — never on returning to the foreground — so even a job that failed from a momentary restriction had no automatic nudge to retry until the next full app restart.
+### Playlists live in SQLite; folders are an import mechanism only
 
-Fix, two parts:
-- **`flutter_foreground_task`** (not `flutter_background_service`, which D8 removed as genuinely dead weight for playback — this is a new, real need) backs a dedicated Android foreground service, declared `foregroundServiceType="dataSync"` (`AndroidManifest.xml`, plus the `FOREGROUND_SERVICE_DATA_SYNC` permission — Android 14+ requires the type to match the declared permission). `lib/services/download_foreground_service.dart`'s `DownloadTaskHandler` is deliberately a no-op — its only job is to exist so the plugin can start the service at all; the real download logic keeps running unchanged in `DownloadProvider`, on the main isolate, exactly as before. `DownloadProvider._runJob` starts/updates a persistent notification ("Descargando: <título> · N en cola") per job; `processQueue()`'s `finally` stops it unless another job is due within `_foregroundKeepAliveThreshold` (60s — covers the normal `_backoff` table without flickering the notification between jobs in the same batch), so a long wait (quota, anti-bot block, server down) correctly lets the service go rather than holding a foreground service open for 30 minutes just to wait. `cancelAll()` stops it explicitly too, for the case where cancellation lands while nothing is actively processing (waiting on a backoff timer).
-- **`MainShellScreen` now implements `WidgetsBindingObserver`** and calls `processQueue()`/`retryPendingImports()` on `AppLifecycleState.resumed` — a safety net independent of the foreground service (OEM battery managers can still be more aggressive than stock Android), matching the existing "reasonable signal, not polling" philosophy already used for cold start and DD11's pending-imports resume.
+A subfolder name determines a song's playlist only on first insert; after that, `playlist_songs` is the sole
+truth. Sync between disk and the database is one-way for anything the app didn't put there itself — moving a
+song between playlists inside the app never moves or rewrites the file on disk. The one exception, by design:
+the app **is** allowed to create new files in the folder the user picked to hold their music (that's what a
+download is), and to delete a file the user explicitly asked to delete. What it never does is reorganize,
+rename, or rewrite a file the user placed there themselves.
 
-**Not yet verified on real hardware** — no Android device was available in this environment. Before considering this closed: background a real multi-song download batch (switch to another app, not just press home), confirm the persistent "Descargando…" notification appears and the batch keeps progressing, and confirm the notification disappears once the queue empties or moves to a long wait.
+### Playback of both file shapes
 
-### Playback (`AudioPlayerHandler` extends `BaseAudioHandler` + `just_audio`)
+ExoPlayer plays a `.mp4`'s AAC track directly with no video output and no transcoding — the only unplayable
+case is an `.mp4` with no audio track, which is excluded during scanning. A `content://` uri is existence
+-checked via the SAF plugin (metadata-only, no bytes read) instead of `File.existsSync()`; a failed check
+(revoked permission, unmounted volume, deleted file) is treated as "not playable" and silently skipped from the
+queue.
 
-- Queue is backed by `ConcatenatingAudioSource`. `_isPlayable`/`_sourceUriFor` handle both path shapes: a `content://` SAF uri is checked with `SafUtil.exists` (metadata-only) instead of `File(...).existsSync()`; a failed check (revoked permission, unmounted volume, deleted file) is treated as "not playable" and silently skipped from the queue, the same outcome for every one of those causes.
-- Play-history (`play_history` table) recorded via `_startTracking`/`_finalizePlay` once >= 50% of a track's duration is reached, on track change or completion.
-- Playback state (queue, current media id, position, shuffle/loop, speed) persisted to `SharedPreferences` on every `playbackEventStream` tick via `PlaybackStateService`; restored on cold start — `main.dart` calls `MusicProvider.restorePlaybackState` from a post-frame callback (not a timing guess). `restorePlaybackState` is idempotent by real state (`AudioPlayerHandler.hasLoadedSource`), not a "ran once" flag — safe to call more than once, and self-heals if `queue`/`mediaItem` describe a song but the player has no source loaded (see the paused+close bug below).
-- **Paused-then-closed player corruption (fixed 2026-07-29): root cause and fix.** `androidStopForegroundOnPause` (package default `true`, never overridden here) demotes the foreground service the moment playback pauses — unlike while playing, a paused app is fully exposed to the OS killing the process outright on task removal, **without ever invoking `onTaskRemoved`**. Fix: `onTaskRemoved` now clears `_playlistSource`/`queue`/`mediaItem`; `hasLoadedSource` + the idempotent `restorePlaybackState` self-heal both when the callback ran and when the process died before it could. Considered `androidStopForegroundOnPause: false` — rejected: it requires `androidNotificationOngoing: false` too and keeps the notification permanently non-dismissible while paused, a worse cost than the bug it prevents.
-- **Confirmed on real hardware 2026-08-01 (closes D8's long-open gap):** background playback survives backgrounding the app, and the lock-screen/notification play/pause/skip controls work, on an actual Android 14 device — this had only ever been exercised via the fake SAF backend and desktop builds before.
-- **App freezes on cold start, force-close required (reported 2026-08-03) — plausible cause fixed, not yet confirmed on hardware.** The user reported the app hanging while starting, on top of (not replacing) the paused-then-closed bug above — that one is fixed, but this is a separate, still-open symptom. Found by inspection: `onTaskRemoved` called `_player.stop()` directly instead of this handler's own `stop()` override, which meant `super.stop()` — audio_service's own protocol call that tells Android the media session/foreground service is actually done — never ran on task removal. A media session that Android still considers "active" when the process later dies could plausibly make the *next* cold start's `AudioService.init()` hang waiting to register a session the system hasn't released yet — consistent with "force-close (which kills the stale process for real) and reopen" being the user's own workaround. Fixed by calling `stop()` instead of `_player.stop()` in `onTaskRemoved`, which also runs `_finalizePlay()`/`_resetTracking()` for free. **This is a reasoned diagnosis from reading the code, not a reproduced-and-verified fix** — no Android device was available in this environment to confirm the hang or its resolution. Verify on real hardware: force-close while paused, relaunch, confirm no hang; if it persists, capture `adb logcat` around the hang for the actual native stack, since `AudioService.init()`'s handshake living entirely on the platform side means Dart-level logging alone won't show where it's stuck.
-- **Mini player → `NowPlayingScreen` expand animation stuttered (fixed 2026-08-21).** Reported as "brusca... se atasca un poco al expandirse". Two real CPU costs were landing in the same frames as the ~300ms `SlideTransition` in `mini_player.dart:_openNowPlaying`: (1) `SmartAlbumArt`'s `Image.file` had no `cacheWidth`/`cacheHeight`, so it decoded artwork at full source resolution just to display it at 300px; (2) the post-frame callback that triggers `_updatePalette` fired essentially on the transition's first frame, and `PaletteGenerator.fromImageProvider` had no `size` hint, so it decoded and quantized the full-resolution image too, on the UI isolate, while the slide was still animating. Fixed by adding device-pixel-ratio-aware `cacheWidth`/`cacheHeight` to `SmartAlbumArt`'s decode, giving `PaletteGenerator` a `size: Size(100, 100)` downscale hint, and delaying the palette extraction by 320ms (just past the transition) so its CPU burst no longer overlaps the animated frames. No change to the transition curve/duration itself — the jank was competing CPU work, not the easing.
+### Metadata
 
-### Lyrics (`LyricsService`)
+Tags (ID3/MP4 atoms + embedded artwork) are read via a pure-Dart reader. Because SAF only hands out streams,
+each file is copied to a temp location once at import/tag-edit time, read, and the copy deleted immediately
+after — never kept around. No tags → parse the filename (`Artist - Title`, stripping track numbers and
+bracketed junk), album from the folder name, artist "Unknown", artwork a gradient derived from the title hash.
+Falls back per-field, not all-or-nothing — a title with no artist still keeps the title. Manual tag editing is
+in scope for this app, not a nice-to-have, since hand-imported files commonly have missing or wrong tags.
 
-Fetches synced `.lrc` lyrics from LRCLIB (public, keyless) and caches to `<app documents>/lyrics/<songId>.lrc`. Pre-fetched in the background at the end of every download (`DownloadService.download`'s final step), so typically already cached by the time "now playing" opens.
+Artwork is stored as small per-song files in app-private storage, not SQLite blobs — keeps the database small
+and avoids loading images into memory for list views. No placeholder file is ever written for "no artwork";
+the gradient fallback is a pure render-time decision.
 
-### Error handling & diagnostics
+### Inbox for unassigned files
 
-Most `catch (e)` in `services/`/`providers/` `print()` and return a default rather than rethrow — intentional for a single-user offline app with no crash reporting. `RepairService`, `LogService` and `ErrorProvider` (pre-pivot manual-recovery/diagnostics scaffolding) were deleted outright in the pivot's prune stage — recoverable from the `youtube-downloader-final` tag if ever needed again, but nothing currently depends on them.
+Any song with no playlist membership shows up in a batch triage screen: multi-select, "select all", assign to
+one or more playlists in a single action, or dismiss with a reversible "ignore" flag that the scanner never
+touches on its own. Importing many files at once must cost the user one interaction, not one per file.
 
-### UI structure
+## Download system
 
-`MainShellScreen` hosts 5 bottom-nav tabs over an `IndexedStack`: Home, Bandeja (inbox), Añadir *(download branch)*, Buscar, Ajustes — plus a persistent `MiniPlayer`. `PlaylistDetailScreen` and `NowPlayingScreen` are pushed routes. Routing is a manual `onGenerateRoute` switch in `main.dart` (`RouteGenerator`) — only `/` and `/playlist` are registered. `AppTheme` supports three presets (navy/violet/rose) via `SettingsProvider`.
+The app never talks to YouTube directly — all extraction fragility lives in a small FastAPI + yt-dlp
+microservice (`server/`, see `server/README.md`). This keeps the fragile, frequently-changing part of the
+system out of the shipped APK and behind an interface the client barely needs to know about.
 
-**`PlaylistDetailScreen` also renders its own `MiniPlayer` (fixed 2026-08-21).** It's a pushed route, so it fully covers `MainShellScreen` — the mini player used to disappear the moment you opened a playlist, since it only ever lived in `MainShellScreen`'s `Stack`. Fixed by wrapping `PlaylistDetailScreen`'s body in the same `Stack` + bottom-`Positioned` `MiniPlayer` pattern; the song list's existing `bottom: 90` padding already left room for it.
+- **`DownloadSource`** (`download_source.dart`) is the abstract seam — resolve a single URL, resolve a
+  playlist, search, fetch audio, probe connectivity. `YtdlpServerSource` is the only real implementation; a
+  different provider would be a new class behind the same interface, not a rewrite.
+- Format: original AAC/M4A, never transcoded — this is the only format that needs no new file extension, no
+  new hash strategy, and that the tag writer and player both already support natively.
+- **Screens call `DownloadSource` directly** for previews/search — no download happens yet, just metadata.
+- **`DownloadProvider`** writes rows into a persistent queue table and drains it one job at a time
+  (concurrency 1 — extraction is budget-limited per client, not per app), scheduling a timer for the next
+  backoff-eligible job rather than sleeping inside its processing loop.
+- **A job whose metadata came from a flattened listing (search results, playlist entries, matched tracks) is
+  always re-resolved for real before a single byte downloads** — otherwise a channel name or placeholder
+  metadata ends up written into the file's tags. A job whose metadata already came from a full resolve (a
+  pasted single URL's own preview) skips this, since repeating it would waste a request for nothing.
+- **Permanent vs. transient failures are distinguished server-side and mapped to distinct client-side error
+  kinds**, each with its own retry policy: a definitively-gone video is dropped immediately; a rate limit or
+  anti-bot block reschedules without spending the finite retry budget, waiting for a server-provided or
+  reasonable fixed interval; a plain network/transient error retries a small, fixed number of times with
+  backoff. Never fabricate a precise wait time to the user for a wait whose real duration isn't known.
+- **`DownloadService.download()`** does the actual work once a job is due: fetch to a temp file → write tags
+  (so the file is self-describing on disk) → paste into the user's SAF folder → recompute identity from the
+  pasted file (never trust a pre-paste path — the document provider may rename on a collision) → dedupe by
+  hash against the existing library → insert.
+- A background-download batch needs its own Android foreground service (distinct from the one that already
+  backs audio playback) so the queue keeps running while the app isn't in the foreground; falling back on app
+  resume is a secondary safety net, not the primary mechanism.
 
-**`MusicProvider.loadSongsForPlaylist(id, updateCurrent: false)` used to overwrite `_currentPlaylistSongs` unconditionally (fixed 2026-08-21).** `updateCurrent` only ever guarded `_currentPlaylistId`; the songs fetch/assignment ran regardless. The one real caller of `updateCurrent: false` is `main.dart`'s `onDownloadComplete` callback, guarding against exactly the case where a download finishes into a playlist the user isn't currently viewing — but since `PlaylistDetailScreen` reads `musicProvider.currentPlaylistSongs` (not something keyed by its own `widget.playlistId`), the screen you had open would silently swap to the *download's* playlist's songs the instant a download completed elsewhere, while the AppBar title (which does use `widget.playlistId`) stayed correct — reported by a user as "the app jumps to the download's destination playlist." Fix: gate the whole body (id **and** songs fetch) behind `updateCurrent`, so `updateCurrent: false` is now a true no-op for `_currentPlaylistSongs`. No other call site passes `false`, so this doesn't change behavior anywhere else.
+### Spotify bridge
 
-### Android specifics
+Spotify metadata comes from scraping Spotify's own public embed page (no official API needed, no coupling to
+YouTube). Matching to a YouTube video happens client-side, interactively, at analyze time — never as a
+background queue job, since a background worker has no user present to show a match to or warn about a bad
+one. Matching is by **duration proximity only**, never by title/artist string similarity (translations,
+"(Official Video)", casing all make string similarity unreliable across platforms); a track with no
+close-enough match is dropped from the batch and shown as "won't be downloaded," never downloaded on a guess.
+The whole match list is shown once, before a single batch-download action — never one confirmation dialog per
+track.
 
-Background playback: `audio_service` alone (no `flutter_background_service`/`wakelock_plus` — both were dead weight, confirmed by grep and removed in the pivot; see D8) + a foreground notification channel (`com.heardy.app.audio`). *(Download branch, added 2026-08-21)* `flutter_foreground_task` backs a second, dedicated foreground service (`foregroundServiceType="dataSync"`) so the download queue keeps running while the app is backgrounded — see "Background downloads" above. `minSdkVersion` is 24, `targetSdk` is 36. *(Download branch)* `android/app/src/main/res/xml/network_security_config.xml` permits cleartext HTTP only for loopback, private IPv4 ranges, and Tailscale's CGNAT range/`.ts.net` — everything else (LRCLIB, etc.) stays HTTPS-only via the default `base-config`. No new Android permissions were needed for downloads themselves: `INTERNET` was already declared; the download-queue foreground service needed its own new one, `FOREGROUND_SERVICE_DATA_SYNC`.
+## Authentication
 
-## Testing downloads *(download branch)*
+Account identity is delegated to a managed auth provider (Firebase Auth) — this app never stores or sees a
+password. Signing in yields a short-lived id token; the download server verifies that token per request
+alongside (or instead of) any static API key. A verified email is required before the account can download,
+distinct from just having an account.
+
+**Authentication is not a global gate.** Only the screens that actually talk to the server (import, search)
+require a signed-in, verified session; everything else in the app (local library, playlists, playback, local
+search) works fully offline with no account at all — that's the whole premise of the local-first design and
+must not change.
+
+No secret of any kind belongs in this file or in application source under version control. Server-side
+secrets are environment variables on the hosting platform; client-side, a build-time value is acceptable
+*only* if it is not sensitive on its own — an id token workflow needs no client-embedded server secret at all,
+which is the direction this app has moved in and should stay in.
+
+## Cloud sync
+
+The account is also the anchor for a lightweight cross-device index — the metadata a future desktop client
+(or a reinstalled phone) needs to reconstruct someone's library and stats without moving any audio.
+
+**The server stores an index, never audio.** Titles, artists, playlists, membership, and play history —
+never a SAF `uri`, a local `filePath`, an `artPath`, or anything else that only means something on the
+device that produced it. This is what keeps the server from becoming a content host with the legal and
+operational weight that implies.
+
+Design rules that follow from that, settled and not to be re-opened without a real reason:
+
+- **Push is full-index, not incremental, and merges by key rather than replacing.** A device with its storage
+  unmounted, or one that hasn't synced in a while, must never be able to wipe out data that lives only on
+  another device. Full-index push is much simpler to make idempotent and naturally detects real deletions —
+  the tradeoff, accepted, is "last write wins" at the whole-library granularity, mitigated by an optimistic
+  version check that turns a silent conflict into a visible one instead of silently discarding data.
+  Reconciling the very first sync of an account that already has a cloud index (e.g. from a second device) is
+  a union by content hash, not a conflict — nothing is ever deleted just because a fresh install hasn't seen it
+  yet.
+- **History uploads are deduplicated by a natural key derived from data the client already has** (song +
+  local timestamp), not a client-generated id — that avoids collisions across devices and lets a user's
+  pre-existing local history sync on day one with no separate migration step. Client-reported values that
+  could be used to game shared stats (like listened duration) are sanitized server-side, never trusted as-is.
+- **A migration path for existing local-only users is opt-in and shown once.** Linking an account *is*
+  agreeing that the index and history travel to the server — say so plainly before the user acts, and never
+  leave an in-between state of "have an account but nothing synced." Dismissing the prompt must never show it
+  again automatically; it stays reachable from settings.
+- **A user-facing "erase my cloud data" action is part of the same delivery as the sync feature itself**, not
+  a later addition — anyone who links an account and changes their mind needs a way out before there's
+  meaningful data to regret uploading.
+- **Any live-presence-style feature ("listening now") is opt-in, defaults off, is asked for explicitly once
+  (not silently defaulted either way), and expires by itself rather than relying on an explicit "goodbye"
+  signal** — a mobile OS can kill a process without running its cleanup code, so any "I stopped" signal must be
+  something that expires on its own, computed from how long the currently-playing track has left, not a fixed
+  heartbeat interval. No such feature should add a new persistent timer/polling loop to the client.
+- **Server logs never combine identity and content in the same line**, for any of these routes. This
+  includes being careful that a raw database-driver exception's text can itself contain the values involved in
+  the failing query — log the exception type, never its full text, on routes that touch anything privacy
+  -sensitive.
+- **Any feature that lets one account look up another (friends, usernames) treats "search" as an existence
+  oracle and prices it accordingly** rather than pretending it can be fully closed: exact-match only, a daily
+  budget per account, and a response that reveals nothing beyond the fact of the match and the relationship —
+  never email, size of library, or listening totals to a non-friend.
+- A social/friends surface is a pushed route, not a permanent bottom-nav tab, for the same reason the app
+  already avoids adding a tab for anything that's usually empty when working as intended.
+
+## Testing
 
 ```bash
-cd server && run.bat              # native, no Docker needed for development — see server/README.md
-flutter test test/download_live_integration_test.dart   # exercises the real chain against the real server;
-                                                          # skips itself cleanly if the server isn't running
+flutter test                                             # Dart unit + widget tests
+flutter analyze                                           # static analysis (flutter_lints)
+cd server && test.bat                                      # server unit tests (pure logic, no live DB needed)
+flutter test test/download_live_integration_test.dart      # exercises the real download chain against a
+                                                             # running server; skips itself cleanly if none is up
 ```
 
-Pure-logic pieces (no server, no network, no widgets) are covered directly: `test/spotify_match_test.dart`, `test/ytdlp_server_source_test.dart` (HTTP client against a fake `http.Client`), `test/download_provider_test.dart` (queue/retry policy against a fake `DownloadSource`). Widget-level coverage exists for `ImportScreen` (`test/import_screen_test.dart`, `test/import_screen_spotify_test.dart`) — it needs no `AudioPlayerHandler`, unlike `PlaylistDetailScreen`/`SearchScreen`, which do and therefore can't be widget-tested in this codebase yet (no fake for `just_audio`'s platform-channel `AudioPlayer`).
+Pure-logic pieces (no server, no network, no widgets) are unit-tested directly wherever possible — matching
+logic, retry/backoff policy, payload validation, SQL-shape tests against a fake connection. Prefer extracting
+a pure top-level function specifically so it's testable without rendering a screen, following the existing
+pattern in this codebase (e.g. a diff function pulled out of a screen widget, or a decision function pulled
+out of a startup callback).
 
-**A `sqflite_common_ffi` + `testWidgets` gotcha, worth knowing before writing another widget test that touches the database:** any `tester.pump()`/`pumpWidget()` following real DB I/O done outside `tester.runAsync()` hangs forever — a Dart zone issue, not an animation-loop issue. The whole interactive body of a test, pumps included, needs to live inside one `runAsync`, with real-delay pump loops (`await Future.delayed(d); await tester.pump(d);`) instead of `pumpAndSettle` (which would also never terminate while `DownloadProgressCard`'s indeterminate spinner is on screen). See `test/import_screen_test.dart`'s `_settle`/`_pumpUntil` helpers.
+**A `sqflite_common_ffi` + `testWidgets` gotcha:** any `tester.pump()`/`pumpWidget()` following real DB I/O
+done outside `tester.runAsync()` hangs forever — a zone issue, not an animation-loop issue. Wrap the whole
+interactive body of such a test in one `runAsync`, and use bounded real-delay pump loops instead of
+`pumpAndSettle()` when an indeterminate spinner is on screen.
 
-## Conventions
+**A known test-coverage gap:** any screen that reads the real audio-playback handler can't be widget-tested in
+this codebase — there is no test double for `just_audio`'s platform-channel player object. Extract the
+screen's actual logic into a pure, separately-testable function rather than trying to widget-test the screen
+itself; building a real fake for the audio player would be the proper fix if more screens need this coverage.
 
-- **State management: Provider only.** No Riverpod, Bloc, GetX, or Redux. Every stateful piece of app state is a `ChangeNotifier` registered in `main.dart`'s `MultiProvider`. Screens hold local UI state (search text, sort mode) directly in `State` objects rather than lifting it into a provider.
-- **File naming:** snake_case files, one primary PascalCase class per file (`music_provider.dart` → `MusicProvider`). Private helpers/fields are `_camelCase`.
-- **Two service-instantiation styles coexist:** singleton-via-static-instance (`DatabaseHelper.instance`, `LyricsService.instance`) vs. instantiated-per-owner classes (`StorageService`, `LibraryScanService`, *(download branch)* `SpotifyService`).
-- **Models are hand-rolled, uniformly:** every model implements `toMap()`/`fromMap(Map)`/`toJson()`/`fromJson(String)` by hand — no `json_serializable`/`freezed`/`equatable`. Match this shape for new persisted entities.
-- **`MediaItem` construction is duplicated, not factored out** across `MusicProvider` (3 places) and `playlist_detail_screen.dart` (1 place). Match the existing extras keys (`filePath`, `artPath`, `playlist_id`) exactly — `AudioPlayerHandler` reads them by string key.
-- **Error handling is print-and-swallow by default** in `services/`/`providers/` — intentional for a single-user offline app with no crash reporting.
-- **Loading flags must reset in a single `finally`**, not at each return site — screens with multiple early exits after `await` (e.g. `_isAnalyzing` in `import_screen.dart`) can otherwise brick the UI on an untested exit path. This is a real bug this project hit once (in the pre-pivot `add_from_youtube_screen.dart`) and has deliberately avoided ever since.
-- **Dependency injection for testability, used consistently:** `DownloadSource`, `DownloadProvider`, and *(download branch)* `ImportScreen`'s `spotifyService` are all constructor/`Provider`-injected specifically so tests can substitute a fake without touching real network/SAF. Follow this shape for new external-facing dependencies rather than instantiating them inline where they're used.
-- **Spanish throughout:** UI strings, most comments, and `print()` messages are in Spanish. `server/` (Python) and its own comments are also in Spanish, matching the rest of the codebase; match whichever language surrounds the code you're editing.
+## Development commands
 
-## Key dependencies
+```bash
+flutter pub get                  # install dependencies
+flutter run                      # run on connected device/emulator (Android only, no iOS config)
+flutter build apk                # release APK
+flutter analyze                  # static analysis (flutter_lints)
+flutter test                     # run tests
+flutter clean                    # wipe build/ and .dart_tool/ — use if you hit stale-build/plugin-registration issues
+```
 
-- **`just_audio` + `audio_service`** — playback engine. `just_audio` decodes/plays local files (and, for imported/downloaded songs, `content://` SAF uris directly); `audio_service` wraps it for background playback, lock-screen/notification controls, OS media-session integration.
-- **`sqflite`** — the entire persistence layer: songs, playlists, join table, play history, and *(download branch)* the download queue, in one SQLite file.
-- **`saf_util` + `saf_stream`** — Storage Access Framework: tree picking, persisted permissions, batched directory listing, byte-range reads, and *(download branch)* writing downloaded files into the picked tree.
-- **`audio_metadata_reader`** — pure-Dart ID3v1/v2 + MP4/M4A tag reading, and *(download branch)* writing (so a downloaded file is self-describing on disk, not just in SQLite).
-- **`provider`** — sole state-management dependency; low ceremony over Bloc/Riverpod for a small, single-maintainer codebase.
-- *(añadido 2026-08-21)* **`flutter_localizations` + `intl`** — i18n español/inglés vía ARB y `flutter gen-l10n`. Las claves nuevas se añaden a **los dos** `lib/l10n/*.arb`; el `AppLocalizations` generado no se versiona, se reconstruye en cada `flutter pub get`.
-- *(download branch, added 2026-08-21)* **`flutter_foreground_task`** — backs the download queue's own Android foreground service (`dataSync` type), separate from `audio_service`'s `mediaPlayback` one, so the queue keeps running while the app is backgrounded. Its `TaskHandler` is a deliberate no-op — see "Background downloads" above.
-- *(download branch, `server/` only, not a Flutter dependency)* **`yt-dlp`** — the actual YouTube extraction engine, deliberately unpinned in `server/requirements.txt` unlike everything else there; see `server/README.md`.
+No CI config, no `analysis_options.yaml` beyond `flutter_lints` default. Signing config for release builds is
+kept out of version control (`android/keystore.properties`, the release keystore itself) — see the gitignored
+local notes for where they actually live on this machine; never document that location here.
+
+## Security rules
+
+- **Never commit a secret of any kind** — API keys, tokens, cookies, keystores, `.env` files. Sensitive
+  operational detail (where a secret physically lives, real hostnames, which machine runs what) belongs in a
+  gitignored local file, never here.
+- **Server-side secrets are environment variables**, read from config at startup; a missing required secret
+  should fail startup loudly rather than silently degrade (e.g. running a feature that claims a limit exists
+  without anywhere to persist it).
+- **Never log identity and content together.** Never log the full text of a database exception on a route that
+  touches user data — driver exceptions can embed the query's actual values.
+- **The server never stores or needs the user's audio.** Only metadata/index data crosses that boundary.
+- **Never expose a device-local SAF `uri` (or any local file path) outside the device it came from** — it's
+  meaningless elsewhere and can leak folder structure.
+- **This file documents architecture and settled decisions, not operational history.** Don't add dated
+  session logs, "the user reported X on device Y," real hostnames/IPs, account names, or step-by-step
+  credential-rotation procedures here — that material belongs in the gitignored local notes referenced from
+  here only as "local operational notes," never by path or content.
+
+## Current work
+
+Active development branch extends the app from a pure offline local-library player into: (1) an optional
+YouTube/Spotify download pipeline that writes into the same local library, and (2) an optional cloud sync
+layer (accounts, cross-device library/history sync, friends, shared stats) built on top of that. Both are
+strictly additive — the app is fully usable offline with no account, by design, and that must stay true.
+
+The cloud-sync layer is now implemented end to end, server and client, with unit/widget test coverage
+(pure-logic tests server-side against fakes, no live Postgres; client tests against fake `CloudSource`/HTTP
+clients, no live server). What's landed:
+
+- **Server**: account identity (Firebase-only, distinct from the API-key mechanism used for downloads),
+  username claim with a cooldown, a library index + play-history sync surface with optimistic-concurrency
+  conflict detection, a canonical-pair friendship model (request/accept/remove, one row per pair regardless of
+  who asked), per-account daily budgets on the lookup/social endpoints (distinct from the download quota), and
+  an in-memory "now playing" presence tracker with a client-computed TTL.
+- **Client**: the local schema gained a sync-tracking column pair on play history; a `CloudSource` abstraction
+  (mirroring `DownloadSource`) with the one real HTTP implementation; a sync orchestrator that uploads
+  unsynced history in batches and pushes the library index only when its content actually changed (a
+  client-side content-hash short-circuit, so an unmodified library costs nothing per sync tick); the
+  one-time account-linking prompt (shown once, reachable again from settings if dismissed); a username-claim
+  sheet invoked from exactly the two places that need one; friends list/request screens and a friend's stats
+  profile (reusing the same statistics widgets as the user's own); a share-as-image flow for stats; and
+  presence publishing wired off the existing playback-handler streams, gated by an explicit opt-in switch and
+  throttled so it costs one request per song actually listened to, never a heartbeat.
+- Statistics UI was extracted into reusable, data-driven widgets first (no direct DB access from the widget
+  layer), which is what let the friend-profile screen reuse it as-is.
+
+**Deliberate simplification versus the original design notes:** rather than threading an explicit
+"library changed" flag through every mutation call site, the sync orchestrator computes a local content hash
+of the library index before each sync attempt and skips the network call entirely when it's unchanged since
+the last successful push — one mechanism instead of instrumenting every place the library can change.
+
+**Not yet done, and this is the real gap going into next steps:** none of this has been exercised against a
+real Postgres instance or a real device. Before relying on it in production: provision the database, confirm
+the daily-song-quota and account-usage counters actually survive a server restart (the whole reason they're
+persisted rather than in-memory), and walk the real flow on an Android device — link an account, see the
+one-time prompt exactly once, sync a real library, add a friend, see "now playing" update, share a stats
+image through a real share-sheet target. None of that has run against anything but fakes and a debug build so
+far.

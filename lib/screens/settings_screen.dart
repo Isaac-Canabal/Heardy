@@ -4,15 +4,20 @@ import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../providers/music_provider.dart';
 import '../providers/settings_provider.dart';
+import '../providers/sync_provider.dart';
 import '../screens/auth/login_screen.dart';
+import '../screens/friends_screen.dart';
 import '../services/database_helper.dart';
 import '../theme/app_theme.dart';
 import '../services/download_source.dart';
 import '../services/storage_service.dart';
 import '../l10n/app_localizations.dart';
 import '../models/statistics_data.dart';
+import '../services/share_image_service.dart';
 import '../services/statistics_service.dart';
+import '../widgets/share_stats_card.dart';
 import '../widgets/statistics_view.dart';
+import '../widgets/username_claim_sheet.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -115,6 +120,12 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 24),
+          _SectionTitle(l10n.settingsAccountSectionTitle),
+          const SizedBox(height: 10),
+          const _AccountSection(),
+          const SizedBox(height: 28),
+          const _StatisticsSection(),
+          const SizedBox(height: 28),
           _SectionTitle(l10n.settingsSectionStorage),
           const SizedBox(height: 10),
           Container(
@@ -167,8 +178,6 @@ class SettingsScreen extends StatelessWidget {
               },
             ),
           ),
-          const SizedBox(height: 28),
-          const _StatisticsSection(),
           const SizedBox(height: 28),
           _SectionTitle(l10n.settingsSectionAppearance),
           const SizedBox(height: 10),
@@ -420,10 +429,6 @@ class SettingsScreen extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 28),
-          _SectionTitle(l10n.settingsAccountSectionTitle),
-          const SizedBox(height: 10),
-          const _AccountSection(),
-          const SizedBox(height: 28),
           _SectionTitle(l10n.serverSectionTitle),
           const SizedBox(height: 10),
           const _DownloadServerSection(),
@@ -590,16 +595,109 @@ class _StatisticsSectionState extends State<_StatisticsSection> {
           future: _future,
           builder: (context, snapshot) {
             final loading = snapshot.connectionState == ConnectionState.waiting;
+            final data = loading ? null : (snapshot.data ?? const StatisticsData.empty());
             return StatisticsView(
-              data: loading ? null : (snapshot.data ?? const StatisticsData.empty()),
+              data: data,
               isWeek: _isWeek,
               onPeriodChanged: _setPeriod,
               expanded: _isExpanded,
               onToggleExpanded: () => setState(() => _isExpanded = !_isExpanded),
+              trailing: data == null || data.isEmpty
+                  ? null
+                  : IconButton(
+                      icon: const Icon(Icons.ios_share_rounded, color: Colors.white54, size: 20),
+                      onPressed: () => _share(context, data),
+                    ),
             );
           },
         ),
       ],
+    );
+  }
+
+  Future<void> _share(BuildContext context, StatisticsData data) async {
+    final username = await ensureUsername(context);
+    if (username == null || !context.mounted) return;
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppTheme.surface,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (_) => _ShareStatsSheet(username: username, initialData: data, initialIsWeek: _isWeek),
+    );
+  }
+}
+
+class _ShareStatsSheet extends StatefulWidget {
+  final String username;
+  final StatisticsData initialData;
+  final bool initialIsWeek;
+
+  const _ShareStatsSheet({required this.username, required this.initialData, required this.initialIsWeek});
+
+  @override
+  State<_ShareStatsSheet> createState() => _ShareStatsSheetState();
+}
+
+class _ShareStatsSheetState extends State<_ShareStatsSheet> {
+  final _boundaryKey = GlobalKey();
+  late bool _isWeek = widget.initialIsWeek;
+  late StatisticsData _data = widget.initialData;
+  bool _sharing = false;
+
+  Future<void> _changePeriod(bool isWeek) async {
+    setState(() => _isWeek = isWeek);
+    final data = await loadLocalStatistics(isWeek: isWeek);
+    if (mounted) setState(() => _data = data);
+  }
+
+  Future<void> _share() async {
+    setState(() => _sharing = true);
+    try {
+      await waitForEndOfFrame();
+      final bytes = await renderBoundaryPng(_boundaryKey);
+      if (bytes != null) await shareStatsImage(bytes);
+    } finally {
+      if (mounted) setState(() => _sharing = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            l10n.shareStatsSheetTitle,
+            style: const TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(height: 16),
+          PeriodToggle(isWeek: _isWeek, onChanged: _changePeriod),
+          const SizedBox(height: 16),
+          RepaintBoundary(
+            key: _boundaryKey,
+            child: ShareStatsCard(username: widget.username, data: _data, isWeek: _isWeek),
+          ),
+          const SizedBox(height: 20),
+          SizedBox(
+            width: double.infinity,
+            child: FilledButton.icon(
+              onPressed: _sharing ? null : _share,
+              icon: _sharing
+                  ? const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                    )
+                  : const Icon(Icons.ios_share_rounded, size: 18),
+              label: Text(l10n.shareStatsAction),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -620,11 +718,47 @@ class _StatisticsSectionState extends State<_StatisticsSection> {
 class _AccountSection extends StatelessWidget {
   const _AccountSection();
 
+  String _formatLastSync(AppLocalizations l10n, DateTime? at) {
+    if (at == null) return l10n.syncNeverSynced;
+    final d = DateTime.now().difference(at);
+    final when = d.inMinutes < 1
+        ? '${d.inSeconds}s'
+        : d.inHours < 1
+            ? '${d.inMinutes}m'
+            : d.inDays < 1
+                ? '${d.inHours}h'
+                : '${d.inDays}d';
+    return l10n.syncLastSync(when);
+  }
+
+  Future<void> _confirmDeleteData(BuildContext context) async {
+    final l10n = AppLocalizations.of(context)!;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: Text(l10n.syncDeleteMyDataConfirmTitle),
+        content: Text(l10n.syncDeleteMyDataConfirmBody),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(dialogContext).pop(false), child: Text(l10n.commonCancel)),
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: Text(l10n.syncDeleteMyData, style: const TextStyle(color: Colors.redAccent)),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    await context.read<SyncProvider>().deleteCloudData();
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.syncDeleteMyDataDone)));
+  }
+
   @override
   Widget build(BuildContext context) {
     final l10n = AppLocalizations.of(context)!;
     final auth = context.watch<HeardyAuthProvider>();
     final signedIn = auth.isReady;
+    final sync = context.watch<SyncProvider>();
 
     return Container(
       decoration: AppTheme.glassCard(),
@@ -668,6 +802,97 @@ class _AccountSection extends StatelessWidget {
                   : () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const LoginScreen())),
             ),
           ),
+          if (signedIn) ...[
+            const Divider(height: 32, color: Colors.white12),
+            Row(
+              children: [
+                Icon(Icons.badge_outlined, color: Colors.white.withValues(alpha: 0.6), size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    sync.account?.username != null
+                        ? '@${sync.account!.username}'
+                        : l10n.accountNoUsernameYet,
+                    style: TextStyle(color: Colors.white.withValues(alpha: 0.75), fontSize: 13),
+                  ),
+                ),
+                if (sync.account?.username == null)
+                  TextButton(
+                    onPressed: () async {
+                      final username = await ensureUsername(context);
+                      if (username != null && context.mounted) {
+                        context.read<SyncProvider>().syncNow();
+                      }
+                    },
+                    child: Text(l10n.accountChooseUsernameButton),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Icon(Icons.people_alt_outlined, color: Colors.white.withValues(alpha: 0.6), size: 18),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextButton(
+                    style: TextButton.styleFrom(alignment: Alignment.centerLeft, foregroundColor: Colors.white),
+                    onPressed: () async {
+                      final username = await ensureUsername(context);
+                      if (username == null || !context.mounted) return;
+                      Navigator.of(context)
+                          .push(MaterialPageRoute(builder: (_) => const FriendsScreen()));
+                    },
+                    child: Text(l10n.friendsTitle),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              sync.isSyncing
+                  ? l10n.syncInProgress
+                  : sync.lastError != null
+                      ? l10n.syncErrorLabel(sync.lastError!)
+                      : _formatLastSync(l10n, sync.lastSyncAt),
+              style: TextStyle(
+                color: sync.lastError != null ? Colors.redAccent : Colors.white.withValues(alpha: 0.55),
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+                    ),
+                    onPressed: sync.isSyncing ? null : () => context.read<SyncProvider>().syncNow(),
+                    child: Text(l10n.syncNowButton),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            SwitchListTile(
+              contentPadding: EdgeInsets.zero,
+              activeThumbColor: AppTheme.primaryLight,
+              value: context.watch<SettingsProvider>().shareNowPlaying,
+              title: Text(l10n.presenceShareTitle, style: const TextStyle(color: Colors.white, fontSize: 13)),
+              subtitle: Text(
+                l10n.presenceShareBody,
+                style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 11),
+              ),
+              onChanged: (enabled) => context.read<SettingsProvider>().setShareNowPlaying(enabled),
+            ),
+            const SizedBox(height: 4),
+            TextButton(
+              onPressed: () => _confirmDeleteData(context),
+              style: TextButton.styleFrom(foregroundColor: Colors.redAccent, alignment: Alignment.centerLeft),
+              child: Text(l10n.syncDeleteMyData),
+            ),
+          ],
         ],
       ),
     );

@@ -70,7 +70,13 @@ class StatisticsView extends StatelessWidget {
           children: [
             Icon(Icons.bar_chart_rounded, color: AppTheme.primaryLight, size: 20),
             const SizedBox(width: 8),
-            Flexible(
+            // `Expanded`, no `Flexible` + `Spacer`: con el toggle de periodo Y
+            // el botón de compartir compitiendo por la misma fila en una
+            // pantalla de 360dp, el título se comía casi todo el ancho antes
+            // de llegar a truncarse — el mismo desbordamiento que ya se
+            // documentó una vez en este proyecto (Etapa 9), pero acá el ancho
+            // sobrante era negativo, no sólo insuficiente para un hint.
+            Expanded(
               child: Text(
                 headerLabel ?? l10n.statsYourActivity,
                 maxLines: 1,
@@ -81,12 +87,18 @@ class StatisticsView extends StatelessWidget {
                 ),
               ),
             ),
-            const Spacer(),
-            if (onPeriodChanged != null)
-              PeriodToggle(isWeek: isWeek, onChanged: onPeriodChanged!),
-            if (trailing != null) trailing!,
           ],
         ),
+        if (onPeriodChanged != null || trailing != null) ...[
+          const SizedBox(height: 10),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              if (onPeriodChanged != null) PeriodToggle(isWeek: isWeek, onChanged: onPeriodChanged!),
+              if (trailing != null) trailing!,
+            ],
+          ),
+        ],
         const SizedBox(height: 16),
         _buildBody(context, l10n),
       ],

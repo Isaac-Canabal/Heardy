@@ -12,13 +12,16 @@ import 'package:firebase_core/firebase_core.dart';
 
 import 'services/database_helper.dart';
 import 'services/audio_player_handler.dart';
+import 'services/cloud_source.dart';
 import 'services/download_service.dart';
 import 'services/download_source.dart';
+import 'services/heardy_cloud_source.dart';
 import 'services/ytdlp_server_source.dart';
 import 'providers/auth_provider.dart';
 import 'providers/download_provider.dart';
 import 'providers/music_provider.dart';
 import 'providers/settings_provider.dart';
+import 'providers/sync_provider.dart';
 import 'screens/main_shell_screen.dart';
 import 'screens/playlist_detail_screen.dart';
 import 'theme/app_theme.dart';
@@ -103,15 +106,29 @@ void main() async {
     },
   );
 
+  // Misma base/autenticación que el servidor de descargas — una sola
+  // instancia del servidor, dos superficies (`DownloadSource`, `CloudSource`).
+  final CloudSource cloudSource = HeardyCloudSource(
+    baseUrl: () => settingsProvider.downloadServerUrl,
+    authToken: () => authProvider.idToken(),
+  );
+  final syncProvider = SyncProvider(
+    source: cloudSource,
+    shareNowPlayingEnabled: () => settingsProvider.shareNowPlaying,
+  );
+  syncProvider.attachPlayback(audioHandler);
+
   runApp(
     MultiProvider(
       providers: [
         Provider<AudioPlayerHandler>.value(value: audioHandler),
         Provider<DownloadSource>.value(value: downloadSource),
+        Provider<CloudSource>.value(value: cloudSource),
         ChangeNotifierProvider.value(value: authProvider),
         ChangeNotifierProvider.value(value: settingsProvider),
         ChangeNotifierProvider.value(value: musicProvider),
         ChangeNotifierProvider.value(value: downloadProvider),
+        ChangeNotifierProvider.value(value: syncProvider),
       ],
       child: const HeardyApp(),
     ),
@@ -131,6 +148,11 @@ void main() async {
     // arranque en frío es una oportunidad razonable de comprobar si ya volvió
     // y resolver solo lo que quedó en la lista de espera.
     downloadProvider.retryPendingImports();
+    // Nunca `await`ado: un refresco de token de Firebase en el camino de
+    // arranque no puede retrasar el primer fotograma ni la restauración de
+    // la reproducción. Sin sesión, syncNow() falla con `unauthorized`
+    // (capturado dentro del propio provider) y no hace nada más.
+    syncProvider.syncNow();
   });
 }
 

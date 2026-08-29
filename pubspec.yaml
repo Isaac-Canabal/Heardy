@@ -40,6 +40,10 @@ dependencies:
   # habría sido una dependencia redundante, no una capa extra de verdad.
   firebase_core: ^3.8.1
   firebase_auth: ^5.3.4
+  # Compartir la imagen de estadísticas (Etapa 16, F6). Único paquete nuevo:
+  # RepaintBoundary + toImage ya cubren la captura (~20 líneas), share_plus
+  # sólo aporta el selector nativo de "compartir con...".
+  share_plus: ^11.0.0
 
 dev_dependencies:
   flutter_test:

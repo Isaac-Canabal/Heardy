@@ -166,9 +166,56 @@ DAILY_QUOTA = _int_env("HEARDY_DAILY_QUOTA", 0)
 # resto de los límites — un servidor personal no lo necesita.
 DAILY_SONGS_PER_USER = _int_env("HEARDY_DAILY_SONGS_PER_USER", 0)
 
-# Cadena de conexión a Postgres (Neon en el servidor oficial). Sólo hace
-# falta si DAILY_SONGS_PER_USER > 0: un cupo diario necesita almacenamiento
-# persistente para significar algo (hallazgo S3 del plan de seguridad — en
-# memoria, Render lo resetea solo al dormirse o redesplegar). Vacía por
-# defecto; main.py aborta el arranque si el cupo está activo sin esto.
+# Cadena de conexión a Postgres (Neon en el servidor oficial). Hace falta si
+# DAILY_SONGS_PER_USER > 0 o si ACCOUNTS_ENABLED está activo — ninguno de los
+# dos significa nada sin almacenamiento persistente (hallazgo S3 del plan de
+# seguridad: en memoria, Render lo resetea solo al dormirse o redesplegar).
+# Vacía por defecto; main.py aborta el arranque si cualquiera de los dos
+# está activo sin esto.
 DATABASE_URL = os.environ.get("HEARDY_DATABASE_URL", "").strip()
+
+# Interruptor maestro de cuentas en la nube (Etapa 16: biblioteca sincronizada,
+# amigos, estadísticas compartidas). Necesita DATABASE_URL (un índice
+# sincronizado sin persistencia no es un índice) y FIREBASE_PROJECT_ID (sin
+# Firebase, la única identidad disponible es la etiqueta compartida de
+# X-Api-Key, que no es una persona — ver require_account en auth.py).
+ACCOUNTS_ENABLED = os.environ.get("HEARDY_ACCOUNTS_ENABLED", "").strip() == "1"
+
+# Enfriamiento entre dos cambios de nombre de usuario. Los nombres viejos no
+# se reservan al cambiar.
+USERNAME_COOLDOWN_DAYS = _int_env("HEARDY_USERNAME_COOLDOWN_DAYS", 30)
+
+# Presupuesto diario por CUENTA (no por IP: rotar IP no ayuda) para buscar un
+# nombre de usuario — "buscar por nombre" es un oráculo de pertenencia y no
+# se puede cerrar teniendo la función, sólo encarecer (ver CLAUDE.md).
+LOOKUP_PER_DAY = _int_env("HEARDY_LOOKUP_PER_DAY", 60)
+
+# Límites de la sección de amigos.
+FRIEND_REQUESTS_PER_DAY = _int_env("HEARDY_FRIEND_REQUESTS_PER_DAY", 20)
+MAX_PENDING_REQUESTS = _int_env("HEARDY_MAX_PENDING_REQUESTS", 50)
+MAX_FRIENDS = _int_env("HEARDY_MAX_FRIENDS", 500)
+
+# Límites del índice de biblioteca y del historial de reproducción.
+LIBRARY_MAX_SONGS = _int_env("HEARDY_LIBRARY_MAX_SONGS", 10000)
+LIBRARY_PUSHES_PER_DAY = _int_env("HEARDY_LIBRARY_PUSHES_PER_DAY", 50)
+HISTORY_MAX_ROWS_PER_REQUEST = _int_env("HEARDY_HISTORY_MAX_ROWS_PER_REQUEST", 2000)
+HISTORY_ROWS_PER_DAY = _int_env("HEARDY_HISTORY_ROWS_PER_DAY", 200000)
+HISTORY_BACKFILL_MAX_DAYS = _int_env("HEARDY_HISTORY_BACKFILL_MAX_DAYS", 730)
+# 0 = guardar todo. Palanca de escala preparada desde el día uno (ver
+# CLAUDE.md, "Cloud sync" — ~430 MB/año con 100 usuarios llena el plan
+# gratuito de Neon en ~1 año; a escala de amigos y familia hay años de margen).
+PLAY_HISTORY_RETENTION_DAYS = _int_env("HEARDY_PLAY_HISTORY_RETENTION_DAYS", 0)
+
+STATS_VIEWS_PER_DAY = _int_env("HEARDY_STATS_VIEWS_PER_DAY", 500)
+
+# "Escuchando ahora": presencia en memoria del proceso, nunca en Postgres —
+# ver CLAUDE.md, sección Cloud sync, por qué memoria es la elección correcta
+# aquí (al revés que el cupo diario, que si viviera en memoria concedería
+# algo; una presencia en memoria sólo revoca algo efímero).
+PRESENCE_MAX_TTL_SECONDS = _int_env("HEARDY_PRESENCE_MAX_TTL_SECONDS", 900)
+PRESENCE_MAX_ENTRIES = _int_env("HEARDY_PRESENCE_MAX_ENTRIES", 10000)
+
+# Tamaño máximo de un cuerpo de petición (PUT /library, POST /history), en
+# bytes. Rechazado por Content-Length ANTES de parsear — Field(max_length=...)
+# de Pydantic valida después de leer el cuerpo entero y no protege de nada.
+MAX_UPLOAD_BYTES = _int_env("HEARDY_MAX_UPLOAD_MB", 8) * 1024 * 1024

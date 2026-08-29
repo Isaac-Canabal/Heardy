@@ -7,7 +7,9 @@ import '../models/playlist.dart';
 import '../services/database_helper.dart';
 import '../services/audio_player_handler.dart';
 import '../theme/app_theme.dart';
+import '../widgets/username_claim_sheet.dart';
 import '../l10n/app_localizations.dart';
+import 'friends_screen.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -61,6 +63,11 @@ class _HomeScreenState extends State<HomeScreen> {
                     ],
                   ),
                 ),
+                _CircleIconButton(
+                  icon: Icons.people_alt_rounded,
+                  onTap: () => _openFriends(context),
+                ),
+                const SizedBox(width: 10),
                 _CircleIconButton(
                   icon: Icons.add_rounded,
                   onTap: () => _showCreatePlaylistDialog(context),
@@ -135,6 +142,14 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
+  }
+
+  /// E-5 de la Etapa 16: abrir Amigos es uno de los dos únicos sitios donde
+  /// se pide el nombre de usuario (el otro es compartir estadísticas).
+  Future<void> _openFriends(BuildContext context) async {
+    final username = await ensureUsername(context);
+    if (username == null || !context.mounted) return;
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FriendsScreen()));
   }
 
   void _showCreatePlaylistDialog(BuildContext context) {

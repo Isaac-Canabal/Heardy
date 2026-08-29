@@ -126,6 +126,23 @@ async def resolve_identity(
     return require_api_key(x_api_key=x_api_key)
 
 
+def require_account(identity: str = Depends(resolve_identity)) -> str:
+    """Dependencia de FastAPI para toda ruta de cuentas/biblioteca/amigos:
+    exige que la identidad venga de Firebase, nunca de una X-Api-Key. Una
+    etiqueta de X-Api-Key la define el operador y puede estar compartida por
+    varias personas (o por nadie en particular) — no es una cuenta.
+
+    403 y no 404: estas rutas no son secretas (la propia app las llama), así
+    que el cliente necesita distinguir "te falta cuenta" de "esto no existe",
+    al contrario que require_admin."""
+    if not identity.startswith("firebase:"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Esta función necesita una cuenta",
+        )
+    return identity
+
+
 def require_admin(identity: str = Depends(require_api_key)) -> str:
     """Dependencia de FastAPI: además de una clave válida, exige que su
     etiqueta esté en `config.ADMIN_LABELS`. Depende de `require_api_key` (no

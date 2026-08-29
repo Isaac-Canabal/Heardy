@@ -23,7 +23,7 @@ class DatabaseHelper {
 
     return await openDatabase(
       path,
-      version: 13,
+      version: 14,
       onCreate: _createDB,
       onUpgrade: _onUpgrade,
       onConfigure: _onConfigure,
@@ -103,9 +103,14 @@ class DatabaseHelper {
         songId TEXT NOT NULL,
         playDate TEXT NOT NULL,
         playDuration INTEGER NOT NULL,
+        syncedAt TEXT,
+        playedAtUtc TEXT,
         FOREIGN KEY (songId) REFERENCES songs (id) ON DELETE CASCADE
       )
     ''');
+    await db.execute(
+      'CREATE INDEX IF NOT EXISTS idx_play_history_synced ON play_history(syncedAt)',
+    );
   }
 
   Future _onUpgrade(Database db, int oldVersion, int newVersion) async {
@@ -223,6 +228,22 @@ class DatabaseHelper {
       // a estar disponible — ver CLAUDE.md.
       await db.execute(_createPendingImportsSql);
       await db.execute(_createPendingImportsIndexSql);
+    }
+    if (oldVersion < 14) {
+      // Etapa 16 (cuentas en la nube): sincronización de historial.
+      // `syncedAt` es una marca POR FILA (NULL = pendiente), no una marca de
+      // agua en preferencias — entran filas nuevas mientras hay una subida en
+      // vuelo, y un lote aceptado a medias tiene que poder reanudarse sin
+      // resubir la cola entera. `playedAtUtc` sólo se llena para filas
+      // nuevas (ver recordPlay); las históricas se etiquetan con el desfase
+      // ACTUAL del dispositivo al subirlas — aproximación explícita, no un
+      // error silencioso (reescribir `playDate`, que es hora local sin
+      // desfase, sería el riesgo de migración que D9 evitó).
+      await db.execute('ALTER TABLE play_history ADD COLUMN syncedAt TEXT');
+      await db.execute('ALTER TABLE play_history ADD COLUMN playedAtUtc TEXT');
+      await db.execute(
+        'CREATE INDEX IF NOT EXISTS idx_play_history_synced ON play_history(syncedAt)',
+      );
     }
   }
 
@@ -973,14 +994,107 @@ class DatabaseHelper {
 
   Future<int> recordPlay(String songId, int playDuration) async {
     final db = await database;
+    final now = DateTime.now();
     return await db.insert(
       'play_history',
       {
         'songId': songId,
-        'playDate': DateTime.now().toIso8601String(),
+        'playDate': now.toIso8601String(),
         'playDuration': playDuration,
+        // Se escriben las DOS a propósito: playDate se queda intacto (hora
+        // local sin desfase) para que toda consulta local de estadísticas
+        // siga funcionando byte a byte; playedAtUtc es lo que el sincronizador
+        // manda al servidor — sólo las filas nuevas la llevan de entrada.
+        'playedAtUtc': now.toUtc().toIso8601String(),
       },
     );
+  }
+
+  // --- SINCRONIZACIÓN CON LA CUENTA (Etapa 16) ---
+
+  /// `SELECT COUNT(*) FROM songs WHERE missing = 0` — calcado de
+  /// [getInboxSongCount]. Usado por el popup de vinculación de cuenta:
+  /// [getSongs] carga la tabla entera y no puede usarse en una comprobación
+  /// de arranque.
+  Future<int> getLibrarySongCount() async {
+    final db = await database;
+    final result = await db.rawQuery(
+      'SELECT COUNT(*) as c FROM songs WHERE missing = 0',
+    );
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
+  /// Proyección EXPLÍCITA, nunca `SELECT *` — así `uri`/`filePath`/`artPath`/
+  /// `modifiedAt`/`missing`/`ignoredFromInbox` no entran por accidente en
+  /// memoria ni en un codificador JSON. Ver CLAUDE.md, "Cloud sync": el
+  /// servidor guarda un índice, nunca nada que sólo signifique algo en este
+  /// dispositivo.
+  Future<Map<String, List<Map<String, dynamic>>>> getLibraryIndexRows() async {
+    final db = await database;
+    final songs = await db.rawQuery('''
+      SELECT id AS songId, title, artist, album, duration AS durationSeconds,
+             fileHash, hashKind
+      FROM songs WHERE missing = 0
+    ''');
+    final playlists = await db.rawQuery('''
+      SELECT id AS playlistId, name, sortOrder FROM playlists
+    ''');
+    final playlistSongs = await db.rawQuery('''
+      SELECT playlistId, songId, orderIndex FROM playlist_songs
+    ''');
+    return {
+      'songs': songs,
+      'playlists': playlists,
+      'playlistSongs': playlistSongs,
+    };
+  }
+
+  /// Filas de historial sin subir todavía. `LEFT JOIN`, no `INNER JOIN`: una
+  /// fila de `play_history` cuya canción ya se borró (la tabla no tiene FK
+  /// contra `songs` con cascada real en todos los caminos de borrado
+  /// legítimos) quedaría reintentándose para siempre con un JOIN estricto —
+  /// se detecta acá (`songId IS NULL` del lado de `songs`) y se marca
+  /// `skipped` en vez de sincronizarse, ver [markPlaysSkipped].
+  Future<List<Map<String, dynamic>>> getUnsyncedPlays({int limit = 500}) async {
+    final db = await database;
+    return db.rawQuery('''
+      SELECT ph.id, ph.songId, ph.playDate, ph.playDuration, ph.playedAtUtc,
+             s.id AS existingSongId
+      FROM play_history ph
+      LEFT JOIN songs s ON s.id = ph.songId
+      WHERE ph.syncedAt IS NULL
+      ORDER BY ph.playDate ASC
+      LIMIT ?
+    ''', [limit]);
+  }
+
+  Future<void> markPlaysSynced(List<int> ids) async {
+    if (ids.isEmpty) return;
+    final db = await database;
+    final now = DateTime.now().toIso8601String();
+    await db.rawUpdate(
+      'UPDATE play_history SET syncedAt = ? WHERE id IN (${List.filled(ids.length, '?').join(',')})',
+      [now, ...ids],
+    );
+  }
+
+  /// Centinela, no una fecha — saca definitivamente de la cola una fila cuya
+  /// canción ya no existe, sin fingir que se subió.
+  Future<void> markPlaysSkipped(List<int> ids) async {
+    if (ids.isEmpty) return;
+    final db = await database;
+    await db.rawUpdate(
+      "UPDATE play_history SET syncedAt = 'skipped' WHERE id IN (${List.filled(ids.length, '?').join(',')})",
+      ids,
+    );
+  }
+
+  /// La válvula de escape de privacidad (`DELETE /account/data`): tras
+  /// borrar los datos en el servidor, un revínculo posterior de la misma
+  /// cuenta debe resubir todo desde cero, no asumir que ya está allá.
+  Future<void> resetHistorySyncMarkers() async {
+    final db = await database;
+    await db.rawUpdate('UPDATE play_history SET syncedAt = NULL');
   }
 
   String _getStartOfWeek() {
