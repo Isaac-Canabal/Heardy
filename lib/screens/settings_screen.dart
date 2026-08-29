@@ -10,6 +10,9 @@ import '../theme/app_theme.dart';
 import '../services/download_source.dart';
 import '../services/storage_service.dart';
 import '../l10n/app_localizations.dart';
+import '../models/statistics_data.dart';
+import '../services/statistics_service.dart';
+import '../widgets/statistics_view.dart';
 
 class SettingsScreen extends StatelessWidget {
   const SettingsScreen({super.key});
@@ -540,20 +543,6 @@ class SettingsScreen extends StatelessWidget {
   }
 }
 
-class _StatisticsData {
-  final int totalPlays;
-  final int totalListenSeconds;
-  final List<Map<String, dynamic>> topArtists;
-  final List<Map<String, dynamic>> topSongs;
-
-  const _StatisticsData({
-    required this.totalPlays,
-    required this.totalListenSeconds,
-    required this.topArtists,
-    required this.topSongs,
-  });
-}
-
 class _StatisticsSection extends StatefulWidget {
   const _StatisticsSection();
 
@@ -565,33 +554,28 @@ class _StatisticsSectionState extends State<_StatisticsSection> {
   bool _isWeek = true;
   bool _isExpanded = false;
 
-  Future<_StatisticsData> _loadStatistics(bool isWeek) async {
-    final db = DatabaseHelper.instance;
-    final results = await Future.wait([
-      isWeek ? db.getTotalPlaysThisWeek() : db.getTotalPlaysThisMonth(),
-      isWeek
-          ? db.getTotalListenTimeThisWeek()
-          : db.getTotalListenTimeThisMonth(),
-      isWeek ? db.getTopArtistsThisWeek() : db.getTopArtistsThisMonth(),
-      isWeek
-          ? db.getTopSongsThisWeek(limit: 10)
-          : db.getTopSongsThisMonth(limit: 10),
-    ]);
+  /// El futuro vive en el `State`, NO dentro del `FutureBuilder`.
+  ///
+  /// Antes la carga se llamaba **dentro** de `FutureBuilder(future: ...)`, así
+  /// que cada reconstrucción disparaba cuatro consultas nuevas a SQLite: cada
+  /// toque del chevron, cada cambio de tema, y cada notificación de
+  /// `MusicProvider` — a la que esta pantalla se suscribe, así que una descarga
+  /// que terminaba en cualquier otra parte de la app también la reconstruía.
+  late Future<StatisticsData> _future;
 
-    return _StatisticsData(
-      totalPlays: results[0] as int,
-      totalListenSeconds: results[1] as int,
-      topArtists: results[2] as List<Map<String, dynamic>>,
-      topSongs: results[3] as List<Map<String, dynamic>>,
-    );
+  @override
+  void initState() {
+    super.initState();
+    _future = loadLocalStatistics(isWeek: _isWeek);
   }
 
-  String _formatListenTime(int totalSeconds) {
-    if (totalSeconds < 60) return '$totalSeconds s';
-    final hours = totalSeconds ~/ 3600;
-    final minutes = (totalSeconds % 3600) ~/ 60;
-    if (hours > 0) return '${hours}h ${minutes}m';
-    return '${minutes}m';
+  void _setPeriod(bool isWeek) {
+    if (isWeek == _isWeek) return;
+    setState(() {
+      _isWeek = isWeek;
+      _isExpanded = false;
+      _future = loadLocalStatistics(isWeek: isWeek);
+    });
   }
 
   @override
@@ -602,471 +586,20 @@ class _StatisticsSectionState extends State<_StatisticsSection> {
       children: [
         _SectionTitle(l10n.statsSectionTitle),
         const SizedBox(height: 10),
-        Container(
-          decoration: AppTheme.glassCard(),
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Icon(
-                    Icons.bar_chart_rounded,
-                    color: AppTheme.primaryLight,
-                    size: 20,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    l10n.statsYourActivity,
-                    style: TextStyle(
-                      color: Colors.white.withValues(alpha: 0.7),
-                      fontSize: 13,
-                    ),
-                  ),
-                  const Spacer(),
-                  _PeriodToggle(
-                    isWeek: _isWeek,
-                    onChanged: (isWeek) => setState(() {
-                      _isWeek = isWeek;
-                      _isExpanded = false; // Reset on period change
-                    }),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-              FutureBuilder<_StatisticsData>(
-                future: _loadStatistics(_isWeek),
-                builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
-                    return const Center(
-                      child: Padding(
-                        padding: EdgeInsets.symmetric(vertical: 24),
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                    );
-                  }
-
-                  final data = snapshot.data;
-                  if (data == null ||
-                      (data.totalPlays == 0 && data.topSongs.isEmpty)) {
-                    return Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      child: Text(
-                        l10n.statsEmptyHint,
-                        style: TextStyle(
-                          color: Colors.white.withValues(alpha: 0.45),
-                          fontSize: 13,
-                        ),
-                      ),
-                    );
-                  }
-
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: _StatMiniCard(
-                              label: l10n.statsPlaysLabel,
-                              value: '${data.totalPlays}',
-                              icon: Icons.play_circle_outline_rounded,
-                            ),
-                          ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: _StatMiniCard(
-                              label: l10n.statsListenTimeLabel,
-                              value: _formatListenTime(data.totalListenSeconds),
-                              icon: Icons.schedule_rounded,
-                            ),
-                          ),
-                        ],
-                      ),
-                      if (data.topArtists.isNotEmpty) ...[
-                        const SizedBox(height: 16),
-                        Text(
-                          l10n.statsTopArtists,
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.55),
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        ...List.generate(data.topArtists.length, (index) {
-                          final artist = data.topArtists[index];
-                          return _TopArtistRow(
-                            rank: index + 1,
-                            name: artist['artist'] as String? ?? l10n.statsUnknownArtist,
-                            playCount: artist['playCount'] as int? ?? 0,
-                          );
-                        }),
-                      ],
-                      if (data.topSongs.isNotEmpty) ...[
-                        const SizedBox(height: 16),
-                        Text(
-                          l10n.statsTopSongs,
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.55),
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        ...List.generate(
-                          _isExpanded
-                              ? data.topSongs.length
-                              : (data.topSongs.length > 5
-                                    ? 5
-                                    : data.topSongs.length),
-                          (index) {
-                            final song = data.topSongs[index];
-                            return _TopSongRow(
-                              rank: index + 1,
-                              title: song['title'] as String? ?? l10n.statsUntitledSong,
-                              artist:
-                                  song['artist'] as String? ?? l10n.statsUnknownArtist,
-                              artPath: song['artPath'] as String? ?? '',
-                              playCount: song['playCount'] as int? ?? 0,
-                            );
-                          },
-                        ),
-                        if (data.topSongs.length > 5)
-                          Center(
-                            child: IconButton(
-                              icon: Icon(
-                                _isExpanded
-                                    ? Icons.keyboard_arrow_up_rounded
-                                    : Icons.keyboard_arrow_down_rounded,
-                                color: Colors.white.withValues(alpha: 0.5),
-                              ),
-                              onPressed: () {
-                                setState(() {
-                                  _isExpanded = !_isExpanded;
-                                });
-                              },
-                            ),
-                          ),
-                      ],
-                    ],
-                  );
-                },
-              ),
-            ],
-          ),
+        FutureBuilder<StatisticsData>(
+          future: _future,
+          builder: (context, snapshot) {
+            final loading = snapshot.connectionState == ConnectionState.waiting;
+            return StatisticsView(
+              data: loading ? null : (snapshot.data ?? const StatisticsData.empty()),
+              isWeek: _isWeek,
+              onPeriodChanged: _setPeriod,
+              expanded: _isExpanded,
+              onToggleExpanded: () => setState(() => _isExpanded = !_isExpanded),
+            );
+          },
         ),
       ],
-    );
-  }
-}
-
-class _PeriodToggle extends StatelessWidget {
-  final bool isWeek;
-  final ValueChanged<bool> onChanged;
-
-  const _PeriodToggle({required this.isWeek, required this.onChanged});
-
-  @override
-  Widget build(BuildContext context) {
-    final l10n = AppLocalizations.of(context)!;
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          _PeriodChip(
-            label: l10n.statsWeek,
-            selected: isWeek,
-            onTap: () => onChanged(true),
-          ),
-          _PeriodChip(
-            label: l10n.statsMonth,
-            selected: !isWeek,
-            onTap: () => onChanged(false),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _PeriodChip extends StatelessWidget {
-  final String label;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _PeriodChip({
-    required this.label,
-    required this.selected,
-    required this.onTap,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: selected
-          ? AppTheme.primary.withValues(alpha: 0.35)
-          : Colors.transparent,
-      borderRadius: BorderRadius.circular(10),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(10),
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-          child: Text(
-            label,
-            style: TextStyle(
-              color: selected
-                  ? Colors.white
-                  : Colors.white.withValues(alpha: 0.5),
-              fontSize: 12,
-              fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _StatMiniCard extends StatelessWidget {
-  final String label;
-  final String value;
-  final IconData icon;
-
-  const _StatMiniCard({
-    required this.label,
-    required this.value,
-    required this.icon,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.04),
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(icon, color: AppTheme.primaryLight, size: 18),
-          const SizedBox(height: 8),
-          Text(
-            value,
-            style: const TextStyle(
-              color: Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.w700,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.45),
-              fontSize: 11,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _TopArtistRow extends StatelessWidget {
-  final int rank;
-  final String name;
-  final int playCount;
-
-  const _TopArtistRow({
-    required this.rank,
-    required this.name,
-    required this.playCount,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 22,
-            child: Text(
-              '$rank',
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.4),
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-              ),
-              textAlign: TextAlign.center,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              gradient: AppTheme.primaryGradient,
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Icon(
-              Icons.person_rounded,
-              color: Colors.white.withValues(alpha: 0.7),
-              size: 20,
-            ),
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
-                color: Colors.white,
-                fontWeight: FontWeight.w600,
-                fontSize: 14,
-              ),
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: AppTheme.primary.withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              '${playCount}x',
-              style: TextStyle(
-                color: AppTheme.primaryLight,
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _TopSongRow extends StatelessWidget {
-  final int rank;
-  final String title;
-  final String artist;
-  final String artPath;
-  final int playCount;
-
-  const _TopSongRow({
-    required this.rank,
-    required this.title,
-    required this.artist,
-    required this.artPath,
-    required this.playCount,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Row(
-        children: [
-          SizedBox(
-            width: 22,
-            child: Text(
-              '$rank',
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.4),
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-              ),
-              textAlign: TextAlign.center,
-            ),
-          ),
-          const SizedBox(width: 8),
-          ClipRRect(borderRadius: BorderRadius.circular(8), child: _buildArt()),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                    fontSize: 14,
-                  ),
-                ),
-                Text(
-                  artist,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    color: Colors.white.withValues(alpha: 0.45),
-                    fontSize: 12,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: AppTheme.primary.withValues(alpha: 0.2),
-              borderRadius: BorderRadius.circular(8),
-            ),
-            child: Text(
-              '${playCount}x',
-              style: TextStyle(
-                color: AppTheme.primaryLight,
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildArt() {
-    if (artPath.isNotEmpty) {
-      final file = File(artPath);
-      if (file.existsSync()) {
-        return Image.file(
-          file,
-          width: 40,
-          height: 40,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => _placeholderArt(),
-        );
-      }
-    }
-    return _placeholderArt();
-  }
-
-  Widget _placeholderArt() {
-    return Container(
-      width: 40,
-      height: 40,
-      decoration: BoxDecoration(
-        gradient: AppTheme.primaryGradient,
-        borderRadius: BorderRadius.circular(8),
-      ),
-      child: Icon(
-        Icons.music_note_rounded,
-        color: Colors.white.withValues(alpha: 0.7),
-        size: 20,
-      ),
     );
   }
 }
