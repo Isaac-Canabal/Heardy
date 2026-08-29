@@ -656,7 +656,20 @@ class _ShareStatsSheetState extends State<_ShareStatsSheet> {
     try {
       await waitForEndOfFrame();
       final bytes = await renderBoundaryPng(_boundaryKey);
-      if (bytes != null) await shareStatsImage(bytes);
+      if (bytes == null) {
+        // Antes esto simplemente no hacía nada — un fallo real (o los 10
+        // reintentos agotados) tiene que verse, no desaparecer.
+        if (mounted) {
+          ScaffoldMessenger.of(context)
+              .showSnackBar(const SnackBar(content: Text('No se pudo generar la imagen. Probá de nuevo.')));
+        }
+        return;
+      }
+      await shareStatsImage(bytes);
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('No se pudo compartir: $e')));
+      }
     } finally {
       if (mounted) setState(() => _sharing = false);
     }

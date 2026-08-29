@@ -4,10 +4,19 @@ import '../models/statistics_data.dart';
 import '../theme/app_theme.dart';
 import '../widgets/statistics_view.dart';
 
-/// Tamaño lógico FIJO × `pixelRatio: 3` (ver `share_image_service.dart`) da un
-/// PNG de 1080×1920 de forma determinista tenga la cuenta 2 o 10 canciones —
-/// el espaciador de abajo es lo que evita que una lista corta deje un hueco
-/// feo en vez de estirarse.
+/// Ancho lógico FIJO (360, × `pixelRatio: 3` da 1080px de ancho — ver
+/// `share_image_service.dart`), alto determinado por el CONTENIDO.
+///
+/// **Antes tenía una altura fija de 640 también, y eso cortaba la tarjeta a
+/// mitad de las estadísticas**: con el top 10 de artistas lleno, la sección
+/// "Top canciones" que va después ya no entraba en lo que quedaba dentro de
+/// un `Expanded` + `SingleChildScrollView(NeverScrollableScrollPhysics)` — se
+/// laqueaba fuera del área capturada por `renderBoundaryPng` en vez de
+/// aparecer cortada a la vista (nunca hubo scroll de verdad, sólo un tamaño
+/// fijo que asumía que 10 artistas + 5 canciones siempre entraban en 640dp,
+/// cosa que no es cierta). Dejar que la tarjeta crezca con su contenido
+/// (`mainAxisSize.min`, sin `Expanded` ni scroll) es lo que garantiza que
+/// TODO lo que `StatisticsView` decide mostrar llegue a la imagen exportada.
 class ShareStatsCard extends StatelessWidget {
   final String username;
   final StatisticsData data;
@@ -19,7 +28,6 @@ class ShareStatsCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return SizedBox(
       width: 360,
-      height: 640,
       child: Container(
         // Fondo OPACO a propósito: `AppTheme.glassCard()` es translúcido, así
         // que un `RepaintBoundary` a su alrededor se pintaría sobre
@@ -27,6 +35,7 @@ class ShareStatsCard extends StatelessWidget {
         decoration: AppTheme.gradientScaffold(),
         padding: const EdgeInsets.all(24),
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Text(
@@ -34,18 +43,13 @@ class ShareStatsCard extends StatelessWidget {
               style: const TextStyle(color: Colors.white, fontSize: 22, fontWeight: FontWeight.w800),
             ),
             const SizedBox(height: 16),
-            Expanded(
-              child: SingleChildScrollView(
-                physics: const NeverScrollableScrollPhysics(),
-                child: StatisticsView(
-                  data: data,
-                  isWeek: isWeek,
-                  decorated: false,
-                  onPeriodChanged: null,
-                ),
-              ),
+            StatisticsView(
+              data: data,
+              isWeek: isWeek,
+              decorated: false,
+              onPeriodChanged: null,
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 20),
             Center(
               child: Text(
                 'Heardy',

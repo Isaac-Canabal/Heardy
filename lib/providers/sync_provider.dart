@@ -71,6 +71,29 @@ class SyncProvider with ChangeNotifier {
   String? get lastError => _lastError;
   CloudAccount? get account => _account;
 
+  /// Actualiza el nombre de usuario cacheado al instante, sin esperar la
+  /// próxima `syncNow()`. **El bug que esto corrige:** `ensureUsername`
+  /// guarda el nombre contra el servidor directamente (no pasa por acá), así
+  /// que hasta ahora la sección de Cuenta seguía mostrando "todavía no
+  /// elegiste un nombre" — porque `_account` sólo se refrescaba en la
+  /// siguiente pasada completa de `syncNow()`, y si esa pasada fallaba por
+  /// cualquier otra razón (la biblioteca, el historial, la red), la UI daba
+  /// la impresión de que el nombre nunca se había guardado. El nombre SÍ
+  /// queda guardado en el servidor en cuanto `setUsername` responde 200 —
+  /// esto sólo corrige que el cliente se entere sin depender de una
+  /// sincronización completa y ajena.
+  void noteUsernameSaved(String username) {
+    final current = _account;
+    _account = CloudAccount(
+      identity: current?.identity ?? '',
+      username: username,
+      libraryVersion: current?.libraryVersion ?? _libraryVersion,
+      hasLibrary: current?.hasLibrary ?? false,
+      friendCount: current?.friendCount ?? 0,
+    );
+    notifyListeners();
+  }
+
   /// Estrangula `resumed`: se dispara al volver de segundo plano, pero no si
   /// ya se sincronizó hace menos de 15 minutos — `resumed` ocurre cada vez
   /// que se vuelve de WhatsApp, no cada vez que hace falta revisar la nube.

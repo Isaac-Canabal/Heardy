@@ -28,6 +28,19 @@ def test_push_payload_rechaza_campo_extra_en_la_raiz():
         library_store.LibraryPushPayload(baseVersion=0, extraCampo="algo")
 
 
+def test_history_payload_acepta_utc_offset_minutes():
+    """Bug real: el cliente manda utcOffsetMinutes en el cuerpo de POST
+    /history (no como query param), y el modelo no lo declaraba — 422
+    'extra_forbidden' en cada sincronización con sesión iniciada."""
+    payload = library_store.HistoryPushPayload(rows=[], utcOffsetMinutes=-300)
+    assert payload.utcOffsetMinutes == -300
+
+
+def test_history_payload_sigue_rechazando_otros_campos_extra():
+    with pytest.raises(ValidationError):
+        library_store.HistoryPushPayload(rows=[], otroCampo="algo")
+
+
 def _utc(y, m, d, h=12) -> datetime.datetime:
     return datetime.datetime(y, m, d, h, tzinfo=datetime.timezone.utc)
 

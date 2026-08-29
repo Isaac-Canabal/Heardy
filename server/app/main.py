@@ -825,6 +825,9 @@ async def post_history(
     if len(payload.rows) > config.HISTORY_MAX_ROWS_PER_REQUEST:
         raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Demasiadas filas")
 
+    if payload.utcOffsetMinutes is not None:
+        await _account_store.set_utc_offset(account.id, payload.utcOffsetMinutes)
+
     sanitized = library_store.sanitize_history_rows(
         payload.rows,
         now=datetime.datetime.now(datetime.timezone.utc),

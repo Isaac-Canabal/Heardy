@@ -76,6 +76,12 @@ class HistoryPushPayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     rows: list[HistoryRowIn] = Field(default_factory=list)
+    # El desfase horario de quien sube, para que week_start_utc calcule el
+    # "lunes" en el huso correcto de esta cuenta (A5) — se refresca en
+    # users.utc_offset_minutes desde aquí, no desde /stats/me, porque el
+    # cliente sube historial mucho más seguido que lo que consulta sus
+    # propias estadísticas.
+    utcOffsetMinutes: int | None = None
 
 
 # --- Funciones puras ---------------------------------------------------

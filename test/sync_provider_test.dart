@@ -209,4 +209,26 @@ void main() {
     // Sólo una pasada real corrió — getAccount() no se llamó dos veces en paralelo.
     expect(source.getAccountCalls, 1);
   });
+
+  test('noteUsernameSaved refleja el nombre al instante, sin esperar una sync completa', () async {
+    final source = _FakeCloudSource();
+    final provider = SyncProvider(source: source, db: db);
+    expect(provider.account, isNull);
+
+    provider.noteUsernameSaved('isaac');
+    expect(provider.account?.username, 'isaac');
+  });
+
+  test('noteUsernameSaved sobrevive a una sync que falla después', () async {
+    final source = _FakeCloudSource()
+      ..failNextWith = const CloudSourceException(CloudSourceErrorKind.network, 'sin conexión');
+    final provider = SyncProvider(source: source, db: db);
+    provider.noteUsernameSaved('isaac');
+
+    // getAccount() falla en esta pasada (simula el servidor caído) — el
+    // nombre ya notificado no debe desaparecer de la UI por eso.
+    await provider.syncNow();
+    expect(provider.lastError, isNotNull);
+    expect(provider.account?.username, 'isaac');
+  });
 }

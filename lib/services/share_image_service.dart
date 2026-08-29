@@ -10,14 +10,21 @@ import 'package:share_plus/share_plus.dart';
 
 /// Captura un `RepaintBoundary` a PNG. Guarda contra `debugNeedsPaint`: pedir
 /// `toImage()` sobre un boundary que todavía no terminó de pintar lanza o
-/// captura contenido viejo — un reintento acotado (3 × 32ms) resuelve el caso
-/// normal (la vista previa recién se montó) sin un `Future.delayed` fijo que
-/// adivine mal según la velocidad del dispositivo.
+/// captura contenido viejo — un reintento acotado resuelve el caso normal
+/// (la vista previa recién se montó, o la animación de entrada de la hoja
+/// modal todavía está corriendo) sin un `Future.delayed` fijo que adivine mal
+/// según la velocidad del dispositivo.
+///
+/// **10 × 50ms (hasta 500ms), no 3 × 32ms**: el presupuesto original no
+/// alcanzaba en un dispositivo real — la transición de entrada del
+/// `showModalBottomSheet` (~250ms) por sí sola ya superaba las 3 pasadas
+/// enteras, así que el botón de compartir devolvía `null` en silencio y
+/// parecía "no hacer nada".
 Future<Uint8List?> renderBoundaryPng(GlobalKey key, {double pixelRatio = 3}) async {
-  for (var attempt = 0; attempt < 3; attempt++) {
+  for (var attempt = 0; attempt < 10; attempt++) {
     final renderObject = key.currentContext?.findRenderObject();
     if (renderObject is! RenderRepaintBoundary || renderObject.debugNeedsPaint) {
-      await Future.delayed(const Duration(milliseconds: 32));
+      await Future.delayed(const Duration(milliseconds: 50));
       continue;
     }
     final image = await renderObject.toImage(pixelRatio: pixelRatio);

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../providers/auth_provider.dart';
+import '../providers/sync_provider.dart';
 import '../services/cloud_source.dart';
 import '../theme/app_theme.dart';
 import '../l10n/app_localizations.dart';
@@ -75,6 +76,11 @@ class _UsernameClaimSheetState extends State<UsernameClaimSheet> {
     try {
       final saved = await context.read<CloudSource>().setUsername(username);
       if (!mounted) return;
+      // Al instante, sin esperar la próxima sincronización completa — ver el
+      // docstring de noteUsernameSaved: el nombre ya quedó guardado en el
+      // servidor en este punto, esto sólo evita que la UI parezca no
+      // haberse enterado si la siguiente sync falla por otra razón.
+      context.read<SyncProvider>().noteUsernameSaved(saved);
       Navigator.of(context).pop(saved);
     } on CloudSourceException catch (e) {
       // El servidor ya trae el motivo en español ("Sólo letras minúsculas…",
