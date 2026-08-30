@@ -4,7 +4,7 @@ patrón que test_quota.py:_FakeConn/_FakePool. No hay Postgres real en este
 entorno de tests."""
 import datetime
 
-from app import accounts, friends
+from app import accounts, friends, library_store
 
 
 class _FakeConn:
@@ -68,6 +68,69 @@ async def test_usage_store_upsert_suma_amount():
     query, args = conn.calls[-1]
     assert "ON CONFLICT (user_id, day, kind) DO UPDATE" in query
     assert args == (1, datetime.date(2026, 8, 24), "lookup", 5)
+
+
+async def test_push_history_pasa_datetimes_no_cadenas():
+    """**asyncpg no convierte cadenas a `timestamptz`**: pasarle el ISO tal
+    cual donde el SQL declara `timestamptz[]` lanza `DataError` en tiempo de
+    ejecución (500 para el cliente), y nada en el código lo delata al
+    escribirlo. Este test es la única red que atrapa esa regresión sin un
+    Postgres real."""
+
+    class _FetchConn(_FakeConn):
+        async def fetch(self, query, *args):
+            self.calls.append((query, args))
+            return [1]
+
+    conn = _FetchConn()
+    store = library_store.LibraryStore(_FakePool(conn))
+    rows = [
+        library_store.HistoryRowIn(
+            songId="s1",
+            playedAtLocal="2026-08-29T18:00:00",
+            playedAtUtc="2026-08-29T23:00:00+00:00",
+            playSeconds=120,
+        )
+    ]
+    await store.push_history(1, rows)
+
+    _, args = conn.calls[-1]
+    played_at_arg = args[3]
+    assert all(isinstance(v, datetime.datetime) for v in played_at_arg), (
+        f"played_at debe ser datetime, llegó {[type(v).__name__ for v in played_at_arg]}"
+    )
+    assert played_at_arg[0].tzinfo is not None
+
+
+async def test_upsert_no_usa_la_forma_de_fila_completa():
+    """`(tabla.*) IS DISTINCT FROM (excluded.*)` es sintaxis arriesgada; se
+    comparan columnas explícitas."""
+    conn = _FakeConn()
+
+    class _TxConn(_FakeConn):
+        def transaction(self):
+            return self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    conn = _TxConn()
+    store = library_store.LibraryStore(_FakePool(conn))
+    payload = library_store.LibraryPushPayload(
+        baseVersion=0,
+        songs=[library_store.LibrarySongIn(songId="a", title="t", artist="ar")],
+        playlists=[library_store.LibraryPlaylistIn(playlistId="p", name="n")],
+        playlistSongs=[],
+    )
+    await store.push_library(1, payload)
+
+    queries = " ".join(q for q, _ in conn.calls)
+    assert "library_songs.*" not in queries
+    assert "library_playlists.*" not in queries
+    assert "IS DISTINCT FROM" in queries
 
 
 async def test_friendship_par_canonico_se_usa_en_status_between():

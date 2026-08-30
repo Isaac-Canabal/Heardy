@@ -126,6 +126,21 @@ def period_start_utc(period: str, now_utc: datetime.datetime, utc_offset_minutes
     return month_window_start_utc(now_utc)
 
 
+def parse_played_at(value: str) -> datetime.datetime:
+    """ISO 8601 → `datetime` con huso. Un valor sin huso se asume UTC.
+
+    Existe como función aparte porque asyncpg **no convierte cadenas a
+    `timestamptz`**: pasarle un `str` donde el SQL declara `timestamptz`
+    lanza un `DataError` en tiempo de ejecución, no un error de tipo al
+    escribirlo. Tanto la validación (`sanitize_history_rows`) como la
+    inserción (`push_history`) tienen que convertir con la MISMA regla, así
+    que vive en un solo sitio."""
+    parsed = datetime.datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
 MAX_PLAY_SECONDS = 86_400
 
 
@@ -177,12 +192,10 @@ def sanitize_history_rows(
 
     for row in rows:
         try:
-            played_at = datetime.datetime.fromisoformat(row.playedAtUtc)
+            played_at = parse_played_at(row.playedAtUtc)
         except ValueError:
             skipped_invalid += 1
             continue
-        if played_at.tzinfo is None:
-            played_at = played_at.replace(tzinfo=datetime.timezone.utc)
         if played_at > max_future or played_at < min_past:
             skipped_invalid += 1
             continue
@@ -318,7 +331,13 @@ class LibraryStore:
                             title = excluded.title, artist = excluded.artist, artist_key = excluded.artist_key,
                             album = excluded.album, duration_seconds = excluded.duration_seconds,
                             file_hash = excluded.file_hash, hash_kind = excluded.hash_kind
-                        WHERE (library_songs.*) IS DISTINCT FROM (excluded.*)
+                        WHERE (library_songs.title, library_songs.artist, library_songs.artist_key,
+                               library_songs.album, library_songs.duration_seconds,
+                               library_songs.file_hash, library_songs.hash_kind)
+                              IS DISTINCT FROM
+                              (excluded.title, excluded.artist, excluded.artist_key,
+                               excluded.album, excluded.duration_seconds,
+                               excluded.file_hash, excluded.hash_kind)
                         """,
                         user_id,
                         song_ids,
@@ -343,7 +362,8 @@ class LibraryStore:
                         SELECT $1, p, n, so FROM unnest($2::text[], $3::text[], $4::int[]) AS u(p, n, so)
                         ON CONFLICT (user_id, playlist_id) DO UPDATE SET
                             name = excluded.name, sort_order = excluded.sort_order
-                        WHERE (library_playlists.*) IS DISTINCT FROM (excluded.*)
+                        WHERE (library_playlists.name, library_playlists.sort_order)
+                              IS DISTINCT FROM (excluded.name, excluded.sort_order)
                         """,
                         user_id,
                         playlist_ids,
@@ -362,12 +382,21 @@ class LibraryStore:
                 # nuevo es tan barato como diferenciarla fila a fila.
                 await conn.execute("DELETE FROM library_playlist_songs WHERE user_id = $1", user_id)
                 if payload.playlistSongs:
-                    await conn.executemany(
+                    # `unnest`, no `executemany`, por la misma razón que en
+                    # push_history: una biblioteca grande son miles de filas y
+                    # la forma del INSERT decide si el push tarda segundos o
+                    # minutos.
+                    await conn.execute(
                         """
                         INSERT INTO library_playlist_songs (user_id, playlist_id, song_id, order_index)
-                        VALUES ($1, $2, $3, $4)
+                        SELECT $1, p, s, o
+                        FROM unnest($2::text[], $3::text[], $4::int[]) AS u(p, s, o)
+                        ON CONFLICT DO NOTHING
                         """,
-                        [(user_id, ps.playlistId, ps.songId, ps.orderIndex) for ps in payload.playlistSongs],
+                        user_id,
+                        [ps.playlistId for ps in payload.playlistSongs],
+                        [ps.songId for ps in payload.playlistSongs],
+                        [ps.orderIndex for ps in payload.playlistSongs],
                     )
 
     async def push_history(self, user_id: int, rows: list[HistoryRowIn]) -> int:
@@ -379,6 +408,9 @@ class LibraryStore:
         que el cliente tiene, así que reintentar un lote es inocuo."""
         if not rows:
             return 0
+        # `datetime`, NUNCA la cadena ISO tal cual: asyncpg no convierte
+        # cadenas a timestamptz y lanza DataError — ver parse_played_at.
+        played_at = [parse_played_at(r.playedAtUtc) for r in rows]
         async with self._pool.acquire() as conn:
             result = await conn.fetch(
                 """
@@ -391,7 +423,7 @@ class LibraryStore:
                 user_id,
                 [r.songId for r in rows],
                 [r.playedAtLocal for r in rows],
-                [r.playedAtUtc for r in rows],
+                played_at,
                 [r.playSeconds for r in rows],
             )
         return len(result)

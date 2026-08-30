@@ -116,20 +116,31 @@ class SyncProvider with ChangeNotifier {
     _isSyncing = true;
     _lastError = null;
     notifyListeners();
+    // Nombra el paso en curso para que un fallo diga DÓNDE se rompió, no
+    // sólo qué dijo el servidor: "cuenta", "historial" y "biblioteca" son
+    // tres llamadas distintas y un mismo texto de error ("El servidor
+    // respondió 500") no distingue cuál falló — que es exactamente lo que
+    // hizo falta averiguar a mano la primera vez que esto no funcionó.
+    var step = 'cuenta';
     try {
       _account = await _source.getAccount();
       _libraryVersion = _account!.libraryVersion;
 
+      step = 'historial';
       await _pushUnsyncedHistory();
+
+      step = 'biblioteca';
       await _pushLibraryIfChanged();
 
       _lastSyncAt = DateTime.now();
     } on CloudSourceException catch (e) {
-      _lastError = e.message;
-      if (e.kind == CloudSourceErrorKind.network) {
-        // Nada más que hacer esta pasada: sin conexión, cualquier otra
-        // llamada fallaría igual.
-      }
+      _lastError = '[$step] ${e.message}';
+    } catch (e) {
+      // Cualquier otra cosa (un fallo de SQLite, un error de parseo) también
+      // tiene que verse: antes escapaba de este método como un error de
+      // future sin capturar y la UI se quedaba igual que si nada hubiera
+      // pasado, que es el peor de los dos estados posibles.
+      _lastError = '[$step] $e';
     } finally {
       _isSyncing = false;
       notifyListeners();

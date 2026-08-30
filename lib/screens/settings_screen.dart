@@ -690,9 +690,30 @@ class _ShareStatsSheetState extends State<_ShareStatsSheet> {
           const SizedBox(height: 16),
           PeriodToggle(isWeek: _isWeek, onChanged: _changePeriod),
           const SizedBox(height: 16),
-          RepaintBoundary(
-            key: _boundaryKey,
-            child: ShareStatsCard(username: widget.username, data: _data, isWeek: _isWeek),
+          // `FittedBox` con altura acotada, NO la tarjeta suelta dentro del
+          // scroll de la hoja. Dos razones, y la segunda es la que rompía el
+          // botón de compartir:
+          //
+          // 1. La tarjeta crece con su contenido (top de artistas + canciones)
+          //    y puede pasar de largo la pantalla; escalada, se ve entera.
+          // 2. **Flutter no pinta lo que queda fuera del área visible de un
+          //    viewport.** Con la tarjeta más alta que la hoja, el trozo de
+          //    abajo nunca se pintaba, así que `RepaintBoundary.toImage()`
+          //    devolvía una captura incompleta — o `debugNeedsPaint` no se
+          //    limpiaba nunca y los reintentos se agotaban sin capturar nada.
+          //    `FittedBox` le da al hijo restricciones sin límite (se
+          //    dispone a tamaño natural completo) y sólo ESCALA la pintura,
+          //    así que el boundary conserva la resolución completa y, sobre
+          //    todo, está pintado entero.
+          SizedBox(
+            height: 420,
+            child: FittedBox(
+              fit: BoxFit.contain,
+              child: RepaintBoundary(
+                key: _boundaryKey,
+                child: ShareStatsCard(username: widget.username, data: _data, isWeek: _isWeek),
+              ),
+            ),
           ),
           const SizedBox(height: 20),
           SizedBox(
