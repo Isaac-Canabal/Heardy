@@ -1601,12 +1601,24 @@ class _SmartAlbumArtState extends State<SmartAlbumArt> {
       return _buildPlaceholder();
     }
 
-    // Sin cacheWidth/cacheHeight, Image.file decodifica la carátula a su
+    // Sin límite de decodificación, Image.file decodifica la carátula a su
     // resolución original (puede ser varios cientos de KB de un thumbnail de
     // YouTube o un embed de ID3) para mostrarla en un cuadro de `size` — ese
     // decode de más era parte del atasco al abrir esta pantalla desde el mini
     // player. Pedirle al decoder el tamaño real de destino, en píxeles
     // físicos, evita el trabajo sobrante.
+    //
+    // **SÓLO `cacheHeight`, nunca las dos a la vez.** Con `cacheWidth` Y
+    // `cacheHeight`, `instantiateImageCodec` redimensiona a exactamente esas
+    // dimensiones **ignorando la relación de aspecto**: una miniatura 16:9
+    // quedaba aplastada a un cuadrado, así que `BoxFit.cover` ya no tenía
+    // nada que recortar y las franjas negras que traen incrustadas muchas
+    // miniaturas de YouTube (una carátula cuadrada centrada sobre un lienzo
+    // 16:9) se quedaban a la vista como barras a los lados. Fijando sólo el
+    // alto, el decoder conserva la proporción, el ancho queda mayor que el
+    // cuadro y `BoxFit.cover` recorta los bordes — que es justo lo que hace
+    // que en la lista (`song_tile`, sin límites de decode) siempre se vieran
+    // bien y sólo aquí no.
     final cacheSize = (widget.size * MediaQuery.of(context).devicePixelRatio)
         .round();
     return Image.file(
@@ -1614,7 +1626,6 @@ class _SmartAlbumArtState extends State<SmartAlbumArt> {
       fit: BoxFit.cover,
       width: widget.size,
       height: widget.size,
-      cacheWidth: cacheSize,
       cacheHeight: cacheSize,
       errorBuilder: (_, __, ___) => _buildPlaceholder(),
     );
