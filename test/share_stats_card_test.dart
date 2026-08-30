@@ -9,6 +9,7 @@
 //    translúcido, así que la tarjeta tiene que poner su propio fondo opaco.
 // 3. El contenido se cortaba: con la lista de artistas llena, la sección de
 //    canciones quedaba fuera de la tarjeta de alto fijo.
+import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -116,5 +117,21 @@ void main() {
     // StatisticsView colapsa a 5 canciones sin `expanded`, así que la
     // primera tiene que estar presente aunque la lista de artistas sea larga.
     expect(find.text('Canción 0'), findsWidgets, reason: 'la sección de canciones se perdió');
+  });
+
+  test('nunca se lee debugNeedsPaint fuera de un assert — lanza en release', () {
+    // El bug real: "LateInitializationError: Local 'result' has not been
+    // initialized" al tocar "Compartir imagen" en el APK real, pero nunca en
+    // `flutter test` — los tests corren con los asserts activos, como un
+    // build debug, y `debugNeedsPaint` sólo se rompe cuando el `assert()`
+    // que lo rodea se descarta entero en release (Flutter mismo lo
+    // documenta: "In release builds, this throws"). Un test normal jamás
+    // iba a atrapar esto; sólo grepear el patrón peligroso lo hace.
+    final source = File('lib/services/share_image_service.dart').readAsStringSync();
+    expect(
+      source.contains('.debugNeedsPaint'),
+      isFalse,
+      reason: 'debugNeedsPaint es solo de depuración: leerlo fuera de un assert() lanza en release.',
+    );
   });
 }

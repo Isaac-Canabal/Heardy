@@ -408,6 +408,7 @@
   "syncDeleteMyDataConfirmTitle": "¿Borrar tus datos de la cuenta?",
   "syncDeleteMyDataConfirmBody": "Se borran tu biblioteca sincronizada, tu historial y tus amistades del servidor. Tus canciones en este teléfono no se tocan. Podés volver a sincronizar más adelante.",
   "syncDeleteMyDataDone": "Tus datos de la cuenta fueron borrados",
+  "syncSuccessMessage": "Sincronización completada",
 
   "usernameClaimTitle": "Elegí tu nombre de usuario",
   "usernameClaimHint": "solo-letras-y-numeros",

@@ -691,20 +691,12 @@ class _ShareStatsSheetState extends State<_ShareStatsSheet> {
           PeriodToggle(isWeek: _isWeek, onChanged: _changePeriod),
           const SizedBox(height: 16),
           // `FittedBox` con altura acotada, NO la tarjeta suelta dentro del
-          // scroll de la hoja. Dos razones, y la segunda es la que rompía el
-          // botón de compartir:
-          //
-          // 1. La tarjeta crece con su contenido (top de artistas + canciones)
-          //    y puede pasar de largo la pantalla; escalada, se ve entera.
-          // 2. **Flutter no pinta lo que queda fuera del área visible de un
-          //    viewport.** Con la tarjeta más alta que la hoja, el trozo de
-          //    abajo nunca se pintaba, así que `RepaintBoundary.toImage()`
-          //    devolvía una captura incompleta — o `debugNeedsPaint` no se
-          //    limpiaba nunca y los reintentos se agotaban sin capturar nada.
-          //    `FittedBox` le da al hijo restricciones sin límite (se
-          //    dispone a tamaño natural completo) y sólo ESCALA la pintura,
-          //    así que el boundary conserva la resolución completa y, sobre
-          //    todo, está pintado entero.
+          // scroll de la hoja: la tarjeta crece con su contenido (top de
+          // artistas + canciones) y puede pasar de largo la pantalla —
+          // escalada, se ve entera en vez de exigir scroll para verla toda.
+          // (El bug real que impedía compartir del todo era otro — un
+          // `debugNeedsPaint` leído fuera de un `assert`, que Flutter mismo
+          // documenta que lanza en release — ver share_image_service.dart.)
           SizedBox(
             height: 420,
             child: FittedBox(
@@ -902,7 +894,18 @@ class _AccountSection extends StatelessWidget {
                       foregroundColor: Colors.white,
                       side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
                     ),
-                    onPressed: sync.isSyncing ? null : () => context.read<SyncProvider>().syncNow(),
+                    onPressed: sync.isSyncing
+                        ? null
+                        : () async {
+                            // Antes de esto no había forma de saber si "Sincronizar
+                            // ahora" hizo algo o no: sin error visible, el usuario no
+                            // tenía manera de distinguir "funcionó" de "no pasó nada".
+                            final provider = context.read<SyncProvider>();
+                            await provider.syncNow();
+                            if (!context.mounted || provider.lastError != null) return;
+                            ScaffoldMessenger.of(context)
+                                .showSnackBar(SnackBar(content: Text(l10n.syncSuccessMessage)));
+                          },
                     child: Text(l10n.syncNowButton),
                   ),
                 ),

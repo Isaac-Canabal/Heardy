@@ -272,6 +272,7 @@
   "syncDeleteMyDataConfirmTitle": "Erase your account data?",
   "syncDeleteMyDataConfirmBody": "Your synced library, history and friendships are erased from the server. Songs on this phone are untouched. You can sync again later.",
   "syncDeleteMyDataDone": "Your account data was erased",
+  "syncSuccessMessage": "Sync complete",
 
   "usernameClaimTitle": "Choose your username",
   "usernameClaimHint": "letters-and-numbers-only",

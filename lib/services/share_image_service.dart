@@ -8,22 +8,28 @@ import 'package:flutter/widgets.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
-/// Captura un `RepaintBoundary` a PNG. Guarda contra `debugNeedsPaint`: pedir
-/// `toImage()` sobre un boundary que todavía no terminó de pintar lanza o
-/// captura contenido viejo — un reintento acotado resuelve el caso normal
-/// (la vista previa recién se montó, o la animación de entrada de la hoja
-/// modal todavía está corriendo) sin un `Future.delayed` fijo que adivine mal
-/// según la velocidad del dispositivo.
+/// Captura un `RepaintBoundary` a PNG.
 ///
-/// **10 × 50ms (hasta 500ms), no 3 × 32ms**: el presupuesto original no
-/// alcanzaba en un dispositivo real — la transición de entrada del
-/// `showModalBottomSheet` (~250ms) por sí sola ya superaba las 3 pasadas
-/// enteras, así que el botón de compartir devolvía `null` en silencio y
-/// parecía "no hacer nada".
+/// **Nunca leer `debugNeedsPaint` desde código de producción — Flutter lo
+/// documenta él mismo: "In release builds, this throws".** Es un getter de
+/// sólo depuración (`late bool result; assert(() { result = ...; return
+/// true; }()); return result;` — en un build release el `assert` entero se
+/// descarta y `result` nunca se asigna, así que leerlo lanza
+/// `LateInitializationError: Local 'result' has not been initialized`.
+///
+/// **Esto es justo lo que rompía el botón "Compartir imagen" en el APK real**
+/// — funcionaba en `flutter test` (los tests corren con asserts activos,
+/// como un build debug) y explotaba sólo en release, exactamente el patrón
+/// que hizo tan difícil de ver el bug. La guarda correcta es simplemente
+/// esperar a que el `RenderObject` esté `attached` (ya adjunto al árbol de
+/// render) — combinado con [waitForEndOfFrame], eso ya asegura que hubo al
+/// menos un pintado real antes de capturar. El reintento acotado sigue
+/// existiendo para el caso normal de que la hoja modal todavía esté a mitad
+/// de su animación de entrada cuando se llama a esto.
 Future<Uint8List?> renderBoundaryPng(GlobalKey key, {double pixelRatio = 3}) async {
   for (var attempt = 0; attempt < 10; attempt++) {
     final renderObject = key.currentContext?.findRenderObject();
-    if (renderObject is! RenderRepaintBoundary || renderObject.debugNeedsPaint) {
+    if (renderObject is! RenderRepaintBoundary || !renderObject.attached) {
       await Future.delayed(const Duration(milliseconds: 50));
       continue;
     }
