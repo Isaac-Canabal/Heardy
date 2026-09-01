@@ -865,6 +865,14 @@ class LyricsBottomSheet extends StatefulWidget {
 }
 
 class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
+  // La canción que se muestra ahora mismo. Antes el sheet sólo tenía el
+  // `MediaItem` que le pasó el constructor (fijo mientras el sheet vive), así
+  // que al pasar a la siguiente canción con el sheet abierto la letra
+  // (y su resaltado) se quedaban congelados en la anterior. Ahora se
+  // escucha `audioHandler.mediaItem` y este campo es lo único que el resto
+  // de la clase lee — nunca `widget.mediaItem` fuera de `initState`.
+  late MediaItem _item;
+  StreamSubscription<MediaItem?>? _mediaItemSub;
   bool _isLoading = true;
   String? _lyricsText;
   List<LyricLine> _parsedLines = [];
@@ -881,6 +889,7 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
   @override
   void initState() {
     super.initState();
+    _item = widget.mediaItem;
     // Antes esto vivía en un StreamBuilder<Duration> envolviendo TODA la
     // ListView de letras, así que cada tick de posición (varias veces por
     // segundo) reconstruía las líneas visibles enteras — con la traducción
@@ -891,7 +900,24 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
     _positionSub = widget.audioHandler.player.positionStream.listen(
       _onPosition,
     );
+    _mediaItemSub = widget.audioHandler.mediaItem.listen(_onMediaItemChanged);
     _fetchLyrics();
+  }
+
+  void _onMediaItemChanged(MediaItem? item) {
+    if (item == null || item.id == _item.id) return;
+    final wasShowingTranslation = _showTranslation;
+    setState(() {
+      _item = item;
+      _isLoading = true;
+      _lyricsText = null;
+      _parsedLines = [];
+      _lyricKeys.clear();
+      _activeIndex = -1;
+      _translatedLines = null;
+      _showTranslation = false;
+    });
+    _fetchLyrics(reTranslateAfter: wasShowingTranslation);
   }
 
   void _onPosition(Duration position) {
@@ -918,47 +944,52 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
   @override
   void dispose() {
     _positionSub?.cancel();
+    _mediaItemSub?.cancel();
     _scrollController.dispose();
     super.dispose();
   }
 
-  void _fetchLyrics() async {
+  void _fetchLyrics({bool reTranslateAfter = false}) async {
+    // Se captura el id pedido: si la canción vuelve a cambiar mientras esta
+    // petición está en vuelo, la respuesta llega tarde y no debe pisar la
+    // letra de la canción que ya está sonando ahora.
+    final requestedSongId = _item.id;
     try {
-      final songId = widget.mediaItem.id;
       final lyrics = await LyricsService.instance.getLyrics(
-        songId: songId,
-        title: widget.mediaItem.title,
-        artist: widget.mediaItem.artist ?? '',
-        durationSeconds: widget.mediaItem.duration?.inSeconds ?? 0,
+        songId: requestedSongId,
+        title: _item.title,
+        artist: _item.artist ?? '',
+        durationSeconds: _item.duration?.inSeconds ?? 0,
       );
+      if (!mounted || _item.id != requestedSongId) return;
 
       if (lyrics != null && lyrics.isNotEmpty) {
         final lines = LyricsService.instance.parseLrc(lyrics);
-        if (mounted) {
-          setState(() {
-            _lyricsText = lyrics;
-            _parsedLines = lines;
-            _lyricKeys.clear();
-            _lyricKeys.addAll(List.generate(lines.length, (_) => GlobalKey()));
-            _isLoading = false;
-          });
-        }
+        setState(() {
+          _lyricsText = lyrics;
+          _parsedLines = lines;
+          _lyricKeys.clear();
+          _lyricKeys.addAll(List.generate(lines.length, (_) => GlobalKey()));
+          _isLoading = false;
+        });
       } else {
-        if (mounted) {
-          setState(() {
-            _lyricsText = null;
-            _isLoading = false;
-          });
-        }
-      }
-    } catch (e) {
-      print('Error fetching lyrics: $e');
-      if (mounted) {
         setState(() {
           _lyricsText = null;
           _isLoading = false;
         });
       }
+    } catch (e) {
+      print('Error fetching lyrics: $e');
+      if (mounted && _item.id == requestedSongId) {
+        setState(() {
+          _lyricsText = null;
+          _isLoading = false;
+        });
+      }
+      return;
+    }
+    if (reTranslateAfter && _lyricsText != null && _item.id == requestedSongId) {
+      await _toggleTranslation();
     }
   }
 
@@ -975,16 +1006,17 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
 
     setState(() => _isTranslating = true);
     final targetLang = context.read<SettingsProvider>().language.name;
+    final requestedSongId = _item.id;
     final sourceLines = _parsedLines.isNotEmpty
         ? _parsedLines.map((l) => l.text).toList()
         : _lyricsText!.split('\n');
     try {
       final translated = await TranslationService.instance.translateLines(
-        songId: widget.mediaItem.id,
+        songId: requestedSongId,
         lines: sourceLines,
         targetLang: targetLang,
       );
-      if (mounted) {
+      if (mounted && _item.id == requestedSongId) {
         setState(() {
           _translatedLines = translated;
           _showTranslation = true;
@@ -993,7 +1025,9 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
       }
     } catch (e) {
       print('Error traduciendo letra: $e');
-      if (mounted) setState(() => _isTranslating = false);
+      if (mounted && _item.id == requestedSongId) {
+        setState(() => _isTranslating = false);
+      }
     }
   }
 
@@ -1062,12 +1096,32 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const Text(
-                    'Letra',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 20,
-                      fontWeight: FontWeight.bold,
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Text(
+                          'Letra',
+                          style: TextStyle(
+                            color: Colors.white,
+                            fontSize: 20,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                        Text(
+                          [
+                            _item.title,
+                            if ((_item.artist ?? '').isNotEmpty) _item.artist!,
+                          ].join(' · '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Colors.white54,
+                            fontSize: 13,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                   Row(

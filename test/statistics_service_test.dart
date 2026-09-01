@@ -138,6 +138,32 @@ void main() {
       expect(data.topArtists.last.playCount, 1);
     });
 
+    test('agrupa el mismo artista sin importar mayúsculas/espacios', () async {
+      final db = DatabaseHelper.instance;
+      await db.insertSong(_song('s1', 'Uno', 'Bad Bunny'));
+      await db.insertSong(_song('s2', 'Dos', 'bad bunny'));
+      await db.insertSong(_song('s3', 'Tres', '  Bad   Bunny  '));
+      await db.insertSong(_song('s4', 'Cuatro', 'Otro Artista'));
+      final now = DateTime.now();
+
+      await _recordPlayAt('s1', now.subtract(const Duration(minutes: 10)), 60);
+      await _recordPlayAt('s2', now.subtract(const Duration(minutes: 20)), 60);
+      await _recordPlayAt('s2', now.subtract(const Duration(minutes: 21)), 60);
+      await _recordPlayAt('s3', now.subtract(const Duration(minutes: 30)), 60);
+      await _recordPlayAt('s4', now.subtract(const Duration(minutes: 40)), 60);
+
+      final data = await loadLocalStatistics(isWeek: true);
+
+      expect(data.topArtists.length, 2);
+      // Las tres variantes de "Bad Bunny" se suman en un solo grupo (4
+      // reproducciones), y el nombre mostrado es la variante más escuchada
+      // dentro del grupo ("bad bunny", con 2).
+      expect(data.topArtists.first.name, 'bad bunny');
+      expect(data.topArtists.first.playCount, 4);
+      expect(data.topArtists.last.name, 'Otro Artista');
+      expect(data.topArtists.last.playCount, 1);
+    });
+
     test('el top de canciones se corta en 10', () async {
       final db = DatabaseHelper.instance;
       final now = DateTime.now();
@@ -153,6 +179,34 @@ void main() {
 
       expect(data.topSongs.length, 10);
       expect(data.topSongs.first.title, 'Canción 0');
+    });
+  });
+
+  group('foldTopArtists', () {
+    test('respeta el límite tras plegar, no antes', () {
+      final rows = [
+        {'artist': 'A', 'playCount': 5},
+        {'artist': 'a', 'playCount': 3},
+        {'artist': 'B', 'playCount': 4},
+        {'artist': 'C', 'playCount': 1},
+      ];
+
+      final folded = foldTopArtists(rows, limit: 2);
+
+      expect(folded.length, 2);
+      expect(folded[0]['artist'], 'A');
+      expect(folded[0]['playCount'], 8);
+      expect(folded[1]['artist'], 'B');
+      expect(folded[1]['playCount'], 4);
+    });
+
+    test('descarta filas de artista vacío', () {
+      final rows = [
+        {'artist': '', 'playCount': 5},
+        {'artist': '   ', 'playCount': 5},
+      ];
+
+      expect(foldTopArtists(rows), isEmpty);
     });
   });
 

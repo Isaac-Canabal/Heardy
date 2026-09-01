@@ -1190,70 +1190,38 @@ class DatabaseHelper {
     return Sqflite.firstIntValue(result) ?? 0;
   }
 
-  Future<Map<String, dynamic>?> getTopArtistThisWeek() async {
+  /// Sin `LIMIT` y sin plegar por nombre normalizado a propósito: SQLite
+  /// compara TEXT con colación binaria, así que "Bad Bunny" y "bad bunny"
+  /// son grupos distintos aquí. El plegado insensible a mayúsculas/espacios
+  /// (igual que `compute_artist_key` en el servidor, para que las
+  /// estadísticas propias y las de un amigo coincidan) lo hace
+  /// `foldTopArtists` en `statistics_service.dart`, sobre TODAS las filas.
+  Future<List<Map<String, dynamic>>> getTopArtistsThisWeek() async {
     final db = await database;
     final startOfWeek = _getStartOfWeek();
 
-    final result = await db.rawQuery('''
+    return await db.rawQuery('''
       SELECT s.artist, COUNT(*) as playCount
       FROM play_history ph
       JOIN songs s ON s.id = ph.songId
       WHERE ph.playDate >= ?
       GROUP BY s.artist
       ORDER BY playCount DESC
-      LIMIT 1
     ''', [startOfWeek]);
-
-    if (result.isEmpty) return null;
-    return result.first;
   }
 
-  Future<Map<String, dynamic>?> getTopArtistThisMonth() async {
+  Future<List<Map<String, dynamic>>> getTopArtistsThisMonth() async {
     final db = await database;
     final oneMonthAgo = DateTime.now().subtract(Duration(days: 30)).toIso8601String();
 
-    final result = await db.rawQuery('''
+    return await db.rawQuery('''
       SELECT s.artist, COUNT(*) as playCount
       FROM play_history ph
       JOIN songs s ON s.id = ph.songId
       WHERE ph.playDate >= ?
       GROUP BY s.artist
       ORDER BY playCount DESC
-      LIMIT 1
     ''', [oneMonthAgo]);
-
-    if (result.isEmpty) return null;
-    return result.first;
-  }
-
-  Future<List<Map<String, dynamic>>> getTopArtistsThisWeek({int limit = 5}) async {
-    final db = await database;
-    final startOfWeek = _getStartOfWeek();
-
-    return await db.rawQuery('''
-      SELECT s.artist, COUNT(*) as playCount
-      FROM play_history ph
-      JOIN songs s ON s.id = ph.songId
-      WHERE ph.playDate >= ?
-      GROUP BY s.artist
-      ORDER BY playCount DESC
-      LIMIT ?
-    ''', [startOfWeek, limit]);
-  }
-
-  Future<List<Map<String, dynamic>>> getTopArtistsThisMonth({int limit = 5}) async {
-    final db = await database;
-    final oneMonthAgo = DateTime.now().subtract(Duration(days: 30)).toIso8601String();
-
-    return await db.rawQuery('''
-      SELECT s.artist, COUNT(*) as playCount
-      FROM play_history ph
-      JOIN songs s ON s.id = ph.songId
-      WHERE ph.playDate >= ?
-      GROUP BY s.artist
-      ORDER BY playCount DESC
-      LIMIT ?
-    ''', [oneMonthAgo, limit]);
   }
 
   // Delete all songs belonging to a playlist (files + DB rows).

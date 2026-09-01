@@ -31,9 +31,52 @@ Future<StatisticsData> loadLocalStatistics({
   return StatisticsData.fromRows(
     totalPlays: results[0] as int,
     totalListenSeconds: results[1] as int,
-    topArtists: results[2] as List<Map<String, dynamic>>,
+    topArtists: foldTopArtists(results[2] as List<Map<String, dynamic>>),
     topSongs: results[3] as List<Map<String, dynamic>>,
   );
+}
+
+/// Pliega filas `(artist, playCount)` por nombre normalizado (trim, espacios
+/// colapsados, `toLowerCase()`) y se queda con las `limit` más escuchadas.
+///
+/// Necesario porque SQLite agrupa `s.artist` con colación binaria: "Bad
+/// Bunny" y "bad bunny" llegan aquí como dos filas separadas. La clave de
+/// plegado replica a propósito `compute_artist_key` del servidor
+/// (`server/app/library_store.py`) para que el top de artistas propio y el
+/// que ve un amigo coincidan. El nombre mostrado es la variante más
+/// escuchada dentro del grupo — mismo criterio que el `mode()` del servidor
+/// — no la primera que aparezca.
+List<Map<String, dynamic>> foldTopArtists(
+  List<Map<String, dynamic>> rows, {
+  int limit = 5,
+}) {
+  final byKey = <String, _ArtistFold>{};
+  for (final row in rows) {
+    final rawName = (row['artist'] as String?) ?? '';
+    final key = rawName.trim().replaceAll(RegExp(r'\s+'), ' ').toLowerCase();
+    if (key.isEmpty) continue;
+    final playCount = (row['playCount'] as num?)?.toInt() ?? 0;
+
+    final fold = byKey.putIfAbsent(key, () => _ArtistFold());
+    fold.totalPlayCount += playCount;
+    if (playCount > fold.bestVariantPlayCount) {
+      fold.bestVariantPlayCount = playCount;
+      fold.bestVariantName = rawName;
+    }
+  }
+
+  final folded = byKey.values
+      .map((f) => {'artist': f.bestVariantName, 'playCount': f.totalPlayCount})
+      .toList()
+    ..sort((a, b) => (b['playCount'] as int).compareTo(a['playCount'] as int));
+
+  return folded.take(limit).toList();
+}
+
+class _ArtistFold {
+  int totalPlayCount = 0;
+  int bestVariantPlayCount = 0;
+  String bestVariantName = '';
 }
 
 /// `45 s` / `12m` / `3h 5m`. Movida tal cual desde `settings_screen.dart`.

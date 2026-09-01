@@ -10,6 +10,16 @@ import 'database_helper.dart';
 import 'playback_state_service.dart';
 
 final FlutterLocalNotificationsPlugin _errorNotification = FlutterLocalNotificationsPlugin();
+
+/// Decisión pura de si una escucha cuenta para las estadísticas — extraída
+/// para poder probarla sin `just_audio`, que no tiene doble de test en este
+/// codebase. Umbral: 50% de la duración.
+bool shouldRecordPlay({required Duration listened, required Duration duration}) {
+  if (duration.inSeconds <= 0) return false;
+  final threshold = (duration.inSeconds * 0.5).ceil();
+  return listened.inSeconds >= threshold;
+}
+
 class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   final AudioPlayer _player = AudioPlayer();
   final SafUtil _safUtil = SafUtil();
@@ -171,7 +181,6 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     // Pipe just_audio events to audio_service's playbackState stream
     _player.playbackEventStream.listen((event) {
       _lastEvent = event;
-      _updateTrackingPosition();
       playbackState.add(_buildPlaybackState(event));
       // Guardar estado cuando cambia la reproducción
       _saveCurrentState();
@@ -253,6 +262,43 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
         }
       }
     });
+
+    // Muestreo dedicado de posición para las estadísticas de reproducción:
+    // `playbackEventStream` sólo emite en eventos discretos (carga, buffer,
+    // cambio de pista), no periódicamente, así que con un archivo local ya
+    // cargado dejaba de emitir a los pocos segundos y `_trackingMaxPosition`
+    // se quedaba congelado cerca de 0 — la inmensa mayoría de escuchas nunca
+    // llegaban al umbral. Este stream sí es periódico.
+    _player
+        .createPositionStream(
+          minPeriod: const Duration(milliseconds: 800),
+          maxPeriod: const Duration(seconds: 1),
+        )
+        .listen(_onTrackingPosition);
+  }
+
+  /// Actualiza el máximo alcanzado y detecta una vuelta de repetición en
+  /// `LoopMode.one`, que just_audio maneja internamente sin pasar nunca por
+  /// `ProcessingState.completed` ni cambiar `currentIndex` — sin esto una
+  /// canción en bucle único no contaba jamás, por muchas vueltas que diera.
+  void _onTrackingPosition(Duration position) {
+    if (_trackingSongId == null) return;
+    if (mediaItem.value?.id != _trackingSongId) return;
+
+    final duration = _trackingMediaItem?.duration ?? _player.duration;
+    if (_player.loopMode == LoopMode.one &&
+        duration != null &&
+        duration > Duration.zero &&
+        position < const Duration(seconds: 1) &&
+        _trackingMaxPosition >= duration - const Duration(seconds: 2)) {
+      _finalizePlay();
+      _startTracking(_trackingMediaItem!);
+      return;
+    }
+
+    if (position > _trackingMaxPosition) {
+      _trackingMaxPosition = position;
+    }
   }
 
   /// Builds a PlaybackState from a PlaybackEvent, reading the current player properties.
@@ -311,6 +357,11 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
       await _abortSleepFadeAndCleanup();
     }
     await _player.pause();
+    // Si ya se llegó al umbral pero la canción nunca termina (el usuario
+    // pausa y sale de la app, y el SO mata el proceso más tarde) la escucha
+    // no debe perderse — registrarla ya en cuanto se pausa es idempotente
+    // gracias a `_hasRecordedCurrentTrack`.
+    await _finalizePlay();
   }
 
   @override
@@ -331,6 +382,13 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
         _trackingMaxPosition.inSeconds > 10) {
       _trackingMaxPosition = position;
       _hasRecordedCurrentTrack = false;
+    } else if (mediaItem.value?.id == _trackingSongId &&
+        position > _trackingMaxPosition) {
+      // Adelantar (arrastrar la barra, botón +10s) debe contar hacia el
+      // umbral igual que escuchar seguido — no esperar al próximo tick del
+      // stream de posición para que un salto justo antes de cambiar de
+      // canción no se pierda.
+      _trackingMaxPosition = position;
     }
     return _player.seek(position);
   }
@@ -483,6 +541,14 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
         await _player.play();
       }
       return;
+    }
+
+    // Cola realmente nueva (otra playlist, o la misma con canciones
+    // distintas): el bucle no debe sobrevivir el cambio, así que se apaga
+    // aquí. La rama `isSameQueue` de arriba no pasa por este punto, así que
+    // reanudar la lista que ya sonaba no lo apaga.
+    if (_player.loopMode != LoopMode.off) {
+      await _player.setLoopMode(LoopMode.off);
     }
 
     queue.add(validItems);
@@ -859,16 +925,6 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     _hasRecordedCurrentTrack = false;
   }
 
-  void _updateTrackingPosition() {
-    if (_trackingSongId == null || _hasRecordedCurrentTrack) return;
-    if (mediaItem.value?.id != _trackingSongId) return;
-
-    final position = _player.position;
-    if (position > _trackingMaxPosition) {
-      _trackingMaxPosition = position;
-    }
-  }
-
   Future<void> _finalizePlay() async {
     if (_hasRecordedCurrentTrack ||
         _trackingSongId == null ||
@@ -876,29 +932,25 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
       return;
     }
 
-    final filePath = _trackingMediaItem!.extras?['filePath'] as String?;
-    if (filePath == null || filePath.isEmpty || !await _isPlayable(filePath)) {
-      return;
-    }
-
     final duration = _trackingMediaItem!.duration ??
         _player.duration ??
         Duration.zero;
-    if (duration.inSeconds <= 0) return;
 
-    final listenedSeconds = _trackingMaxPosition.inSeconds;
-    final threshold = (duration.inSeconds * 0.5).ceil();
+    if (!shouldRecordPlay(
+      listened: _trackingMaxPosition,
+      duration: duration,
+    )) {
+      return;
+    }
 
-    if (listenedSeconds >= threshold) {
-      try {
-        await DatabaseHelper.instance.recordPlay(
-          _trackingSongId!,
-          listenedSeconds,
-        );
-        _hasRecordedCurrentTrack = true;
-      } catch (e) {
-        print('Error registrando reproducción: $e');
-      }
+    try {
+      await DatabaseHelper.instance.recordPlay(
+        _trackingSongId!,
+        _trackingMaxPosition.inSeconds,
+      );
+      _hasRecordedCurrentTrack = true;
+    } catch (e) {
+      print('Error registrando reproducción: $e');
     }
   }
 
@@ -918,7 +970,6 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
         position: _player.position,
         queue: queueValue,
         shuffleMode: playbackState.value.shuffleMode,
-        loopMode: playbackState.value.repeatMode,
         speed: _player.speed,
         playlistId: mediaItemValue.extras?['playlist_id'] as String?,
       );

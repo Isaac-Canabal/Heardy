@@ -9,7 +9,6 @@ class PlaybackStateService {
   static const _currentPositionKey = 'current_position';
   static const _queueDataKey = 'queue_data';
   static const _shuffleModeKey = 'shuffle_mode';
-  static const _loopModeKey = 'loop_mode';
   static const _speedKey = 'playback_speed';
   static const _playlistIdKey = 'playlist_id';
 
@@ -24,7 +23,6 @@ class PlaybackStateService {
     required Duration position,
     required List<MediaItem> queue,
     required AudioServiceShuffleMode shuffleMode,
-    required AudioServiceRepeatMode loopMode,
     required double speed,
     String? playlistId,
   }) async {
@@ -39,7 +37,6 @@ class PlaybackStateService {
       final queueIds = queue.map((item) => item.id).toList();
       await prefs.setStringList(_queueDataKey, queueIds);
       await prefs.setString(_shuffleModeKey, shuffleMode.name);
-      await prefs.setString(_loopModeKey, loopMode.name);
       await prefs.setDouble(_speedKey, speed);
       await prefs.setString(_playlistIdKey, playlistId ?? '');
       
@@ -59,7 +56,6 @@ class PlaybackStateService {
       final positionMs = prefs.getInt(_currentPositionKey);
       final queueIds = prefs.getStringList(_queueDataKey);
       final shuffleModeStr = prefs.getString(_shuffleModeKey);
-      final loopModeStr = prefs.getString(_loopModeKey);
       final speed = prefs.getDouble(_speedKey);
       final playlistId = prefs.getString(_playlistIdKey);
       
@@ -82,7 +78,6 @@ class PlaybackStateService {
         'position': Duration(milliseconds: positionMs ?? 0),
         'queueIds': queueIds,
         'shuffleModeStr': shuffleModeStr,
-        'loopModeStr': loopModeStr,
         'speed': speed,
         'playlistId': playlistId,
       };
@@ -101,7 +96,6 @@ class PlaybackStateService {
       await prefs.remove(_currentPositionKey);
       await prefs.remove(_queueDataKey);
       await prefs.remove(_shuffleModeKey);
-      await prefs.remove(_loopModeKey);
       await prefs.remove(_speedKey);
       await prefs.remove(_playlistIdKey);
       print('Estado de reproducción limpiado');

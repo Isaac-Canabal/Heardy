@@ -152,7 +152,6 @@ class MusicProvider with ChangeNotifier {
       final queueIds = savedState['queueIds'] as List<String>;
       final isPlaying = savedState['isPlaying'] as bool;
       final shuffleModeStr = savedState['shuffleModeStr'] as String?;
-      final loopModeStr = savedState['loopModeStr'] as String?;
       final speed = savedState['speed'] as double?;
 
       if (playlistId == null || playlistId.isEmpty) {
@@ -212,17 +211,9 @@ class MusicProvider with ChangeNotifier {
         }
       }
 
-      if (loopModeStr != null) {
-        try {
-          final loopMode = AudioServiceRepeatMode.values.firstWhere(
-            (mode) => mode.name == loopModeStr,
-            orElse: () => AudioServiceRepeatMode.one,
-          );
-          await audioHandler.setRepeatMode(loopMode);
-        } catch (e) {
-          print('Error restaurando loop mode: $e');
-        }
-      }
+      // El modo bucle NO se restaura a propósito: es una preferencia de la
+      // sesión de reproducción actual, no algo que deba sobrevivir a un
+      // reinicio en frío de la app (ver CLAUDE.md / plan de corrección).
 
       if (speed != null && speed > 0) {
         try {
