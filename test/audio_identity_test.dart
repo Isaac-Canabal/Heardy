@@ -20,6 +20,9 @@ import 'package:heardy/services/audio_identity.dart';
 import 'package:heardy/services/database_helper.dart';
 import 'package:heardy/services/library_scan_service.dart';
 
+import 'package:heardy/services/library_storage.dart';
+import 'package:heardy/services/saf_library_storage.dart';
+
 import 'fake_saf.dart';
 
 class _TempPathProvider extends PathProviderPlatform {
@@ -103,6 +106,7 @@ void main() {
       final root = backend.addDir(null, 'Heardy');
       SafUtilPlatform.instance = FakeSafUtil(backend);
       SafStreamPlatform.instance = FakeSafStream(backend);
+      debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
 
       final audio = Uint8List.fromList(List.generate(9000, (i) => (i * 53 + 7) % 256));
       final identity = AudioIdentityService();
@@ -136,6 +140,7 @@ void main() {
       final root = backend.addDir(null, 'Heardy');
       SafUtilPlatform.instance = FakeSafUtil(backend);
       SafStreamPlatform.instance = FakeSafStream(backend);
+      debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
 
       // No ftyp/moov/mdat structure at all — the box walker finds no mdat.
       final junk = backend.addFile(root, 'roto.m4a', Uint8List.fromList(List.filled(300, 0x5A)), 100);
@@ -157,6 +162,7 @@ void main() {
       final playlistDir = backend.addDir(root, 'IdentidadCompartida');
       SafUtilPlatform.instance = FakeSafUtil(backend);
       SafStreamPlatform.instance = FakeSafStream(backend);
+      debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
 
       final m4aFile = backend.addFile(
         playlistDir,

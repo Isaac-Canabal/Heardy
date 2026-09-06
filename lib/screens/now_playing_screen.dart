@@ -11,6 +11,7 @@ import '../services/lyrics_service.dart';
 import '../services/translation_service.dart';
 import '../providers/settings_provider.dart';
 import '../theme/app_theme.dart';
+import '../widgets/max_width_center.dart';
 import '../l10n/app_localizations.dart';
 
 class NowPlayingScreen extends StatefulWidget {
@@ -217,272 +218,284 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
               ),
             ),
             child: SafeArea(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  // El arte fijo a 300px podía desbordar: horizontalmente en
-                  // pantallas angostas (300 + 64 de padding = 364, más ancho
-                  // que muchos Android reales de 360dp) y verticalmente en
-                  // pantallas bajas, donde esta Column con spaceEvenly no
-                  // tenía margen para acomodarlo. Se limita al menor entre el
-                  // máximo original y lo que realmente entra en esta pantalla.
-                  final artSize = math.min(
-                    300.0,
-                    math.min(
-                      constraints.maxWidth - 64,
-                      constraints.maxHeight * 0.38,
-                    ),
-                  );
-                  return Column(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                    children: [
-                      // 1. Prominent album cover
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 32.0),
-                        child: Card(
-                          elevation: 16,
-                          shadowColor: _dominantColor.withValues(alpha: 0.3),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(20),
-                          ),
-                          child: ClipRRect(
-                            borderRadius: BorderRadius.circular(20),
-                            child: _buildAlbumArt(mediaItem, artSize),
+              // El fondo con degradado queda a todo lo ancho a propósito (se
+              // ve bien incluso en una ventana de escritorio muy ancha); lo
+              // que se centra con un ancho máximo es sólo esta columna de
+              // contenido — ver W3 del plan de escritorio.
+              child: MaxWidthCenter(
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    // El arte fijo a 300px podía desbordar: horizontalmente en
+                    // pantallas angostas (300 + 64 de padding = 364, más ancho
+                    // que muchos Android reales de 360dp) y verticalmente en
+                    // pantallas bajas, donde esta Column con spaceEvenly no
+                    // tenía margen para acomodarlo. Se limita al menor entre el
+                    // máximo original y lo que realmente entra en esta pantalla.
+                    final artSize = math.min(
+                      300.0,
+                      math.min(
+                        constraints.maxWidth - 64,
+                        constraints.maxHeight * 0.38,
+                      ),
+                    );
+                    return Column(
+                      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                      children: [
+                        // 1. Prominent album cover
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 32.0),
+                          child: Card(
+                            elevation: 16,
+                            shadowColor: _dominantColor.withValues(alpha: 0.3),
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(20),
+                              child: _buildAlbumArt(mediaItem, artSize),
+                            ),
                           ),
                         ),
-                      ),
 
-                      // 2. Track information
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                        child: Column(
-                          children: [
-                            Text(
-                              mediaItem.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              textAlign: TextAlign.center,
-                              style: const TextStyle(
-                                color: Colors.white,
-                                fontSize: 22,
-                                fontWeight: FontWeight.bold,
-                              ),
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              mediaItem.artist ?? l10n.commonUnknownArtist,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                color: Colors.grey[400],
-                                fontSize: 16,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-
-                      // 3. Quick Action Buttons
-                      Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 24.0),
-                        child: Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            ElevatedButton.icon(
-                              icon: const Icon(
-                                Icons.lyrics_outlined,
-                                size: 18,
-                                color: Colors.white,
-                              ),
-                              label: Text(
-                                l10n.nowPlayingLyricsButton,
+                        // 2. Track information
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                          child: Column(
+                            children: [
+                              Text(
+                                mediaItem.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                textAlign: TextAlign.center,
                                 style: const TextStyle(
                                   color: Colors.white,
-                                  fontSize: 13,
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.bold,
                                 ),
                               ),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.white.withValues(
-                                  alpha: 0.08,
-                                ),
-                                elevation: 0,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(20),
-                                ),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 20,
-                                  vertical: 10,
+                              const SizedBox(height: 6),
+                              Text(
+                                mediaItem.artist ?? l10n.commonUnknownArtist,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                textAlign: TextAlign.center,
+                                style: TextStyle(
+                                  color: Colors.grey[400],
+                                  fontSize: 16,
                                 ),
                               ),
-                              onPressed: () => _showLyricsBottomSheet(
-                                context,
-                                audioHandler,
-                                mediaItem,
-                                _dominantColor,
-                              ),
-                            ),
-                            const SizedBox(width: 16),
-                            ElevatedButton.icon(
-                              icon: const Icon(
-                                Icons.queue_music,
-                                size: 18,
-                                color: Colors.white,
-                              ),
-                              label: Text(
-                                l10n.nowPlayingQueueButton,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 13,
-                                ),
-                              ),
-                              style: ElevatedButton.styleFrom(
-                                backgroundColor: Colors.white.withValues(
-                                  alpha: 0.08,
-                                ),
-                                elevation: 0,
-                                shape: RoundedRectangleBorder(
-                                  borderRadius: BorderRadius.circular(20),
-                                ),
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 20,
-                                  vertical: 10,
-                                ),
-                              ),
-                              onPressed: () =>
-                                  _showQueueBottomSheet(context, audioHandler),
-                            ),
-                          ],
+                            ],
+                          ),
                         ),
-                      ),
 
-                      // 4. Seek Bar
-                      StreamBuilder<Duration>(
-                        stream: audioHandler.player.positionStream,
-                        builder: (context, posSnapshot) {
-                          final position = posSnapshot.data ?? Duration.zero;
-                          final duration = mediaItem.duration ?? Duration.zero;
-
-                          return SeekBar(
-                            position: position,
-                            duration: duration,
-                            onChangeEnd: (newPosition) {
-                              audioHandler.seek(newPosition);
-                            },
-                          );
-                        },
-                      ),
-
-                      // 5. Central Playback Controls
-                      StreamBuilder<PlaybackState>(
-                        stream: audioHandler.playbackState,
-                        builder: (context, stateSnapshot) {
-                          final state = stateSnapshot.data;
-                          final playing = state?.playing ?? false;
-
-                          return Padding(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 16.0,
-                            ),
-                            child: Row(
-                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                              children: [
-                                // Every control sits in a 68-tall box (matching the play/pause
-                                // circle) so the Row centers all five on the exact same line —
-                                // IconButton's own minimum tap target height varies with iconSize
-                                // (26 vs 36), which otherwise throws off the optical center.
-                                SizedBox(
-                                  height: 68,
-                                  child: Center(
-                                    child: IconButton(
-                                      icon: const Icon(
-                                        Icons.replay_5,
-                                        color: Colors.white70,
-                                        size: 26,
-                                      ),
-                                      tooltip: l10n.nowPlayingRewind5,
-                                      onPressed: () =>
-                                          audioHandler.seekRelative(
-                                            const Duration(seconds: -5),
-                                          ),
-                                    ),
-                                  ),
+                        // 3. Quick Action Buttons
+                        Padding(
+                          padding: const EdgeInsets.symmetric(horizontal: 24.0),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.center,
+                            children: [
+                              ElevatedButton.icon(
+                                icon: const Icon(
+                                  Icons.lyrics_outlined,
+                                  size: 18,
+                                  color: Colors.white,
                                 ),
-                                SizedBox(
-                                  height: 68,
-                                  child: Center(
-                                    child: IconButton(
-                                      icon: const Icon(
-                                        Icons.skip_previous,
-                                        color: Colors.white,
-                                        size: 36,
-                                      ),
-                                      onPressed: () =>
-                                          audioHandler.skipToPrevious(),
-                                    ),
-                                  ),
-                                ),
-                                Container(
-                                  width: 68,
-                                  height: 68,
-                                  decoration: const BoxDecoration(
-                                    shape: BoxShape.circle,
+                                label: Text(
+                                  l10n.nowPlayingLyricsButton,
+                                  style: const TextStyle(
                                     color: Colors.white,
-                                  ),
-                                  child: IconButton(
-                                    icon: Icon(
-                                      playing ? Icons.pause : Icons.play_arrow,
-                                      color: Colors.black,
-                                      size: 36,
-                                    ),
-                                    onPressed: () {
-                                      if (playing) {
-                                        audioHandler.pause();
-                                      } else {
-                                        audioHandler.play();
-                                      }
-                                    },
+                                    fontSize: 13,
                                   ),
                                 ),
-                                SizedBox(
-                                  height: 68,
-                                  child: Center(
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.white.withValues(
+                                    alpha: 0.08,
+                                  ),
+                                  elevation: 0,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 20,
+                                    vertical: 10,
+                                  ),
+                                ),
+                                onPressed: () => _showLyricsBottomSheet(
+                                  context,
+                                  audioHandler,
+                                  mediaItem,
+                                  _dominantColor,
+                                ),
+                              ),
+                              const SizedBox(width: 16),
+                              ElevatedButton.icon(
+                                icon: const Icon(
+                                  Icons.queue_music,
+                                  size: 18,
+                                  color: Colors.white,
+                                ),
+                                label: Text(
+                                  l10n.nowPlayingQueueButton,
+                                  style: const TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 13,
+                                  ),
+                                ),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.white.withValues(
+                                    alpha: 0.08,
+                                  ),
+                                  elevation: 0,
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(20),
+                                  ),
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 20,
+                                    vertical: 10,
+                                  ),
+                                ),
+                                onPressed: () => _showQueueBottomSheet(
+                                  context,
+                                  audioHandler,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        // 4. Seek Bar
+                        StreamBuilder<Duration>(
+                          stream: audioHandler.player.positionStream,
+                          builder: (context, posSnapshot) {
+                            final position = posSnapshot.data ?? Duration.zero;
+                            final duration =
+                                mediaItem.duration ?? Duration.zero;
+
+                            return SeekBar(
+                              position: position,
+                              duration: duration,
+                              onChangeEnd: (newPosition) {
+                                audioHandler.seek(newPosition);
+                              },
+                            );
+                          },
+                        ),
+
+                        // 5. Central Playback Controls
+                        StreamBuilder<PlaybackState>(
+                          stream: audioHandler.playbackState,
+                          builder: (context, stateSnapshot) {
+                            final state = stateSnapshot.data;
+                            final playing = state?.playing ?? false;
+
+                            return Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 16.0,
+                              ),
+                              child: Row(
+                                mainAxisAlignment:
+                                    MainAxisAlignment.spaceEvenly,
+                                children: [
+                                  // Every control sits in a 68-tall box (matching the play/pause
+                                  // circle) so the Row centers all five on the exact same line —
+                                  // IconButton's own minimum tap target height varies with iconSize
+                                  // (26 vs 36), which otherwise throws off the optical center.
+                                  SizedBox(
+                                    height: 68,
+                                    child: Center(
+                                      child: IconButton(
+                                        icon: const Icon(
+                                          Icons.replay_5,
+                                          color: Colors.white70,
+                                          size: 26,
+                                        ),
+                                        tooltip: l10n.nowPlayingRewind5,
+                                        onPressed: () =>
+                                            audioHandler.seekRelative(
+                                              const Duration(seconds: -5),
+                                            ),
+                                      ),
+                                    ),
+                                  ),
+                                  SizedBox(
+                                    height: 68,
+                                    child: Center(
+                                      child: IconButton(
+                                        icon: const Icon(
+                                          Icons.skip_previous,
+                                          color: Colors.white,
+                                          size: 36,
+                                        ),
+                                        onPressed: () =>
+                                            audioHandler.skipToPrevious(),
+                                      ),
+                                    ),
+                                  ),
+                                  Container(
+                                    width: 68,
+                                    height: 68,
+                                    decoration: const BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: Colors.white,
+                                    ),
                                     child: IconButton(
-                                      icon: const Icon(
-                                        Icons.skip_next,
-                                        color: Colors.white,
+                                      icon: Icon(
+                                        playing
+                                            ? Icons.pause
+                                            : Icons.play_arrow,
+                                        color: Colors.black,
                                         size: 36,
                                       ),
-                                      onPressed: () =>
-                                          audioHandler.skipToNext(),
+                                      onPressed: () {
+                                        if (playing) {
+                                          audioHandler.pause();
+                                        } else {
+                                          audioHandler.play();
+                                        }
+                                      },
                                     ),
                                   ),
-                                ),
-                                SizedBox(
-                                  height: 68,
-                                  child: Center(
-                                    child: IconButton(
-                                      icon: const Icon(
-                                        Icons.forward_5,
-                                        color: Colors.white70,
-                                        size: 26,
+                                  SizedBox(
+                                    height: 68,
+                                    child: Center(
+                                      child: IconButton(
+                                        icon: const Icon(
+                                          Icons.skip_next,
+                                          color: Colors.white,
+                                          size: 36,
+                                        ),
+                                        onPressed: () =>
+                                            audioHandler.skipToNext(),
                                       ),
-                                      tooltip: l10n.nowPlayingForward5,
-                                      onPressed: () =>
-                                          audioHandler.seekRelative(
-                                            const Duration(seconds: 5),
-                                          ),
                                     ),
                                   ),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 10),
-                    ],
-                  );
-                },
+                                  SizedBox(
+                                    height: 68,
+                                    child: Center(
+                                      child: IconButton(
+                                        icon: const Icon(
+                                          Icons.forward_5,
+                                          color: Colors.white70,
+                                          size: 26,
+                                        ),
+                                        tooltip: l10n.nowPlayingForward5,
+                                        onPressed: () =>
+                                            audioHandler.seekRelative(
+                                              const Duration(seconds: 5),
+                                            ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            );
+                          },
+                        ),
+                        const SizedBox(height: 10),
+                      ],
+                    );
+                  },
+                ),
               ),
             ),
           );
@@ -988,7 +1001,9 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
       }
       return;
     }
-    if (reTranslateAfter && _lyricsText != null && _item.id == requestedSongId) {
+    if (reTranslateAfter &&
+        _lyricsText != null &&
+        _item.id == requestedSongId) {
       await _toggleTranslation();
     }
   }

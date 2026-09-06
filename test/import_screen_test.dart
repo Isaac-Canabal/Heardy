@@ -45,6 +45,9 @@ import 'package:heardy/services/library_scan_service.dart';
 import 'package:heardy/theme/app_theme.dart';
 import 'package:heardy/l10n/app_localizations.dart';
 
+import 'package:heardy/services/library_storage.dart';
+import 'package:heardy/services/saf_library_storage.dart';
+
 import 'fake_saf.dart';
 
 class _TempPathProvider extends PathProviderPlatform {
@@ -220,6 +223,7 @@ void main() {
     final root = backend.addDir(null, 'Heardy');
     SafUtilPlatform.instance = FakeSafUtil(backend);
     SafStreamPlatform.instance = FakeSafStream(backend);
+    debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
     SharedPreferences.setMockInitialValues({
       'heardy_library_root_uri': root.uri,
       'download_server_url': 'http://127.0.0.1:8080',
@@ -281,6 +285,7 @@ void main() {
       final root = backend.addDir(null, 'Heardy');
       SafUtilPlatform.instance = FakeSafUtil(backend);
       SafStreamPlatform.instance = FakeSafStream(backend);
+      debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
       // La dirección del servidor ya no se configura desde la app: va
       // compilada en el binario (OfficialServer). Estas dos claves son restos
       // de cuando SÍ era editable, y el riesgo real de aquel cambio es que un

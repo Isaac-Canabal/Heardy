@@ -92,17 +92,73 @@ class CloudLibrary {
     required this.playlistSongs,
   });
 
+  /// `GET /library` es asimétrico con `PUT /library` a propósito de cómo
+  /// está escrito el servidor, no por diseño: el push pasa por un modelo de
+  /// Pydantic con alias camelCase (`songId`, `fileHash`...), pero la lectura
+  /// (`library_store.py:get_library`) hace `SELECT` crudo y devuelve las
+  /// columnas de Postgres tal cual (`song_id`, `file_hash`, snake_case) sin
+  /// pasar por ningún modelo. Sin normalizar acá, cualquier código Dart que
+  /// busque `song['fileHash']` — la convención que ya usa el resto de esta
+  /// app — encuentra `null` siempre y trata todo como "sin hash", nunca como
+  /// "falta" ni "está" (bug real: así es como `missingCloudSongs` reportaba
+  /// falsamente "no falta nada", siempre, contra el servidor real).
   factory CloudLibrary.fromJson(Map<String, dynamic> json) => CloudLibrary(
         version: (json['version'] as num?)?.toInt() ?? 0,
-        songs: List<Map<String, dynamic>>.from(json['songs'] as List? ?? const []),
-        playlists: List<Map<String, dynamic>>.from(json['playlists'] as List? ?? const []),
-        playlistSongs: List<Map<String, dynamic>>.from(json['playlistSongs'] as List? ?? const []),
+        songs: _camelCaseRows(json['songs'], const {
+          'song_id': 'songId',
+          'duration_seconds': 'durationSeconds',
+          'file_hash': 'fileHash',
+          'hash_kind': 'hashKind',
+          'source_url': 'sourceUrl',
+        }),
+        playlists: _camelCaseRows(json['playlists'], const {
+          'playlist_id': 'playlistId',
+          'sort_order': 'sortOrder',
+        }),
+        playlistSongs: _camelCaseRows(json['playlistSongs'], const {
+          'playlist_id': 'playlistId',
+          'song_id': 'songId',
+          'order_index': 'orderIndex',
+        }),
       );
+
+  static List<Map<String, dynamic>> _camelCaseRows(
+    Object? rawList,
+    Map<String, String> keyRenames,
+  ) {
+    final rows = List<Map<String, dynamic>>.from(rawList as List? ?? const []);
+    return rows.map((row) {
+      final renamed = <String, dynamic>{...row};
+      for (final entry in keyRenames.entries) {
+        if (renamed.containsKey(entry.key)) {
+          renamed[entry.value] = renamed.remove(entry.key);
+        }
+      }
+      return renamed;
+    }).toList();
+  }
 }
 
 /// `null` cuando el servidor respondió 304 (nada cambió desde la versión
 /// pedida) — distinto de una biblioteca vacía, que sí trae listas vacías.
 typedef CloudLibraryOrNotModified = CloudLibrary?;
+
+/// Una página de `GET /history`. A diferencia de `GET /library`, estas filas
+/// SÍ vienen en camelCase: la ruta las construye a mano fila a fila
+/// (`library_store.py:get_history`) en vez de devolver el `SELECT` crudo, así
+/// que no hace falta normalizar nada acá — ver el comentario de
+/// [CloudLibrary.fromJson] para el caso contrario y por qué costó un bug.
+class CloudHistoryPage {
+  final List<Map<String, dynamic>> rows;
+  final String? nextCursor;
+
+  const CloudHistoryPage({required this.rows, this.nextCursor});
+
+  factory CloudHistoryPage.fromJson(Map<String, dynamic> json) => CloudHistoryPage(
+        rows: List<Map<String, dynamic>>.from(json['rows'] as List? ?? const []),
+        nextCursor: json['nextCursor'] as String?,
+      );
+}
 
 class HistoryPushResult {
   final int received;
@@ -203,6 +259,11 @@ abstract class CloudSource {
   });
 
   Future<HistoryPushResult> pushHistory(List<Map<String, dynamic>> rows, {int? utcOffsetMinutes});
+
+  /// Una página del historial propio guardado en la nube. [cursor] `null`
+  /// empieza por el principio; [CloudHistoryPage.nextCursor] `null` significa
+  /// que no hay más.
+  Future<CloudHistoryPage> getHistory({String? cursor, int limit = 500});
 
   Future<Map<String, dynamic>> getStatsMe({required String period, int? utcOffsetMinutes});
 

@@ -7,6 +7,7 @@ import '../providers/settings_provider.dart';
 import '../providers/sync_provider.dart';
 import '../screens/auth/login_screen.dart';
 import '../screens/friends_screen.dart';
+import '../screens/sync_status_screen.dart';
 import '../services/database_helper.dart';
 import '../theme/app_theme.dart';
 import '../services/download_source.dart';
@@ -907,6 +908,23 @@ class _AccountSection extends StatelessWidget {
                                 .showSnackBar(SnackBar(content: Text(l10n.syncSuccessMessage)));
                           },
                     child: Text(l10n.syncNowButton),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton.icon(
+                    style: TextButton.styleFrom(
+                      alignment: Alignment.centerLeft,
+                      foregroundColor: Colors.white70,
+                    ),
+                    icon: const Icon(Icons.compare_arrows_rounded, size: 18),
+                    onPressed: () => Navigator.of(context)
+                        .push(MaterialPageRoute(builder: (_) => const SyncStatusScreen())),
+                    label: const Text('Restaurar desde tu cuenta'),
                   ),
                 ),
               ],

@@ -1,11 +1,10 @@
-import 'package:saf_util/saf_util.dart';
-import 'package:saf_util/saf_util_platform_interface.dart';
 import 'package:uuid/uuid.dart';
 
 import '../models/playlist.dart';
 import '../models/song.dart';
 import 'audio_identity.dart';
 import 'database_helper.dart';
+import 'library_storage.dart';
 import 'metadata_service.dart';
 
 /// Scans the SAF-backed library folder into SQLite. See CLAUDE.md D2/D3 for
@@ -43,10 +42,12 @@ class LibraryRootUnavailableException implements Exception {
 enum _FileOutcome { inserted, moved, updated, unchanged, unsupported }
 
 class LibraryScanService {
-  final SafUtil _safUtil = SafUtil();
+  final LibraryStorage _storage;
   final DatabaseHelper _db = DatabaseHelper.instance;
   final MetadataService _metadataService = MetadataService();
   final AudioIdentityService _identity = AudioIdentityService();
+
+  LibraryScanService({LibraryStorage? storage}) : _storage = storage ?? defaultLibraryStorage();
 
   Future<LibraryScanResult> scan(String libraryRootUri) async {
     // Tombstone first: if the root itself turns out to be gone (below),
@@ -61,9 +62,9 @@ class LibraryScanService {
       playlistIdByName[playlist.name] = playlist.id;
     }
 
-    List<SafDocumentFile> rootChildren;
+    List<LibraryEntry> rootChildren;
     try {
-      rootChildren = await _safUtil.list(libraryRootUri);
+      rootChildren = await _storage.list(libraryRootUri);
     } catch (e) {
       throw LibraryRootUnavailableException(
         'No se pudo acceder a la carpeta de la biblioteca: $e',
@@ -72,7 +73,7 @@ class LibraryScanService {
     for (final entry in rootChildren) {
       if (entry.isDir) {
         final playlistId = await _resolvePlaylistId(entry.name, playlistIdByName);
-        final children = await _safUtil.list(entry.uri);
+        final children = await _storage.list(entry.uri);
         for (final file in children) {
           if (file.isDir) continue; // nested subfolders aren't supported
           final outcome = await _reconcileFile(file, playlistId: playlistId, album: entry.name);
@@ -129,7 +130,7 @@ class LibraryScanService {
   }
 
   Future<_FileOutcome> _reconcileFile(
-    SafDocumentFile file, {
+    LibraryEntry file, {
     required String? playlistId,
     required String? album,
   }) async {

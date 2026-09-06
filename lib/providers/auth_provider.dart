@@ -2,6 +2,9 @@ import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+
+import '../services/firebase_rest_auth.dart';
 
 /// Identidad de cuenta para el servidor de descargas oficial (Fase 2 del
 /// plan de seguridad, ver CLAUDE.md "Próxima sesión — retomar aquí"):
@@ -14,14 +17,28 @@ import 'package:flutter/foundation.dart';
 /// servidor) leen [isReady] antes de dejar descargar algo.
 class HeardyAuthProvider with ChangeNotifier {
   final FirebaseAuth? _auth;
+  final FirebaseRestAuthClient? _rest;
   StreamSubscription<User?>? _sub;
 
   /// Sólo para [HeardyAuthProvider.fake] — nunca puesto por el constructor normal.
   final bool _fakeReady;
   final String? _fakeEmail;
 
+  // Estado de sesión sólo para [HeardyAuthProvider.rest] — el SDK móvil
+  // gestiona todo esto por su cuenta, pero hablando HTTP puro hay que
+  // llevarlo a mano.
+  String? _restIdToken;
+  String? _restRefreshToken;
+  DateTime? _restExpiresAt;
+  String? _restEmail;
+  bool _restEmailVerified = false;
+
+  static const _restRefreshTokenKey = 'heardy_desktop_auth_refresh_token';
+  static const _restEmailKey = 'heardy_desktop_auth_email';
+
   HeardyAuthProvider({FirebaseAuth? auth})
       : _auth = auth ?? FirebaseAuth.instance,
+        _rest = null,
         _fakeReady = false,
         _fakeEmail = null {
     _sub = _auth!.userChanges().listen((_) => notifyListeners());
@@ -36,33 +53,78 @@ class HeardyAuthProvider with ChangeNotifier {
   /// por error.
   HeardyAuthProvider.fake({bool isReady = true, String? email})
       : _auth = null,
+        _rest = null,
         _fakeReady = isReady,
         _fakeEmail = email;
 
-  bool get _isFake => _auth == null;
+  /// Escritorio (W5 del plan de escritorio): Firebase Auth no es apto para
+  /// producción en Windows (Hallazgo 3 — Google lo dice en su propia
+  /// documentación), así que en vez del SDK se habla con la API REST de
+  /// Identity Toolkit por HTTP. La sesión (el refresh token) se persiste a
+  /// mano en `SharedPreferences` porque, a diferencia del SDK móvil, nada
+  /// más lo hace por acá.
+  HeardyAuthProvider.rest({FirebaseRestAuthClient? client})
+      : _auth = null,
+        _rest = client ?? FirebaseRestAuthClient(),
+        _fakeReady = false,
+        _fakeEmail = null {
+    _restoreRestSession();
+  }
+
+  bool get _isFake => _auth == null && _rest == null;
 
   User? get user => _auth?.currentUser;
-  bool get isSignedIn => _isFake ? _fakeReady : user != null;
+  bool get isSignedIn =>
+      _isFake ? _fakeReady : (_rest != null ? _restRefreshToken != null : user != null);
 
   /// Sin correo verificado, la app trata la cuenta como si no existiera de
   /// cara al servidor (D-1 del plan: la verificación por correo es el único
   /// control de alta que hace exigible la cuota de la Fase 3 — sin él,
   /// registrarse es gratis e infinito).
-  bool get isEmailVerified => _isFake ? _fakeReady : (user?.emailVerified ?? false);
+  bool get isEmailVerified =>
+      _isFake ? _fakeReady : (_rest != null ? _restEmailVerified : (user?.emailVerified ?? false));
   bool get isReady => _isFake ? _fakeReady : (isSignedIn && isEmailVerified);
-  String? get email => _isFake ? _fakeEmail : user?.email;
+  String? get email => _isFake ? _fakeEmail : (_rest != null ? _restEmail : user?.email);
 
   /// Token de ID para `Authorization: Bearer <token>`. El SDK lo cachea y
   /// sólo lo refresca de verdad cuando hace falta (o cuando [forceRefresh]
   /// lo pide) — no hay que guardarlo a mano ni preocuparse por su expiración.
+  /// En modo REST se replica lo mismo a mano: refrescar sólo si está por
+  /// caducar (o si se pide a la fuerza), nunca en cada llamada.
   Future<String?> idToken({bool forceRefresh = false}) async {
     if (_isFake) return _fakeReady ? 'fake-token' : null;
+    if (_rest != null) {
+      final refreshToken = _restRefreshToken;
+      if (refreshToken == null) return null;
+      final expiringSoon = forceRefresh ||
+          _restExpiresAt == null ||
+          DateTime.now().isAfter(_restExpiresAt!.subtract(const Duration(minutes: 5)));
+      if (expiringSoon) {
+        try {
+          final session = await _rest.refresh(refreshToken);
+          _restIdToken = session.idToken;
+          _restRefreshToken = session.refreshToken;
+          _restExpiresAt = session.expiresAt;
+          await _persistRestSession();
+        } catch (e) {
+          print('HeardyAuthProvider: no se pudo refrescar el token: $e');
+          return null;
+        }
+      }
+      return _restIdToken;
+    }
     final current = user;
     if (current == null) return null;
     return current.getIdToken(forceRefresh);
   }
 
   Future<void> register(String email, String password) async {
+    if (_rest != null) {
+      final session = await _rest.signUp(email.trim(), password);
+      await _rest.sendEmailVerification(session.idToken);
+      await _applyRestSession(session);
+      return;
+    }
     final credential = await _auth!.createUserWithEmailAndPassword(
       email: email.trim(),
       password: password,
@@ -70,17 +132,40 @@ class HeardyAuthProvider with ChangeNotifier {
     await credential.user?.sendEmailVerification();
   }
 
-  Future<void> signIn(String email, String password) {
-    return _auth!.signInWithEmailAndPassword(email: email.trim(), password: password);
+  Future<void> signIn(String email, String password) async {
+    if (_rest != null) {
+      final session = await _rest.signIn(email.trim(), password);
+      await _applyRestSession(session);
+      return;
+    }
+    await _auth!.signInWithEmailAndPassword(email: email.trim(), password: password);
   }
 
-  Future<void> signOut() => _auth!.signOut();
+  Future<void> signOut() async {
+    if (_rest != null) {
+      _restIdToken = null;
+      _restRefreshToken = null;
+      _restExpiresAt = null;
+      _restEmail = null;
+      _restEmailVerified = false;
+      await _clearRestSession();
+      notifyListeners();
+      return;
+    }
+    await _auth!.signOut();
+  }
 
   Future<void> sendPasswordReset(String email) {
+    if (_rest != null) return _rest.sendPasswordReset(email.trim());
     return _auth!.sendPasswordResetEmail(email: email.trim());
   }
 
   Future<void> resendVerificationEmail() async {
+    if (_rest != null) {
+      final token = _restIdToken;
+      if (token != null) await _rest.sendEmailVerification(token);
+      return;
+    }
     await _auth!.currentUser?.sendEmailVerification();
   }
 
@@ -96,13 +181,73 @@ class HeardyAuthProvider with ChangeNotifier {
   /// `server/app/firebase_auth.py`), así que sin este refresco la app daría
   /// la cuenta por lista ([isReady]) y la primera descarga se comería un 403
   /// — justo en el minuto siguiente a verificar el correo, que es cuando
-  /// todo el mundo lo prueba.
+  /// todo el mundo lo prueba. Misma lógica en modo REST, con
+  /// `accounts:lookup` en vez de `User.reload()`.
   Future<void> reload() async {
+    if (_rest != null) {
+      final token = _restIdToken;
+      if (token == null) return;
+      try {
+        final verified = await _rest.isEmailVerified(token);
+        final justVerified = verified && !_restEmailVerified;
+        _restEmailVerified = verified;
+        if (justVerified) await idToken(forceRefresh: true);
+      } catch (e) {
+        print('HeardyAuthProvider: no se pudo comprobar el correo verificado: $e');
+      }
+      notifyListeners();
+      return;
+    }
     await _auth!.currentUser?.reload();
     if (_auth.currentUser?.emailVerified ?? false) {
       await _auth.currentUser?.getIdToken(true);
     }
     notifyListeners();
+  }
+
+  Future<void> _applyRestSession(FirebaseRestSession session) async {
+    _restIdToken = session.idToken;
+    _restRefreshToken = session.refreshToken;
+    _restExpiresAt = session.expiresAt;
+    _restEmail = session.email;
+    await _persistRestSession();
+    try {
+      _restEmailVerified = await _rest!.isEmailVerified(session.idToken);
+    } catch (_) {
+      _restEmailVerified = false;
+    }
+    notifyListeners();
+  }
+
+  /// Restaura una sesión guardada al arrancar. Notifica dos veces a
+  /// propósito: una apenas se lee el refresh token guardado en
+  /// `SharedPreferences` (así `isSignedIn` no depende de que la red
+  /// responda), y otra tras comprobar de verdad el token y el correo
+  /// verificado.
+  Future<void> _restoreRestSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    final refreshToken = prefs.getString(_restRefreshTokenKey);
+    if (refreshToken == null) return;
+    _restRefreshToken = refreshToken;
+    _restEmail = prefs.getString(_restEmailKey);
+    notifyListeners();
+    await idToken();
+    await reload();
+  }
+
+  Future<void> _persistRestSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    final refreshToken = _restRefreshToken;
+    if (refreshToken == null) return;
+    await prefs.setString(_restRefreshTokenKey, refreshToken);
+    final email = _restEmail;
+    if (email != null) await prefs.setString(_restEmailKey, email);
+  }
+
+  Future<void> _clearRestSession() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_restRefreshTokenKey);
+    await prefs.remove(_restEmailKey);
   }
 
   @override

@@ -1,9 +1,9 @@
 import 'dart:io';
 import 'package:path/path.dart';
-import 'package:saf_util/saf_util.dart';
 import 'package:sqflite/sqflite.dart';
 import '../models/song.dart';
 import '../models/playlist.dart';
+import 'library_storage.dart';
 
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
@@ -535,7 +535,7 @@ class DatabaseHelper {
       // 1b. Físicamente, el archivo real en la carpeta SAF, si lo hay.
       if (song.uri != null && song.uri!.isNotEmpty) {
         try {
-          await SafUtil().delete(song.uri!, false);
+          await defaultLibraryStorage().delete(song.uri!, isDir: false);
         } catch (e) {
           print("Error deleting SAF audio file: $e");
         }
@@ -1024,17 +1024,41 @@ class DatabaseHelper {
     return Sqflite.firstIntValue(result) ?? 0;
   }
 
+  /// Todos los `fileHash` no vacíos de canciones presentes (`missing = 0`) —
+  /// el lado local de la comparación de W6 (`missingCloudSongs`, la
+  /// estrategia híbrida de la Etapa 16 E-2): qué del índice de la nube ya
+  /// está en este equipo, por hash de audio, nunca por título/artista.
+  Future<Set<String>> getLocalFileHashes() async {
+    final db = await database;
+    final rows = await db.rawQuery(
+      "SELECT fileHash FROM songs WHERE missing = 0 AND fileHash IS NOT NULL AND fileHash != ''",
+    );
+    return rows.map((r) => r['fileHash'] as String).toSet();
+  }
+
   /// Proyección EXPLÍCITA, nunca `SELECT *` — así `uri`/`filePath`/`artPath`/
   /// `modifiedAt`/`missing`/`ignoredFromInbox` no entran por accidente en
   /// memoria ni en un codificador JSON. Ver CLAUDE.md, "Cloud sync": el
   /// servidor guarda un índice, nunca nada que sólo signifique algo en este
   /// dispositivo.
+  ///
+  /// **Sin filtrar por `missing`**, a diferencia de [getLocalFileHashes]. El
+  /// índice de la nube es el catálogo de lo que la cuenta TIENE, no de lo que
+  /// este aparato puede reproducir ahora mismo: `missing` significa "el
+  /// archivo no está a la vista en este momento" (permiso SAF revocado,
+  /// volumen desmontado, tarjeta fuera), nunca "esta canción dejó de
+  /// existir" — el escaneo jamás borra una fila por no encontrarla (D2). Con
+  /// el filtro puesto, un teléfono con la tarjeta desmontada subía un índice
+  /// vacío y `push_library` borraba del servidor la biblioteca entera, que es
+  /// exactamente el riesgo que CLAUDE.md nombra en "Cloud sync" ("a device
+  /// with its storage unmounted... must never be able to wipe out data that
+  /// lives only on another device").
   Future<Map<String, List<Map<String, dynamic>>>> getLibraryIndexRows() async {
     final db = await database;
     final songs = await db.rawQuery('''
       SELECT id AS songId, title, artist, album, duration AS durationSeconds,
-             fileHash, hashKind
-      FROM songs WHERE missing = 0
+             fileHash, hashKind, sourceUrl
+      FROM songs
     ''');
     final playlists = await db.rawQuery('''
       SELECT id AS playlistId, name, sortOrder FROM playlists
@@ -1087,6 +1111,57 @@ class DatabaseHelper {
       "UPDATE play_history SET syncedAt = 'skipped' WHERE id IN (${List.filled(ids.length, '?').join(',')})",
       ids,
     );
+  }
+
+  /// Inserta historial traído de la nube (`GET /history`) y devuelve cuántas
+  /// filas entraron de verdad. La pareja de [getUnsyncedPlays]: reconstruye
+  /// las estadísticas de un equipo que perdió su base local.
+  ///
+  /// Tres reglas, todas necesarias:
+  ///
+  /// - **Sólo canciones que existen acá.** `play_history.songId` tiene clave
+  ///   foránea contra `songs` y el `PRAGMA foreign_keys = ON` está puesto, así
+  ///   que una fila de una canción ausente no es que sea inútil (no aparecería
+  ///   en ninguna estadística, que hacen `JOIN songs`): es que hace fallar la
+  ///   inserción entera.
+  /// - **Deduplicado por la misma clave natural que usa el servidor**
+  ///   (`songId` + hora local), no por un id: traer el historial dos veces no
+  ///   duplica nada, igual que subirlo dos veces no lo duplica allá.
+  /// - **Entran ya marcadas como sincronizadas.** Vinieron del servidor; sin
+  ///   esto, la siguiente pasada de subida las devolvería tal cual, gastando
+  ///   el cupo diario para escribir filas que ya están.
+  Future<int> insertRestoredPlays(List<Map<String, dynamic>> rows) async {
+    if (rows.isEmpty) return 0;
+    final db = await database;
+    final now = DateTime.now().toIso8601String();
+
+    final knownSongs = {
+      for (final r in await db.rawQuery('SELECT id FROM songs')) r['id'] as String,
+    };
+    final existingKeys = {
+      for (final r in await db.rawQuery('SELECT songId, playDate FROM play_history'))
+        '${r['songId']} ${r['playDate']}',
+    };
+
+    var inserted = 0;
+    final batch = db.batch();
+    for (final row in rows) {
+      final songId = row['songId'] as String?;
+      final playedAtLocal = row['playedAtLocal'] as String?;
+      if (songId == null || playedAtLocal == null) continue;
+      if (!knownSongs.contains(songId)) continue;
+      if (!existingKeys.add('$songId $playedAtLocal')) continue;
+      batch.insert('play_history', {
+        'songId': songId,
+        'playDate': playedAtLocal,
+        'playDuration': (row['playSeconds'] as num?)?.toInt() ?? 0,
+        'playedAtUtc': row['playedAtUtc'],
+        'syncedAt': now,
+      });
+      inserted++;
+    }
+    if (inserted > 0) await batch.commit(noResult: true);
+    return inserted;
   }
 
   /// La válvula de escape de privacidad (`DELETE /account/data`): tras
@@ -1242,7 +1317,7 @@ class DatabaseHelper {
         if (song != null) {
           try { await File(song.filePath).delete(); } catch (_) {}
           if (song.uri != null && song.uri!.isNotEmpty) {
-            try { await SafUtil().delete(song.uri!, false); } catch (_) {}
+            try { await defaultLibraryStorage().delete(song.uri!, isDir: false); } catch (_) {}
           }
           try { if (song.artPath.isNotEmpty) await File(song.artPath).delete(); } catch (_) {}
         }

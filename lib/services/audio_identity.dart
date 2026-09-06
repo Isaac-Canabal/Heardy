@@ -1,7 +1,8 @@
 import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
-import 'package:saf_stream/saf_stream.dart';
+
+import 'library_storage.dart';
 
 /// The stable identity of a song's audio content: a hash of the audio
 /// payload only, plus the strategy used to locate that payload.
@@ -38,7 +39,9 @@ class AudioIdentityService {
 
   static const _headTailSize = 64 * 1024;
 
-  final SafStream _safStream = SafStream();
+  final LibraryStorage _storage;
+
+  AudioIdentityService({LibraryStorage? storage}) : _storage = storage ?? defaultLibraryStorage();
 
   /// Lowercased extension of [name], without the dot; `''` if there is none.
   static String extensionOf(String name) {
@@ -83,10 +86,10 @@ class AudioIdentityService {
     builder.add(lengthPrefix.buffer.asUint8List());
 
     if (range.length <= _headTailSize * 2) {
-      builder.add(await _safStream.readFileBytes(uri, start: range.start, count: range.length));
+      builder.add(await _storage.readFileBytes(uri, start: range.start, count: range.length));
     } else {
-      builder.add(await _safStream.readFileBytes(uri, start: range.start, count: _headTailSize));
-      builder.add(await _safStream.readFileBytes(
+      builder.add(await _storage.readFileBytes(uri, start: range.start, count: _headTailSize));
+      builder.add(await _storage.readFileBytes(
         uri,
         start: range.start + range.length - _headTailSize,
         count: _headTailSize,
@@ -101,7 +104,7 @@ class AudioIdentityService {
   Future<_ByteRange> _mp3PayloadBounds(String uri, int fileLength) async {
     var headerSize = 0;
     if (fileLength >= 10) {
-      final header = await _safStream.readFileBytes(uri, start: 0, count: 10);
+      final header = await _storage.readFileBytes(uri, start: 0, count: 10);
       if (header.length == 10 && header[0] == 0x49 && header[1] == 0x44 && header[2] == 0x33) {
         // ID3v2: 4 syncsafe bytes (7 bits each), optional 10-byte footer.
         final size = ((header[6] & 0x7F) << 21) |
@@ -116,7 +119,7 @@ class AudioIdentityService {
     var trailerSize = 0;
     final tailWindow = fileLength < 160 ? fileLength : 160;
     if (tailWindow >= 32) {
-      final tail = await _safStream.readFileBytes(uri, start: fileLength - tailWindow, count: tailWindow);
+      final tail = await _storage.readFileBytes(uri, start: fileLength - tailWindow, count: tailWindow);
       if (tail.length >= 128 &&
           tail[tail.length - 128] == 0x54 &&
           tail[tail.length - 127] == 0x41 &&
@@ -149,7 +152,7 @@ class AudioIdentityService {
     var iterations = 0;
     while (offset < fileLength && iterations < 64) {
       iterations++;
-      final header = await _safStream.readFileBytes(uri, start: offset, count: 16);
+      final header = await _storage.readFileBytes(uri, start: offset, count: 16);
       if (header.length < 8) return null;
 
       final size32 = _readUint32BE(header, 0);

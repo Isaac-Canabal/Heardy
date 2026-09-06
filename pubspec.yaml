@@ -16,6 +16,10 @@ dependencies:
   path_provider: ^2.1.1
   permission_handler: ^11.0.1
   just_audio: ^0.9.36
+  # `just_audio` no declara soporte de Windows (Hallazgo 2 del plan de
+  # escritorio) — sin este paquete de federación, `AudioPlayer()` no tiene
+  # ningún backend nativo ahí y no reproduce nada.
+  just_audio_windows: ^0.2.3
   audio_service: ^0.18.12
   audio_session: ^0.1.18
   provider: ^6.1.1
@@ -28,6 +32,10 @@ dependencies:
   palette_generator: ^0.3.3
   saf_util: ^3.1.0
   saf_stream: ^4.0.1
+  # Selector de carpeta en escritorio — SAF no existe fuera de Android. Ver
+  # W1/W3 del plan de escritorio: `LibraryStorage.pickDirectory()` es lo
+  # único que lo usa.
+  file_picker: ^8.1.4
   crypto: ^3.0.7
   audio_metadata_reader: ^1.7.1
   flutter_foreground_task: ^11.0.1
@@ -44,6 +52,11 @@ dependencies:
   # RepaintBoundary + toImage ya cubren la captura (~20 líneas), share_plus
   # sólo aporta el selector nativo de "compartir con...".
   share_plus: ^11.0.0
+  # `sqflite` no tiene motor propio en escritorio: en Windows/Linux/macOS
+  # `databaseFactory` se reemplaza por este en tiempo de arranque (ver
+  # main.dart). Ya era dependencia de test (sqflite_common_ffi test), ahora
+  # además de producción — misma versión, un solo lugar que mantener.
+  sqflite_common_ffi: ^2.4.2
 
 dev_dependencies:
   flutter_test:
@@ -54,7 +67,6 @@ dev_dependencies:
   # path_provider por un directorio temporal para correr MetadataService
   # (temp copy + carátulas) desde escritorio, sin plugins ni dispositivo.
   path_provider_platform_interface: ^2.1.2
-  sqflite_common_ffi: ^2.4.2
 
 flutter_launcher_icons:
   android: true
@@ -63,6 +75,12 @@ flutter_launcher_icons:
   min_sdk_android: 21
   adaptive_icon_background: "#0D1B3E"
   adaptive_icon_foreground: "assets/icon/app_icon_padded.png"
+  # W4 del plan de escritorio: sin esto, `windows/runner/resources/app_icon.ico`
+  # se queda con el logo por defecto de Flutter que dejó `flutter create`.
+  windows:
+    generate: true
+    image_path: "assets/icon/app_icon.png"
+    icon_size: 256
 
 flutter:
   uses-material-design: true

@@ -34,6 +34,9 @@ import 'package:heardy/services/library_scan_service.dart';
 import 'package:heardy/services/metadata_service.dart';
 import 'package:heardy/services/ytdlp_server_source.dart';
 
+import 'package:heardy/services/library_storage.dart';
+import 'package:heardy/services/saf_library_storage.dart';
+
 import 'fake_saf.dart';
 
 /// Primer vídeo público de YouTube: corto (19 s), estable desde 2005 y
@@ -125,6 +128,7 @@ void main() {
     final root = backend.addDir(null, 'Heardy');
     SafUtilPlatform.instance = FakeSafUtil(backend);
     SafStreamPlatform.instance = FakeSafStream(backend);
+    debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
     SharedPreferences.setMockInitialValues({'heardy_library_root_uri': root.uri});
 
     final playlistId = const Uuid().v4();
@@ -218,6 +222,7 @@ void main() {
     final root = backend.addDir(null, 'Heardy');
     SafUtilPlatform.instance = FakeSafUtil(backend);
     SafStreamPlatform.instance = FakeSafStream(backend);
+    debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
     SharedPreferences.setMockInitialValues({'heardy_library_root_uri': root.uri});
 
     final playlistId = const Uuid().v4();

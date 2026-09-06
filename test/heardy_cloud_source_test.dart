@@ -117,6 +117,51 @@ void main() {
       expect(result!.version, 7);
       expect(result.songs, hasLength(1));
     });
+
+    test(
+      'normaliza a camelCase la forma real de /library (SELECT crudo, snake_case) — '
+      'GET no pasa por el mismo modelo Pydantic que PUT, así que no llega ya en camelCase',
+      () async {
+        final client = _FakeClient((req) async => _json({
+              'version': 3,
+              'songs': [
+                {
+                  'song_id': 'hash-abc',
+                  'title': 'Título',
+                  'artist': 'Artista',
+                  'album': null,
+                  'duration_seconds': 180,
+                  'file_hash': 'hash-abc',
+                  'hash_kind': 'mp4-mdat',
+                },
+              ],
+              'playlists': [
+                {'playlist_id': 'pl-1', 'name': 'Favoritas', 'sort_order': 0},
+              ],
+              'playlistSongs': [
+                {'playlist_id': 'pl-1', 'song_id': 'hash-abc', 'order_index': 0},
+              ],
+            }));
+
+        final result = await _source(client).getLibrary();
+
+        final song = result!.songs.single;
+        expect(song['songId'], 'hash-abc');
+        expect(song['durationSeconds'], 180);
+        expect(song['fileHash'], 'hash-abc');
+        expect(song['hashKind'], 'mp4-mdat');
+        expect(song.containsKey('song_id'), isFalse, reason: 'la clave vieja no debe seguir viva');
+
+        final playlist = result.playlists.single;
+        expect(playlist['playlistId'], 'pl-1');
+        expect(playlist['sortOrder'], 0);
+
+        final playlistSong = result.playlistSongs.single;
+        expect(playlistSong['playlistId'], 'pl-1');
+        expect(playlistSong['songId'], 'hash-abc');
+        expect(playlistSong['orderIndex'], 0);
+      },
+    );
   });
 
   group('pushLibrary', () {

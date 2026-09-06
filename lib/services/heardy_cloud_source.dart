@@ -244,6 +244,15 @@ class HeardyCloudSource implements CloudSource {
   }
 
   @override
+  Future<CloudHistoryPage> getHistory({String? cursor, int limit = 500}) async {
+    final json = await _get('/history', query: {
+      if (cursor != null) 'cursor': cursor,
+      'limit': '$limit',
+    });
+    return CloudHistoryPage.fromJson(json);
+  }
+
+  @override
   Future<Map<String, dynamic>> getStatsMe({required String period, int? utcOffsetMinutes}) async {
     return _get('/stats/me', query: {
       'period': period,

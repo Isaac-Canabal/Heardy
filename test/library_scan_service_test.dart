@@ -21,6 +21,9 @@ import 'package:heardy/services/database_helper.dart';
 import 'package:heardy/services/library_scan_service.dart';
 import 'package:heardy/services/storage_service.dart';
 
+import 'package:heardy/services/library_storage.dart';
+import 'package:heardy/services/saf_library_storage.dart';
+
 import 'fake_saf.dart';
 
 // The SAF fakes live in fake_saf.dart so the identity and download tests can
@@ -101,6 +104,7 @@ void main() {
 
     SafUtilPlatform.instance = _FakeSafUtil(backend);
     SafStreamPlatform.instance = _FakeSafStream(backend);
+    debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
 
     final service = LibraryScanService();
     final db = DatabaseHelper.instance;
@@ -181,6 +185,7 @@ void main() {
       final playlistDir = backend.addDir(root, 'Favoritas');
       SafUtilPlatform.instance = _FakeSafUtil(backend);
       SafStreamPlatform.instance = _FakeSafStream(backend);
+      debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
 
       final audioPayload = Uint8List.fromList(List.generate(3000, (i) => (i * 13 + 7) % 256));
       final src = File('${fixtureDir.path}/full_tags_src.mp3');
@@ -216,6 +221,7 @@ void main() {
       final playlistDir = backend.addDir(root, 'SinTags');
       SafUtilPlatform.instance = _FakeSafUtil(backend);
       SafStreamPlatform.instance = _FakeSafStream(backend);
+      debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
 
       final audioPayload = Uint8List.fromList(List.generate(3000, (i) => (i * 19 + 3) % 256));
       final bytes = _buildMp3(audioPayload, tagBodySize: 0); // empty ID3v2 shell, no frames at all
@@ -245,6 +251,7 @@ void main() {
       final playlistDir = backend.addDir(root, 'Parciales');
       SafUtilPlatform.instance = _FakeSafUtil(backend);
       SafStreamPlatform.instance = _FakeSafStream(backend);
+      debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
 
       final audioPayload = Uint8List.fromList(List.generate(3000, (i) => (i * 29 + 5) % 256));
       final src = File('${fixtureDir.path}/partial_tags_src.mp3');
@@ -275,6 +282,7 @@ void main() {
       final root = backend.addDir(null, 'Heardy');
       SafUtilPlatform.instance = _FakeSafUtil(backend);
       SafStreamPlatform.instance = _FakeSafStream(backend);
+      debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
 
       final payloadA = Uint8List.fromList(List.generate(2000, (i) => (i * 7 + 1) % 256));
       final payloadB = Uint8List.fromList(List.generate(2000, (i) => (i * 11 + 2) % 256));
@@ -325,6 +333,7 @@ void main() {
       final root = backend.addDir(null, 'Heardy');
       SafUtilPlatform.instance = _FakeSafUtil(backend);
       SafStreamPlatform.instance = _FakeSafStream(backend);
+      debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
 
       final payload = Uint8List.fromList(List.generate(2000, (i) => (i * 13 + 9) % 256));
       final looseFile = backend.addFile(root, 'huerfana.mp3', _buildMp3(payload, tagBodySize: 0), 100);
@@ -368,6 +377,7 @@ void main() {
       final fakeUtil = _FakeSafUtil(backend);
       SafUtilPlatform.instance = fakeUtil;
       SafStreamPlatform.instance = _FakeSafStream(backend);
+      debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
       final storage = StorageService();
 
       final parent = backend.addDir(null, 'Music');
@@ -392,6 +402,7 @@ void main() {
       final fakeUtil = _FakeSafUtil(backend);
       SafUtilPlatform.instance = fakeUtil;
       SafStreamPlatform.instance = _FakeSafStream(backend);
+      debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
       final storage = StorageService();
 
       final parent = backend.addDir(null, 'Music2');
@@ -413,6 +424,7 @@ void main() {
       final fakeUtil = _FakeSafUtil(backend);
       SafUtilPlatform.instance = fakeUtil;
       SafStreamPlatform.instance = _FakeSafStream(backend);
+      debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
       final storage = StorageService();
 
       // A root from before the marker existed: just named "Heardy", no marker file.
@@ -436,6 +448,7 @@ void main() {
       final playlistDir = backend.addDir(root, 'PlaylistDeCarpetaBorrada');
       SafUtilPlatform.instance = _FakeSafUtil(backend);
       SafStreamPlatform.instance = _FakeSafStream(backend);
+      debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
 
       final payload = Uint8List.fromList(List.generate(2000, (i) => (i * 3 + 1) % 256));
       backend.addFile(playlistDir, 'cancion.mp3', _buildMp3(payload, tagBodySize: 0), 100);

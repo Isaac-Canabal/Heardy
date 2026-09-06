@@ -104,6 +104,15 @@ lib/
 │   ├── translation_service.dart     # line-by-line lyrics translation, disk-cached next to the .lrc
 │   ├── cloud_source.dart            # abstract interface + DTOs for the account/sync/friends/presence surface
 │   ├── heardy_cloud_source.dart     # the one real CloudSource implementation: HTTP client for server/
+│   ├── library_diff.dart            # pure cloud-vs-local reconciliation: what's missing here, and the
+│   │                                 # union that keeps a push from deleting what only lives elsewhere
+│   ├── cloud_restore_match.dart     # pure: rebuild a cloud index row — original sourceUrl first, duration
+│   │                                 # match as the fallback
+│   ├── library_storage.dart         # abstract storage seam: SAF on Android, dart:io on desktop
+│   ├── saf_library_storage.dart     # the Android implementation (saf_util/saf_stream)
+│   ├── file_library_storage.dart    # the desktop implementation (dart:io + file_picker)
+│   ├── firebase_rest_auth.dart      # Identity Toolkit over plain HTTP — desktop, where the SDK isn't viable
+│   ├── desktop_shortcuts.dart       # pure key → playback-action mapping for the desktop shortcuts
 │   ├── account_prompt.dart          # pure decision function for the one-time account-linking prompt
 │   └── share_image_service.dart     # RepaintBoundary → PNG capture + share-sheet handoff for stats images
 ├── screens/                         # one file per screen/tab, StatefulWidget + Provider consumers directly
@@ -120,7 +129,9 @@ lib/
 │   ├── settings_screen.dart         # theme picker, library-folder picker, download-server diagnostic,
 │   │                                 # account section (sync status, delete-my-data, presence toggle)
 │   ├── friends_screen.dart          # exact-match username search, requests, friends list with "now playing"
-│   └── friend_profile_screen.dart   # a friend's stats, rendered with the same StatisticsView as one's own
+│   ├── friend_profile_screen.dart   # a friend's stats, rendered with the same StatisticsView as one's own
+│   └── sync_status_screen.dart      # "restore from your account": what this device is missing vs the cloud,
+│                                     # and pulling play history back down
 ├── widgets/                         # glass_card, mini_player, song_tile, playlist_target_sheet,
 │                                     # download_progress_card, statistics_view, username_claim_sheet,
 │                                     # share_stats_card
@@ -309,18 +320,36 @@ operational weight that implies.
 
 Design rules that follow from that, settled and not to be re-opened without a real reason:
 
-- **Push is full-index, not incremental, and merges by key rather than replacing.** A device with its storage
-  unmounted, or one that hasn't synced in a while, must never be able to wipe out data that lives only on
-  another device. Full-index push is much simpler to make idempotent and naturally detects real deletions —
-  the tradeoff, accepted, is "last write wins" at the whole-library granularity, mitigated by an optimistic
-  version check that turns a silent conflict into a visible one instead of silently discarding data.
-  Reconciling the very first sync of an account that already has a cloud index (e.g. from a second device) is
-  a union by content hash, not a conflict — nothing is ever deleted just because a fresh install hasn't seen it
-  yet.
+- **Push is full-index, not incremental, and every push is a union with what the cloud already holds.** A
+  device with its storage unmounted, or one that hasn't synced in a while, must never be able to wipe out data
+  that lives only on another device. The client reads `GET /library` immediately before each `PUT /library`
+  and merges it into the payload by content hash (`unionCloudIntoLocalIndex`), so the payload is always a
+  superset of what the server has and the server's delete-what's-absent step can never remove anything.
+  Matching is by `fileHash`, never by title/artist; when the same audio exists on both sides under different
+  ids (a legacy row), the local id wins and the cloud's playlist memberships are rewritten onto it.
+  **The consequence, accepted deliberately:** deleting a song on one device no longer deletes it from the
+  cloud. That follows the repo-wide additive rule — the absence of a row is indistinguishable from "this
+  device hasn't seen it yet", which is exactly the confusion that cost a user their library. Propagating a
+  real deletion needs to travel as an explicit tombstone; until that exists, "erase my cloud data" is the only
+  thing that removes anything server-side.
+  The index that gets pushed deliberately includes songs flagged `missing`: the cloud index is the catalogue
+  of what the account owns, not of what this device can play right now. Filtering them out is what let an
+  unmounted volume push an empty index.
 - **History uploads are deduplicated by a natural key derived from data the client already has** (song +
   local timestamp), not a client-generated id — that avoids collisions across devices and lets a user's
   pre-existing local history sync on day one with no separate migration step. Client-reported values that
   could be used to game shared stats (like listened duration) are sanitized server-side, never trusted as-is.
+- **Anything the client uploads must have a way back down.** `POST /history` shipped without a `GET`, so a
+  device that lost its local database lost its statistics permanently even though the server still held every
+  row — the sync was one-way in practice. `GET /history` pages the account's own rows back (keyset pagination
+  on the natural key, never OFFSET); the client re-inserts only rows for songs it actually has (the local
+  `play_history` FK is enforced) and marks them already-synced so they don't bounce straight back up.
+- **The index carries `sourceUrl`.** It's the link a song was downloaded from — not a device-local value like
+  `uri`/`filePath`, so it's allowed across the boundary, and it buys two things nothing else can: the
+  "update this song" action survives a reinstall, and restoring re-downloads the *exact* original instead of
+  guessing an equivalent by duration. The server merges it with `COALESCE`, never a plain overwrite: a device
+  that rebuilt its library by scanning disk has no `sourceUrl` (a scanner cannot know what link a file came
+  from) and must not blank out what another device uploaded.
 - **A migration path for existing local-only users is opt-in and shown once.** Linking an account *is*
   agreeing that the index and history travel to the server — say so plainly before the user acts, and never
   leave an in-between state of "have an account but nothing synced." Dismissing the prompt must never show it
@@ -436,10 +465,19 @@ clients, no live server). What's landed:
 of the library index before each sync attempt and skips the network call entirely when it's unchanged since
 the last successful push — one mechanism instead of instrumenting every place the library can change.
 
-**Not yet done, and this is the real gap going into next steps:** none of this has been exercised against a
-real Postgres instance or a real device. Before relying on it in production: provision the database, confirm
-the daily-song-quota and account-usage counters actually survive a server restart (the whole reason they're
-persisted rather than in-memory), and walk the real flow on an Android device — link an account, see the
-one-time prompt exactly once, sync a real library, add a friend, see "now playing" update, share a stats
-image through a real share-sheet target. None of that has run against anything but fakes and a debug build so
-far.
+**Verified since against the real, deployed server and a real device — with real bugs found and fixed along the
+way, not just a clean first pass:** account creation, linking, username claim, library/history sync, and
+sharing a stats image all round-tripped on an actual phone against the live backend. Three real bugs surfaced
+only by that real-device pass, each with a regression test added afterward: a request body field the server
+silently rejected because a payload model didn't declare it (only visible with an actual signed-in sync
+attempt, never with a fake client); a database write handed the wrong argument type for a timestamp column
+(only visible against a real database driver, never with an in-memory fake); and a release-build-only crash
+from reading a Flutter debug-only API outside of an assertion (invisible under `flutter test`, which runs with
+assertions enabled like a debug build — only a real release APK exposed it). The pattern worth remembering:
+**pure-logic tests against fakes cannot catch contract bugs between two real systems** — a test that never
+sends an actual request through an actual client to an actual server, or never runs an actual release binary,
+has an entire class of bug it structurally cannot see.
+
+**Still not verified:** the daily-song-quota and account-usage counters surviving an actual server restart
+against a real Postgres instance (the whole reason they're persisted rather than in-memory) — that still needs
+a provisioned database and a deliberate restart-mid-use test, not just code review.

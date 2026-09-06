@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import '../services/audio_player_handler.dart';
 import '../services/cloud_source.dart';
 import '../services/database_helper.dart';
+import '../services/library_diff.dart';
 
 /// Sincronización de cuenta (Etapa 16): índice de biblioteca + historial de
 /// reproducción hacia el servidor. Misma forma que `DownloadProvider`: recibe
@@ -107,45 +108,70 @@ class SyncProvider with ChangeNotifier {
   }
 
   /// Orden de una pasada: `GET /account` → subir historial pendiente en
-  /// lotes de ≤500 → si el contenido cambió, `PUT /library`. Para al primer
-  /// fallo de RED (misma semántica que `retryPendingImports()`), no ante
-  /// otros errores (409, 428) que se dejan como estado visible en
-  /// [lastError] en vez de reintentarse solos.
+  /// lotes de ≤500 → si el contenido cambió, `PUT /library`.
+  ///
+  /// **Historial y biblioteca son independientes y se intentan por separado.**
+  /// Antes compartían un solo `try`, así que cualquier fallo subiendo el
+  /// historial abortaba la pasada ANTES de llegar a la biblioteca. Como el
+  /// historial se reintenta con las mismas filas en cada pasada, una fila
+  /// rechazada de forma permanente (un 422, el cupo diario agotado) dejaba la
+  /// biblioteca sin subir para siempre, en todos los dispositivos — el
+  /// estado con el que se descubrió esto era una cuenta con
+  /// `library_version == 0` meses después de empezar a usarla. Un paso que
+  /// falla ahora se queda en [lastError] sin arrastrar al otro.
+  ///
+  /// `cuenta` sí corta la pasada: los dos pasos siguientes necesitan la
+  /// identidad y la versión que devuelve.
   Future<void> syncNow() async {
     if (_isSyncing) return;
     _isSyncing = true;
     _lastError = null;
     notifyListeners();
-    // Nombra el paso en curso para que un fallo diga DÓNDE se rompió, no
-    // sólo qué dijo el servidor: "cuenta", "historial" y "biblioteca" son
-    // tres llamadas distintas y un mismo texto de error ("El servidor
-    // respondió 500") no distingue cuál falló — que es exactamente lo que
-    // hizo falta averiguar a mano la primera vez que esto no funcionó.
-    var step = 'cuenta';
     try {
-      _account = await _source.getAccount();
-      _libraryVersion = _account!.libraryVersion;
+      try {
+        _account = await _source.getAccount();
+        _libraryVersion = _account!.libraryVersion;
+      } catch (e) {
+        _lastError = _stepError('cuenta', e);
+        return;
+      }
 
-      step = 'historial';
-      await _pushUnsyncedHistory();
+      // Nombra el paso para que un fallo diga DÓNDE se rompió, no sólo qué
+      // dijo el servidor: un mismo texto ("El servidor respondió 500") no
+      // distingue cuál de las llamadas falló — que es exactamente lo que hizo
+      // falta averiguar a mano la primera vez que esto no funcionó.
+      final errors = [
+        await _runStep('historial', _pushUnsyncedHistory),
+        await _runStep('biblioteca', _pushLibraryIfChanged),
+      ].whereType<String>().toList();
 
-      step = 'biblioteca';
-      await _pushLibraryIfChanged();
-
-      _lastSyncAt = DateTime.now();
-    } on CloudSourceException catch (e) {
-      _lastError = '[$step] ${e.message}';
-    } catch (e) {
-      // Cualquier otra cosa (un fallo de SQLite, un error de parseo) también
-      // tiene que verse: antes escapaba de este método como un error de
-      // future sin capturar y la UI se quedaba igual que si nada hubiera
-      // pasado, que es el peor de los dos estados posibles.
-      _lastError = '[$step] $e';
+      if (errors.isEmpty) {
+        _lastSyncAt = DateTime.now();
+      } else {
+        _lastError = errors.join(' · ');
+      }
     } finally {
       _isSyncing = false;
       notifyListeners();
     }
   }
+
+  /// Corre un paso y devuelve su error ya etiquetado, o `null` si fue bien.
+  Future<String?> _runStep(String name, Future<void> Function() body) async {
+    try {
+      await body();
+      return null;
+    } catch (e) {
+      return _stepError(name, e);
+    }
+  }
+
+  /// Cualquier cosa que no sea [CloudSourceException] (un fallo de SQLite, un
+  /// error de parseo) también tiene que verse: antes escapaba de `syncNow`
+  /// como un error de future sin capturar y la UI se quedaba igual que si
+  /// nada hubiera pasado, que es el peor de los dos estados posibles.
+  String _stepError(String step, Object error) =>
+      '[$step] ${error is CloudSourceException ? error.message : error}';
 
   Future<void> _pushUnsyncedHistory() async {
     final offset = DateTime.now().timeZoneOffset.inMinutes;
@@ -187,20 +213,44 @@ class SyncProvider with ChangeNotifier {
     }
   }
 
+  /// Sube el índice sólo si el contenido LOCAL cambió desde la última subida
+  /// de esta sesión, y nunca sin antes unirle lo que ya hay en la nube.
+  ///
+  /// El atajo por hash local va primero a propósito: si nada cambió acá, la
+  /// nube ya tiene el resultado de la unión anterior y la pasada no cuesta ni
+  /// una petición. Cuando sí cambió, la lectura de `/library` ocurre
+  /// inmediatamente antes del `PUT` para que la unión sea contra el estado
+  /// más fresco posible — si otro dispositivo se cuela entremedio, el
+  /// servidor responde 409 y el conflicto se ve, que es lo que manda el
+  /// diseño (CLAUDE.md, "Cloud sync").
+  ///
+  /// El hash que viaja al servidor es el del payload ya unido, no el del
+  /// índice local: es lo que de verdad queda guardado, y es contra eso contra
+  /// lo que el atajo por `contentHash` del servidor tiene que comparar.
   Future<void> _pushLibraryIfChanged() async {
-    final index = await _db.getLibraryIndexRows();
-    final contentHash = _hashOf(index);
-    if (contentHash == _lastPushedContentHash) return;
+    final local = await _db.getLibraryIndexRows();
+    final localHash = _hashOf(local);
+    if (localHash == _lastPushedContentHash) return;
+
+    final cloud = await _source.getLibrary();
+    final merged = cloud == null
+        ? local
+        : unionCloudIntoLocalIndex(
+            local: local,
+            cloudSongs: cloud.songs,
+            cloudPlaylists: cloud.playlists,
+            cloudPlaylistSongs: cloud.playlistSongs,
+          );
 
     final newVersion = await _source.pushLibrary(
-      baseVersion: _libraryVersion,
-      contentHash: contentHash,
-      songs: index['songs']!,
-      playlists: index['playlists']!,
-      playlistSongs: index['playlistSongs']!,
+      baseVersion: cloud?.version ?? _libraryVersion,
+      contentHash: _hashOf(merged),
+      songs: merged['songs']!,
+      playlists: merged['playlists']!,
+      playlistSongs: merged['playlistSongs']!,
     );
     _libraryVersion = newVersion;
-    _lastPushedContentHash = contentHash;
+    _lastPushedContentHash = localHash;
   }
 
   String _hashOf(Map<String, List<Map<String, dynamic>>> index) {

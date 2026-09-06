@@ -26,6 +26,9 @@ import 'package:heardy/services/download_source.dart';
 import 'package:heardy/services/library_scan_service.dart';
 import 'package:heardy/services/storage_service.dart';
 
+import 'package:heardy/services/library_storage.dart';
+import 'package:heardy/services/saf_library_storage.dart';
+
 import 'fake_saf.dart';
 
 class _TempPathProvider extends PathProviderPlatform {
@@ -159,6 +162,7 @@ void main() {
     root = backend.addDir(null, 'Heardy');
     SafUtilPlatform.instance = FakeSafUtil(backend);
     SafStreamPlatform.instance = FakeSafStream(backend);
+    debugOverrideLibraryStorageForTests(() => SafLibraryStorage());
     SharedPreferences.setMockInitialValues({'heardy_library_root_uri': root.uri});
   });
 

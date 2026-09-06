@@ -2,7 +2,8 @@ import 'dart:io';
 
 import 'package:audio_metadata_reader/audio_metadata_reader.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:saf_stream/saf_stream.dart';
+
+import 'library_storage.dart';
 
 /// Result of reading a song's tags, with every field already resolved
 /// through the D5 fallback chain (tag → filename/folder → hard default).
@@ -41,7 +42,9 @@ class MetadataService {
   static final _collapseWhitespace = RegExp(r'\s+');
   static final _artistTitleSplit = RegExp(r'\s+-\s+');
 
-  final SafStream _safStream = SafStream();
+  final LibraryStorage _storage;
+
+  MetadataService({LibraryStorage? storage}) : _storage = storage ?? defaultLibraryStorage();
 
   /// Copies [uri] to a temp file once, reads its tags, extracts any
   /// embedded cover to `<app documents>/thumbnails/<songId>.<ext>`, and
@@ -61,7 +64,7 @@ class MetadataService {
 
     AudioMetadata? tags;
     try {
-      await _safStream.copyToLocalFile(uri, tempPath);
+      await _storage.copyToLocalFile(uri, tempPath);
       final copiedSize = await tempFile.exists() ? await tempFile.length() : -1;
       print('MetadataService: copiado $fileName -> $tempPath (${copiedSize}b)');
       tags = readMetadata(tempFile, getImage: true);

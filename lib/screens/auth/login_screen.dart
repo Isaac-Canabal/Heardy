@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../../l10n/app_localizations.dart';
 import '../../providers/auth_provider.dart';
+import '../../services/firebase_rest_auth.dart';
 import '../../theme/app_theme.dart';
 
 /// Pantalla de cuenta: login/registro, recuperación de contraseña y el
@@ -56,6 +57,22 @@ class _LoginScreenState extends State<LoginScreen> {
         case 'too-many-requests':
           return l10n.authErrorTooManyRequests;
       }
+    }
+    // Escritorio (W5): la API REST de Identity Toolkit usa sus propios
+    // códigos, en MAYÚSCULAS_CON_GUIONES_BAJOS — vocabulario distinto al del
+    // SDK móvil de arriba, no una variación de formato del mismo código.
+    if (error is FirebaseRestAuthException) {
+      final code = error.code;
+      if (code == 'EMAIL_EXISTS') return l10n.authErrorEmailInUse;
+      if (code.startsWith('WEAK_PASSWORD')) return l10n.authErrorWeakPassword;
+      if (code == 'INVALID_EMAIL') return l10n.authErrorInvalidEmail;
+      if (code == 'EMAIL_NOT_FOUND' ||
+          code == 'INVALID_PASSWORD' ||
+          code == 'INVALID_LOGIN_CREDENTIALS') {
+        return l10n.authErrorWrongCredentials;
+      }
+      if (code == 'USER_DISABLED') return l10n.authErrorUserDisabled;
+      if (code == 'TOO_MANY_ATTEMPTS_TRY_LATER') return l10n.authErrorTooManyRequests;
     }
     return l10n.authErrorGeneric;
   }

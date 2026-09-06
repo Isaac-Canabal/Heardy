@@ -9,6 +9,8 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'services/database_helper.dart';
 import 'services/audio_player_handler.dart';
@@ -24,17 +26,49 @@ import 'providers/settings_provider.dart';
 import 'providers/sync_provider.dart';
 import 'screens/main_shell_screen.dart';
 import 'screens/playlist_detail_screen.dart';
+import 'services/desktop_shortcuts.dart';
 import 'theme/app_theme.dart';
+
+/// `true` en Windows/Linux/macOS. Todo lo que sólo existe en el APK Android
+/// (SAF, notificación de reproducción, tarea en primer plano, cuenta vía
+/// Firebase) se guarda detrás de este flag — ver el plan de escritorio,
+/// fase W0/W2. La reproducción/base de datos/UI locales son Dart puro y no
+/// necesitan ninguna de estas guardas.
+bool get _isDesktop => Platform.isWindows || Platform.isLinux || Platform.isMacOS;
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
 
-  // Requisito de flutter_foreground_task para poder mandar/recibir datos
-  // entre el isolate del servicio y la UI — no se usa ese canal acá (el
-  // TaskHandler de descargas no hace nada por sí mismo, ver
-  // download_foreground_service.dart), pero hay que llamarlo igual antes de
-  // arrancar cualquier servicio.
-  FlutterForegroundTask.initCommunicationPort();
+  // `sqflite` no tiene motor propio de base de datos en escritorio (a
+  // diferencia de Android/iOS, que traen SQLite del sistema): hay que
+  // sustituir `databaseFactory` por la implementación FFI antes de la
+  // primera llamada a `DatabaseHelper` — ver W2 del plan de escritorio.
+  if (_isDesktop) {
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+    // Sin esto, `getDatabasesPath()` por defecto de `sqflite_common_ffi`
+    // resuelve relativo al directorio de trabajo actual
+    // (`<cwd>/.dart_tool/sqflite_common_ffi/databases`) — inofensivo en
+    // `flutter test`, pero un bug real en la app instalada: un `.exe`
+    // lanzado desde `C:\Program Files\Heardy\` escribiría ahí (no
+    // necesariamente escribible sin admin, y el desinstalador nunca lo ve
+    // porque Inno Setup no sabe que existe). Verificado en vivo con un
+    // instalar/desinstalar real (W4) — el archivo sobrevivía a la
+    // desinstalación. `getApplicationSupportDirectory()` es la carpeta de
+    // datos de la app por usuario (en Windows, `%APPDATA%\Heardy`).
+    final supportDir = await getApplicationSupportDirectory();
+    await databaseFactory.setDatabasesPath(supportDir.path);
+  }
+
+  if (Platform.isAndroid) {
+    // Requisito de flutter_foreground_task para poder mandar/recibir datos
+    // entre el isolate del servicio y la UI — no se usa ese canal acá (el
+    // TaskHandler de descargas no hace nada por sí mismo, ver
+    // download_foreground_service.dart), pero hay que llamarlo igual antes de
+    // arrancar cualquier servicio. El plugin no declara soporte de
+    // escritorio: llamarlo ahí lanzaría en tiempo de ejecución.
+    FlutterForegroundTask.initCommunicationPort();
+  }
 
   await SystemChrome.setPreferredOrientations([
     DeviceOrientation.portraitUp,
@@ -43,33 +77,49 @@ void main() async {
 
   await DatabaseHelper.instance.database;
 
-  // Fase 2 del plan de seguridad: identidad por cuenta real (Firebase Auth)
-  // en vez de la clave de API única compilada en el binario. Sin opciones
-  // explícitas: app Android-only, `android/app/google-services.json` (vía el
-  // plugin de Gradle) ya deja todo lo que el SDK necesita.
-  await Firebase.initializeApp();
+  if (Platform.isAndroid) {
+    // Fase 2 del plan de seguridad: identidad por cuenta real (Firebase Auth)
+    // en vez de la clave de API única compilada en el binario. Sin opciones
+    // explícitas: app Android-only, `android/app/google-services.json` (vía
+    // el plugin de Gradle) ya deja todo lo que el SDK necesita.
+    //
+    // Firebase Auth NO se usa en escritorio (Hallazgo 3 del plan de
+    // escritorio: Google no lo considera apto para producción en Windows) —
+    // la cuenta en el PC, cuando llegue (fase W5), hablará con la API REST
+    // de Firebase Auth por HTTP en vez de este SDK, sin necesitar
+    // `Firebase.initializeApp()` en absoluto.
+    await Firebase.initializeApp();
 
-  const AndroidInitializationSettings initializationSettingsAndroid =
-      AndroidInitializationSettings('@mipmap/ic_launcher');
-  const InitializationSettings initializationSettings = InitializationSettings(
-    android: initializationSettingsAndroid,
-  );
-  // A fresh instance is enough: flutter_local_notifications initializes the
-  // plugin platform-wide, so any other instance (e.g. AudioPlayerHandler's
-  // own for playback-error notifications) shares this same initialization.
-  await FlutterLocalNotificationsPlugin().initialize(initializationSettings);
+    const AndroidInitializationSettings initializationSettingsAndroid =
+        AndroidInitializationSettings('@mipmap/ic_launcher');
+    const InitializationSettings initializationSettings = InitializationSettings(
+      android: initializationSettingsAndroid,
+    );
+    // A fresh instance is enough: flutter_local_notifications initializes the
+    // plugin platform-wide, so any other instance (e.g. AudioPlayerHandler's
+    // own for playback-error notifications) shares this same initialization.
+    await FlutterLocalNotificationsPlugin().initialize(initializationSettings);
+  }
 
-  final AudioPlayerHandler audioHandler = await AudioService.init(
-    builder: () => AudioPlayerHandler(),
-    config: const AudioServiceConfig(
-      androidNotificationChannelId: 'com.heardy.app.audio',
-      androidNotificationChannelName: 'Heardy Playback',
-      androidNotificationOngoing: true,
-      androidShowNotificationBadge: true,
-      artDownscaleWidth: 300,
-      artDownscaleHeight: 300,
-    ),
-  );
+  // `audio_service` no declara soporte de escritorio. `AudioService.init()`
+  // es lo único de ese paquete que es específico de plataforma (notificación,
+  // pantalla de bloqueo, sesión de medios) — `BaseAudioHandler`, `MediaItem`
+  // y `PlaybackState` son Dart puro, así que en escritorio basta con
+  // construir el handler directamente y perder los controles del sistema
+  // operativo (recuperables más adelante con `smtc_windows`, fase W2+).
+  final AudioPlayerHandler audioHandler = Platform.isAndroid
+      ? await AudioService.init(
+          builder: () => AudioPlayerHandler(),
+          config: const AudioServiceConfig(
+            androidNotificationChannelId: 'com.heardy.app.audio',
+            androidNotificationChannelName: 'Heardy Playback',
+            androidNotificationOngoing: true,
+            androidShowNotificationBadge: true,
+            artDownscaleWidth: 300,
+            artDownscaleHeight: 300,
+          ),
+        )
+      : AudioPlayerHandler();
 
   if (Platform.isAndroid) {
     if (await Permission.notification.isDenied) {
@@ -79,7 +129,13 @@ void main() async {
 
   final musicProvider = MusicProvider();
   final settingsProvider = SettingsProvider();
-  final authProvider = HeardyAuthProvider();
+  // Firebase Auth (el SDK) no corre en escritorio (Hallazgo 3 del plan de
+  // escritorio) — `HeardyAuthProvider.rest()` habla la misma API por HTTP
+  // (W5). La cuenta sigue siendo opcional ahí igual que en Android: las
+  // únicas pantallas que la leen (Import/Search) ya saben quedarse
+  // inactivas sin sesión.
+  final authProvider =
+      Platform.isAndroid ? HeardyAuthProvider() : HeardyAuthProvider.rest();
 
   // La fuente lee la configuración por closures, no por copia: cambiar la
   // dirección en Ajustes (o iniciar/cerrar sesión) tiene efecto inmediato,
@@ -183,6 +239,8 @@ class HeardyApp extends StatelessWidget {
           supportedLocales: AppLocalizations.supportedLocales,
           initialRoute: '/',
           onGenerateRoute: RouteGenerator.generateRoute,
+          builder: (context, child) =>
+              child == null ? const SizedBox.shrink() : _DesktopPlaybackShortcuts(child: child),
         );
       },
     );
@@ -219,6 +277,46 @@ class RouteGenerator {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Atajos de teclado de escritorio (W3 del plan de escritorio): espacio =
+/// pausa/reproduce, flechas = retroceder/adelantar 10s. Sólo si no hay un
+/// campo de texto con foco — si no, escribir un espacio en el buscador o al
+/// renombrar una playlist activaría play/pause en vez de escribir.
+/// `desktopShortcutFor` (services/desktop_shortcuts.dart) es la única parte
+/// realmente probada; esto es sólo el cableado.
+class _DesktopPlaybackShortcuts extends StatelessWidget {
+  final Widget child;
+  const _DesktopPlaybackShortcuts({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_isDesktop) return child;
+    return Focus(
+      autofocus: true,
+      onKeyEvent: (node, event) {
+        if (event is! KeyDownEvent) return KeyEventResult.ignored;
+        if (FocusManager.instance.primaryFocus?.context?.widget is EditableText) {
+          return KeyEventResult.ignored;
+        }
+        final audioHandler = Provider.of<AudioPlayerHandler>(context, listen: false);
+        switch (desktopShortcutFor(event.logicalKey)) {
+          case DesktopPlaybackShortcut.playPause:
+            audioHandler.playbackState.value.playing ? audioHandler.pause() : audioHandler.play();
+            return KeyEventResult.handled;
+          case DesktopPlaybackShortcut.seekBack:
+            audioHandler.seekRelative(const Duration(seconds: -10));
+            return KeyEventResult.handled;
+          case DesktopPlaybackShortcut.seekForward:
+            audioHandler.seekRelative(const Duration(seconds: 10));
+            return KeyEventResult.handled;
+          case DesktopPlaybackShortcut.none:
+            return KeyEventResult.ignored;
+        }
+      },
+      child: child,
     );
   }
 }

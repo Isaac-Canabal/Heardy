@@ -4,13 +4,12 @@ import 'dart:typed_data';
 import 'package:audio_metadata_reader/audio_metadata_reader.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
-import 'package:saf_stream/saf_stream.dart';
-import 'package:saf_util/saf_util.dart';
 
 import '../models/song.dart';
 import 'audio_identity.dart';
 import 'database_helper.dart';
 import 'download_source.dart';
+import 'library_storage.dart';
 import 'lyrics_service.dart';
 import 'mp4_chunk_offset_fix.dart';
 import 'storage_service.dart';
@@ -48,8 +47,7 @@ class DownloadService {
   final DownloadSource _source;
   final StorageService _storage;
   final DatabaseHelper _db;
-  final SafUtil _safUtil;
-  final SafStream _safStream;
+  final LibraryStorage _libraryStorage;
   final AudioIdentityService _identity;
   final http.Client Function() _clientFactory;
 
@@ -57,12 +55,12 @@ class DownloadService {
     required DownloadSource source,
     StorageService? storage,
     DatabaseHelper? db,
+    LibraryStorage? libraryStorage,
     http.Client Function()? clientFactory,
   })  : _source = source,
         _storage = storage ?? StorageService(),
         _db = db ?? DatabaseHelper.instance,
-        _safUtil = SafUtil(),
-        _safStream = SafStream(),
+        _libraryStorage = libraryStorage ?? defaultLibraryStorage(),
         _identity = AudioIdentityService(),
         _clientFactory = clientFactory ?? (() => http.Client());
 
@@ -168,17 +166,17 @@ class DownloadService {
       // nombre el proveedor de documentos renombra por su cuenta, así que
       // reconstruirla a mano daría una uri que no existe.
       final fileName = _fileNameFor(track);
-      final newFile = await _safStream.pasteLocalFile(
+      final newFile = await _libraryStorage.pasteLocalFile(
         tempPath,
         folderUri,
         fileName,
         'audio/mp4',
       );
-      final newUri = newFile.uri.toString();
+      final newUri = newFile.uri;
 
       // 7. Tamaño y mtime reales, tal como los verá el scanner. Después de
       // pegar, nunca antes: la mtime la fija el proveedor de documentos.
-      final stat = await _safUtil.stat(newUri, false);
+      final stat = await _libraryStorage.stat(newUri, isDir: false);
       if (stat == null) {
         throw const DownloadSourceException(
           DownloadSourceErrorKind.extraction,
@@ -200,7 +198,7 @@ class DownloadService {
       final existing = await _db.getSongByHash(identity.hash);
       if (existing != null) {
         try {
-          await _safUtil.delete(newUri, false);
+          await _libraryStorage.delete(newUri, isDir: false);
         } catch (e) {
           print('DownloadService: no se pudo borrar el duplicado $newUri: $e');
         }

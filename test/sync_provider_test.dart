@@ -21,6 +21,18 @@ class _FakeCloudSource implements CloudSource {
   int getAccountCalls = 0;
   CloudSourceException? failNextWith;
 
+  /// Error sólo para `pushHistory`, sin tocar el resto — el caso que importa
+  /// para comprobar que un historial roto ya no secuestra a la biblioteca.
+  CloudSourceException? failHistoryWith;
+
+  /// El índice tal como lo guardaría el servidor. `pushLibrary` lo REEMPLAZA
+  /// entero, igual que `library_store.py:push_library` (que borra lo ausente
+  /// y reescribe `library_playlist_songs` de cero) — si el fake sólo
+  /// acumulara, ningún test podría ver el borrado que se quiere evitar.
+  List<Map<String, dynamic>> cloudSongs = [];
+  List<Map<String, dynamic>> cloudPlaylists = [];
+  List<Map<String, dynamic>> cloudPlaylistSongs = [];
+
   @override
   Future<CloudAccount> getAccount() async {
     getAccountCalls++;
@@ -41,6 +53,7 @@ class _FakeCloudSource implements CloudSource {
   @override
   Future<HistoryPushResult> pushHistory(List<Map<String, dynamic>> rows, {int? utcOffsetMinutes}) async {
     pushHistoryCalls++;
+    if (failHistoryWith != null) throw failHistoryWith!;
     if (failNextWith != null) {
       final e = failNextWith!;
       failNextWith = null;
@@ -51,6 +64,14 @@ class _FakeCloudSource implements CloudSource {
   }
 
   @override
+  Future<CloudLibraryOrNotModified> getLibrary({String? ifNoneMatchVersion}) async => CloudLibrary(
+        version: libraryVersion,
+        songs: cloudSongs,
+        playlists: cloudPlaylists,
+        playlistSongs: cloudPlaylistSongs,
+      );
+
+  @override
   Future<int> pushLibrary({
     required int baseVersion,
     String? contentHash,
@@ -59,6 +80,9 @@ class _FakeCloudSource implements CloudSource {
     required List<Map<String, dynamic>> playlistSongs,
   }) async {
     pushLibraryCalls++;
+    cloudSongs = [...songs];
+    cloudPlaylists = [...playlists];
+    cloudPlaylistSongs = [...playlistSongs];
     libraryVersion = baseVersion + 1;
     return libraryVersion;
   }
@@ -71,9 +95,10 @@ class _FakeCloudSource implements CloudSource {
   @override
   Future<void> deleteAccountData() async {}
   @override
-  Future<FriendsList> getFriends() => throw UnimplementedError();
+  Future<CloudHistoryPage> getHistory({String? cursor, int limit = 500}) async =>
+      const CloudHistoryPage(rows: []);
   @override
-  Future<CloudLibraryOrNotModified> getLibrary({String? ifNoneMatchVersion}) => throw UnimplementedError();
+  Future<FriendsList> getFriends() => throw UnimplementedError();
   @override
   Future<Map<String, dynamic>> getStatsFriend(String username, {required String period}) =>
       throw UnimplementedError();
@@ -208,6 +233,140 @@ void main() {
     await Future.wait([first, second]);
     // Sólo una pasada real corrió — getAccount() no se llamó dos veces en paralelo.
     expect(source.getAccountCalls, 1);
+  });
+
+  test('un historial que falla ya no impide subir la biblioteca', () async {
+    final songId = await insertSong('s7');
+    await db.recordPlay(songId, 60);
+
+    final source = _FakeCloudSource()
+      ..failHistoryWith = const CloudSourceException(CloudSourceErrorKind.badRequest, 'fila rechazada');
+    final provider = SyncProvider(source: source, db: db);
+    await provider.syncNow();
+
+    // El error del historial se ve...
+    expect(provider.lastError, contains('historial'));
+    // ...pero la biblioteca subió igual. Con los dos pasos en el mismo `try`,
+    // una fila de historial rechazada de forma permanente dejaba la
+    // biblioteca sin subir para siempre.
+    expect(source.pushLibraryCalls, 1);
+    expect(source.cloudSongs, isNotEmpty);
+  });
+
+  test('una instalación nueva no borra de la nube lo que todavía no tiene', () async {
+    // La nube ya tiene la biblioteca de otro dispositivo...
+    final source = _FakeCloudSource()
+      ..libraryVersion = 7
+      ..cloudSongs = [
+        {
+          'songId': 'remota',
+          'title': 'Sólo en el teléfono',
+          'artist': 'X',
+          'album': null,
+          'durationSeconds': 200,
+          'fileHash': 'remota',
+          'hashKind': 'mp4-mdat',
+        },
+      ]
+      ..cloudPlaylists = [
+        {'playlistId': 'p1', 'name': 'Favoritas', 'sortOrder': 0},
+      ]
+      ..cloudPlaylistSongs = [
+        {'playlistId': 'p1', 'songId': 'remota', 'orderIndex': 0},
+      ];
+
+    // ...y este equipo acaba de instalarse: sólo tiene una canción distinta.
+    await insertSong('local');
+    final provider = SyncProvider(source: source, db: db);
+    await provider.syncNow();
+
+    final ids = source.cloudSongs.map((s) => s['songId']).toSet();
+    expect(ids, containsAll(<String>['remota', 'local']));
+    expect(source.cloudPlaylists.map((p) => p['playlistId']), contains('p1'));
+    expect(source.cloudPlaylistSongs, hasLength(1));
+  });
+
+  test('el payload no lleva columnas que el servidor rechazaría', () async {
+    await insertSong('s8');
+    final source = _FakeCloudSource();
+    final provider = SyncProvider(source: source, db: db);
+    await provider.syncNow();
+
+    // `extra="forbid"` en los modelos de Pydantic: una columna de más
+    // (uri, artPath, missing...) devuelve 422 y tira la subida entera.
+    expect(
+      source.cloudSongs.single.keys.toSet(),
+      {'songId', 'title', 'artist', 'album', 'durationSeconds', 'fileHash', 'hashKind', 'sourceUrl'},
+    );
+  });
+
+  test('una canción marcada como ausente sigue estando en el índice que se sube', () async {
+    await insertSong('s9');
+    final rawDb = await db.database;
+    // Lo que hace el escaneo cuando el volumen no está montado: marca, nunca borra.
+    await rawDb.update('songs', {'missing': 1});
+
+    final source = _FakeCloudSource();
+    final provider = SyncProvider(source: source, db: db);
+    await provider.syncNow();
+
+    expect(source.cloudSongs.map((s) => s['songId']), contains('s9'));
+  });
+
+  group('insertRestoredPlays', () {
+    Map<String, dynamic> play(String songId, String local) => {
+          'songId': songId,
+          'playedAtLocal': local,
+          'playedAtUtc': '${local}Z',
+          'playSeconds': 90,
+        };
+
+    test('reconstruye el historial y lo deja ya marcado como sincronizado', () async {
+      await insertSong('r1');
+
+      final inserted = await db.insertRestoredPlays([
+        play('r1', '2026-08-01T10:00:00.000'),
+        play('r1', '2026-08-02T10:00:00.000'),
+      ]);
+
+      expect(inserted, 2);
+      // Vinieron del servidor: volver a subirlas gastaría cupo para escribir
+      // filas que ya están allá.
+      expect(await db.getUnsyncedPlays(), isEmpty);
+    });
+
+    test('traerlo dos veces no duplica nada', () async {
+      await insertSong('r2');
+      final rows = [play('r2', '2026-08-01T10:00:00.000')];
+
+      expect(await db.insertRestoredPlays(rows), 1);
+      expect(await db.insertRestoredPlays(rows), 0);
+    });
+
+    test('una fila cuya canción no está acá se descarta sin romper la inserción', () async {
+      await insertSong('r3');
+
+      // `play_history.songId` tiene clave foránea contra `songs` y
+      // `PRAGMA foreign_keys = ON`: colar la huérfana tiraría el lote entero.
+      final inserted = await db.insertRestoredPlays([
+        play('r3', '2026-08-01T10:00:00.000'),
+        play('canción-que-no-tengo', '2026-08-01T11:00:00.000'),
+      ]);
+
+      expect(inserted, 1);
+    });
+
+    test('no pisa una reproducción local con la misma clave natural', () async {
+      final songId = await insertSong('r4');
+      await db.recordPlay(songId, 30);
+      final existing = (await db.getUnsyncedPlays()).single;
+
+      final inserted = await db.insertRestoredPlays([
+        play('r4', existing['playDate'] as String),
+      ]);
+
+      expect(inserted, 0);
+    });
   });
 
   test('noteUsernameSaved refleja el nombre al instante, sin esperar una sync completa', () async {
