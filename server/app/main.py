@@ -414,8 +414,30 @@ def _daily_quota_response(e: quota.QuotaExceeded) -> JSONResponse:
 
 
 async def _record_song_delivered(identity: str) -> None:
-    if config.DAILY_SONGS_PER_USER > 0 and _quota_store is not None:
+    """Apunta la canción entregada. **Nunca puede tumbar la petición.**
+
+    Esto corre cuando yt-dlp YA bajó el vídeo: el trabajo caro está hecho y
+    los bytes están listos para servirse. Si la base de datos no responde en
+    ese instante —y con Neon en plan gratuito pasa: se suspende por
+    inactividad y mata las conexiones abiertas del pool, así que la siguiente
+    consulta sobre una conexión muerta revienta— la excepción subía sin que
+    nadie la tradujera y FastAPI devolvía un 500. Resultado absurdo: la
+    descarga había funcionado y la petición moría haciendo la contabilidad,
+    desperdiciando de paso el presupuesto de extracción que el cupo existe
+    para proteger.
+
+    El cupo es un límite de producto (150/día), no un invariante de
+    corrección: perder una cuenta vale infinitamente menos que perder la
+    descarga. Se registra el TIPO de excepción, nunca su texto — el de un
+    driver de base de datos puede llevar dentro los valores de la consulta
+    (CLAUDE.md, reglas de seguridad).
+    """
+    if config.DAILY_SONGS_PER_USER <= 0 or _quota_store is None:
+        return
+    try:
         await quota.record_song(_quota_store, identity, config.DAILY_SONGS_PER_USER)
+    except Exception as e:  # noqa: BLE001
+        log.warning("no se pudo apuntar la canción entregada: %s", type(e).__name__)
 
 
 @app.get("/usage")
@@ -451,6 +473,16 @@ async def audio(video_id: str, request: Request, identity: str = Depends(enforce
             await quota.check_quota(_quota_store, identity, config.DAILY_SONGS_PER_USER)
         except quota.QuotaExceeded as e:
             return _daily_quota_response(e)
+        except Exception as e:  # noqa: BLE001
+            # La base de datos no contesta. Se deja pasar A PROPÓSITO en vez
+            # de devolver un error: fallar cerrado convierte una siesta de
+            # Neon en una caída total de las descargas para todo el mundo,
+            # mientras que fallar abierto sólo arriesga servir de más durante
+            # ese rato. El cupo es un límite de producto, no una frontera de
+            # seguridad — al revés que la autenticación, que sí falla cerrada.
+            # Tipo de excepción, nunca su texto (puede llevar los valores de
+            # la consulta dentro).
+            log.warning("cupo no comprobable, se deja pasar: %s", type(e).__name__)
 
     log.info("/audio por %s", identity)
     log.info("/audio: %s", video_id)
