@@ -133,6 +133,63 @@ def _classify(message: str) -> Exception:
     return ExtractionError(message)
 
 
+def classify_missing_aac(formats: list[dict]) -> str:
+    """Por qué no había pista AAC: `"no_audio"` o `"degraded"`.
+
+    La distinción no es cosmética, decide si el trabajo se descarta para
+    siempre o se reintenta. `"Requested format is not available"` tiene dos
+    causas que no se parecen en nada:
+
+    - El vídeo de verdad no trae audio AAC (raro, pero existe). Definitivo:
+      reintentar no puede cambiarlo nunca.
+    - YouTube nos devolvió una lista de formatos RECORTADA. Le pasa a una IP
+      de datacenter cuando la sesión no vale — cookies caducadas, sin PO
+      token válido. El vídeo tiene su AAC perfectamente; a nosotros no nos lo
+      ofrecen. Es un problema del servidor, temporal, y arreglarlo es
+      renovar la sesión.
+
+    Tratar el segundo caso como el primero es lo caro: 415 no es reintentable
+    en el cliente (`download_source.dart`, `isRetryable`), así que una sesión
+    caducada haría que la cola descartara en silencio la tanda entera con un
+    veredicto definitivo y falso — "este vídeo no tiene audio compatible" —
+    sobre canciones que están perfectamente bien.
+
+    La señal es simple: si hay formatos con audio pero ninguno AAC, la lista
+    viene recortada. Un vídeo real de YouTube ofrece ambos.
+    """
+    has_audio = False
+    for f in formats:
+        acodec = (f.get("acodec") or "none").lower()
+        if acodec == "none":
+            continue
+        has_audio = True
+        if acodec.startswith("mp4a") or (f.get("ext") or "").lower() == "m4a":
+            # Había AAC y aun así falló la selección: no es "el vídeo no
+            # tiene audio", así que se trata como temporal igual.
+            return "degraded"
+    return "degraded" if has_audio else "no_audio"
+
+
+def _missing_aac_error(url: str) -> Exception:
+    """Vuelve a pedir la lista de formatos (sólo metadata, sin descargar) para
+    decidir cuál de las dos causas fue. Si esa segunda consulta también falla,
+    se asume lo temporal: equivocarse hacia el reintento cuesta una petición;
+    equivocarse hacia lo definitivo tira la canción para siempre."""
+    try:
+        info = _extract(url, _base_opts() | {"skip_download": True, "noplaylist": True})
+        verdict = classify_missing_aac(info.get("formats") or [])
+    except Exception:  # noqa: BLE001
+        verdict = "degraded"
+
+    if verdict == "no_audio":
+        return NoAudioTrackError("El vídeo no ofrece ninguna pista de audio AAC/M4A")
+    return ExtractionError(
+        "YouTube no está ofreciendo audio AAC a este servidor: la lista de "
+        "formatos vino recortada. Suele significar que la sesión de cookies "
+        "caducó o que la IP está limitada"
+    )
+
+
 def _lock_for(video_id: str) -> threading.Lock:
     with _locks_guard:
         return _video_locks.setdefault(video_id, threading.Lock())
@@ -309,9 +366,7 @@ def fetch_audio(video_id: str) -> Path:
             partial.unlink(missing_ok=True)
             message = str(e)
             if "Requested format is not available" in message:
-                raise NoAudioTrackError(
-                    "El vídeo no ofrece ninguna pista de audio AAC/M4A"
-                ) from e
+                raise _missing_aac_error(url) from e
             raise _classify(message) from e
 
         if not partial.is_file() or partial.stat().st_size == 0:
