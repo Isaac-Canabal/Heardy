@@ -846,6 +846,40 @@ async def post_history(
     }
 
 
+@app.get("/history")
+async def get_history(
+    cursor: str | None = Query(default=None),
+    limit: int = Query(default=500, ge=1, le=1000),
+    account: accounts.Account = Depends(current_account),
+) -> dict:
+    """El historial crudo de la propia cuenta, paginado. La pareja de lectura
+    de `POST /history`, que no tenía: sin esto, un dispositivo que pierde su
+    base local pierde las estadísticas para siempre aunque el servidor las
+    conserve enteras (`push_history` es aditivo y sólo `DELETE /account/data`
+    las borra).
+
+    Sin presupuesto diario, a diferencia de las rutas sociales: son los datos
+    de quien pregunta, la respuesta no revela nada de nadie más y el `limit`
+    ya está acotado. `nextCursor` ausente significa que no hay más páginas."""
+    after = None
+    if cursor:
+        try:
+            after = library_store.decode_history_cursor(cursor)
+        except library_store.InvalidCursor:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST, detail="Cursor inválido"
+            ) from None
+
+    rows = await _library_store.get_history(account.id, after, limit)
+    return {
+        "rows": rows,
+        # Sólo cuando la página vino llena: una página corta ya es la última,
+        # y devolver cursor ahí obligaría al cliente a una petición de más
+        # para descubrir que no había nada.
+        "nextCursor": library_store.encode_history_cursor(rows[-1]) if len(rows) == limit else None,
+    }
+
+
 @app.get("/stats/me")
 async def stats_me(
     period: str = Query(default="week", pattern="^(week|month)$"),

@@ -6,8 +6,10 @@ ni nada que sólo signifique algo en el dispositivo que lo produjo (`uri`,
 """
 from __future__ import annotations
 
+import base64
 import dataclasses
 import datetime
+import json
 import re
 from typing import TYPE_CHECKING
 
@@ -35,6 +37,7 @@ class LibrarySongIn(BaseModel):
     durationSeconds: int | None = Field(default=None, ge=0)
     fileHash: str | None = Field(default=None, max_length=128)
     hashKind: str | None = Field(default=None, max_length=32)
+    sourceUrl: str | None = Field(default=None, max_length=2048)
 
 
 class LibraryPlaylistIn(BaseModel):
@@ -141,6 +144,28 @@ def parse_played_at(value: str) -> datetime.datetime:
     return parsed
 
 
+class InvalidCursor(ValueError):
+    """Cursor de paginación ilegible — 400 en main.py, nunca un 500."""
+
+
+def encode_history_cursor(row: dict) -> str:
+    """Los tres campos de la clave de orden, opacos para el cliente.
+
+    Base64 de JSON y no `"a|b|c"`: `song_id` y `played_at_local` son datos
+    del cliente y pueden contener cualquier carácter, incluido el separador
+    que se hubiera elegido."""
+    payload = json.dumps([row["playedAtUtc"], row["songId"], row["playedAtLocal"]])
+    return base64.urlsafe_b64encode(payload.encode()).decode()
+
+
+def decode_history_cursor(cursor: str) -> tuple[datetime.datetime, str, str]:
+    try:
+        played_at, song_id, played_at_local = json.loads(base64.urlsafe_b64decode(cursor))
+        return parse_played_at(played_at), str(song_id), str(played_at_local)
+    except Exception as e:  # noqa: BLE001 — cualquier forma inesperada es lo mismo: un 400
+        raise InvalidCursor("cursor inválido") from e
+
+
 MAX_PLAY_SECONDS = 86_400
 
 
@@ -238,10 +263,20 @@ class LibraryStore:
                     duration_seconds INTEGER,
                     file_hash TEXT,
                     hash_kind TEXT,
+                    source_url TEXT,
                     PRIMARY KEY (user_id, song_id)
                 )
                 """
             )
+            # A8 del plan: CREATE TABLE IF NOT EXISTS no añade columnas a una
+            # tabla que ya existe. `source_url` es el enlace del que se
+            # descargó la canción — NO es un dato local (no nombra este
+            # dispositivo ni su sistema de archivos, al contrario que `uri` o
+            # `filePath`), así que sí puede cruzar al servidor: es lo que
+            # permite que "actualizar" siga existiendo tras reinstalar, y que
+            # la restauración baje el original exacto en vez de adivinar una
+            # coincidencia por duración.
+            await conn.execute("ALTER TABLE library_songs ADD COLUMN IF NOT EXISTS source_url TEXT")
             await conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS library_playlists (
@@ -287,7 +322,7 @@ class LibraryStore:
     async def get_library(self, user_id: int) -> dict:
         async with self._pool.acquire() as conn:
             songs = await conn.fetch(
-                "SELECT song_id, title, artist, album, duration_seconds, file_hash, hash_kind "
+                "SELECT song_id, title, artist, album, duration_seconds, file_hash, hash_kind, source_url "
                 "FROM library_songs WHERE user_id = $1",
                 user_id,
             )
@@ -323,21 +358,30 @@ class LibraryStore:
                     await conn.execute(
                         """
                         INSERT INTO library_songs
-                            (user_id, song_id, title, artist, artist_key, album, duration_seconds, file_hash, hash_kind)
-                        SELECT $1, s, t, a, ak, al, d, fh, hk
-                        FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::int[], $8::text[], $9::text[])
-                            AS u(s, t, a, ak, al, d, fh, hk)
+                            (user_id, song_id, title, artist, artist_key, album, duration_seconds,
+                             file_hash, hash_kind, source_url)
+                        SELECT $1, s, t, a, ak, al, d, fh, hk, su
+                        FROM unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::text[], $7::int[],
+                                    $8::text[], $9::text[], $10::text[])
+                            AS u(s, t, a, ak, al, d, fh, hk, su)
                         ON CONFLICT (user_id, song_id) DO UPDATE SET
                             title = excluded.title, artist = excluded.artist, artist_key = excluded.artist_key,
                             album = excluded.album, duration_seconds = excluded.duration_seconds,
-                            file_hash = excluded.file_hash, hash_kind = excluded.hash_kind
+                            file_hash = excluded.file_hash, hash_kind = excluded.hash_kind,
+                            -- COALESCE y no reemplazo directo: un dispositivo que
+                            -- reconstruyó su biblioteca escaneando el disco no tiene
+                            -- sourceUrl (el escáner no puede saber de qué enlace salió
+                            -- un archivo), y no debe borrar el que otro sí subió.
+                            source_url = COALESCE(excluded.source_url, library_songs.source_url)
                         WHERE (library_songs.title, library_songs.artist, library_songs.artist_key,
                                library_songs.album, library_songs.duration_seconds,
-                               library_songs.file_hash, library_songs.hash_kind)
+                               library_songs.file_hash, library_songs.hash_kind,
+                               library_songs.source_url)
                               IS DISTINCT FROM
                               (excluded.title, excluded.artist, excluded.artist_key,
                                excluded.album, excluded.duration_seconds,
-                               excluded.file_hash, excluded.hash_kind)
+                               excluded.file_hash, excluded.hash_kind,
+                               COALESCE(excluded.source_url, library_songs.source_url))
                         """,
                         user_id,
                         song_ids,
@@ -348,6 +392,7 @@ class LibraryStore:
                         [s.durationSeconds for s in payload.songs],
                         [s.fileHash for s in payload.songs],
                         [s.hashKind for s in payload.songs],
+                        [s.sourceUrl for s in payload.songs],
                     )
                 await conn.execute(
                     "DELETE FROM library_songs WHERE user_id = $1 AND NOT (song_id = ANY($2::text[]))",
@@ -427,6 +472,45 @@ class LibraryStore:
                 [r.playSeconds for r in rows],
             )
         return len(result)
+
+    async def get_history(
+        self, user_id: int, after: tuple[datetime.datetime, str, str] | None, limit: int
+    ) -> list[dict]:
+        """El historial crudo de la cuenta, en páginas, para que un
+        dispositivo que perdió su base local pueda reconstruirlo (E-2). Es la
+        pareja de lectura de `push_history`, que hasta ahora no tenía: el
+        historial se subía y no había forma de bajarlo, así que reinstalar
+        borraba las estadísticas para siempre aunque el servidor las tuviera
+        enteras.
+
+        Paginación por CLAVE, no por OFFSET: la clave natural de la tabla
+        `(played_at, song_id, played_at_local)` es única y ya está indexada
+        por `(user_id, played_at)`, así que la página N cuesta lo mismo que la
+        primera — con OFFSET, una migración de 50k filas degrada página a
+        página."""
+        sql = """
+            SELECT song_id, played_at_local, played_at, play_seconds
+            FROM play_history
+            WHERE user_id = $1
+        """
+        args: list = [user_id]
+        if after is not None:
+            sql += " AND (played_at, song_id, played_at_local) > ($2, $3, $4)"
+            args.extend(after)
+        sql += " ORDER BY played_at, song_id, played_at_local LIMIT $%d" % (len(args) + 1)
+        args.append(limit)
+
+        async with self._pool.acquire() as conn:
+            rows = await conn.fetch(sql, *args)
+        return [
+            {
+                "songId": r["song_id"],
+                "playedAtLocal": r["played_at_local"],
+                "playedAtUtc": r["played_at"].isoformat(),
+                "playSeconds": r["play_seconds"],
+            }
+            for r in rows
+        ]
 
     async def has_library(self, user_id: int) -> bool:
         async with self._pool.acquire() as conn:

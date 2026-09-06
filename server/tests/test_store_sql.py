@@ -8,10 +8,15 @@ from app import accounts, friends, library_store
 
 
 class _FakeConn:
-    def __init__(self, fetchval_return=None, fetchrow_return=None):
+    def __init__(self, fetchval_return=None, fetchrow_return=None, fetch_return=None):
         self.calls: list[tuple[str, tuple]] = []
         self._fetchval_return = fetchval_return
         self._fetchrow_return = fetchrow_return
+        self._fetch_return = fetch_return or []
+
+    async def fetch(self, query, *args):
+        self.calls.append((query, args))
+        return self._fetch_return
 
     async def execute(self, query, *args):
         self.calls.append((query, args))
@@ -140,3 +145,78 @@ async def test_friendship_par_canonico_se_usa_en_status_between():
     assert result == ("accepted", 5)
     _, args = conn.calls[-1]
     assert args == (5, 9)  # siempre (low, high), sin importar el orden de llamada
+
+
+async def test_get_history_sin_cursor_no_lleva_clausula_de_arranque():
+    conn = _FakeConn(fetch_return=[])
+    store = library_store.LibraryStore(_FakePool(conn))
+    await store.get_history(1, None, 500)
+    query, args = conn.calls[-1]
+    assert "played_at, song_id, played_at_local" in query
+    assert "OFFSET" not in query  # paginación por clave, nunca por offset
+    assert args == (1, 500)
+
+
+async def test_get_history_con_cursor_pagina_por_clave():
+    conn = _FakeConn(fetch_return=[])
+    store = library_store.LibraryStore(_FakePool(conn))
+    after = (datetime.datetime(2026, 8, 1, tzinfo=datetime.timezone.utc), "s1", "2026-08-01T10:00:00")
+    await store.get_history(1, after, 100)
+    query, args = conn.calls[-1]
+    assert "(played_at, song_id, played_at_local) > ($2, $3, $4)" in query
+    # El LIMIT se numera DESPUÉS de los tres del cursor, no fijo en $2.
+    assert "LIMIT $5" in query
+    assert args == (1, *after, 100)
+
+
+def test_cursor_de_historial_sobrevive_a_un_id_con_caracteres_raros():
+    # song_id y played_at_local son datos del cliente: cualquier separador
+    # que se hubiera elegido puede aparecer dentro de ellos.
+    row = {
+        "playedAtUtc": "2026-08-01T10:00:00+00:00",
+        "songId": "id|con:separadores\"y comillas",
+        "playedAtLocal": "2026-08-01T10:00:00.000",
+    }
+    played_at, song_id, local = library_store.decode_history_cursor(
+        library_store.encode_history_cursor(row)
+    )
+    assert song_id == row["songId"]
+    assert local == row["playedAtLocal"]
+    assert played_at == library_store.parse_played_at(row["playedAtUtc"])
+
+
+def test_cursor_ilegible_es_invalid_cursor_no_una_excepcion_cualquiera():
+    import pytest
+
+    with pytest.raises(library_store.InvalidCursor):
+        library_store.decode_history_cursor("esto-no-es-base64-de-json")
+
+
+async def test_push_library_no_borra_el_source_url_que_subio_otro_dispositivo():
+    """Un equipo que reconstruyó su biblioteca escaneando el disco no tiene
+    `sourceUrl` (el escáner no puede saber de qué enlace salió un archivo).
+    Sin el COALESCE, su push lo pondría a NULL para todos los demás y la
+    opción de "actualizar" desaparecería de la cuenta entera."""
+
+    class _TxConn(_FakeConn):
+        def transaction(self):
+            return self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+    conn = _TxConn()
+    store = library_store.LibraryStore(_FakePool(conn))
+    payload = library_store.LibraryPushPayload(
+        baseVersion=0,
+        songs=[library_store.LibrarySongIn(songId="a", title="t", artist="ar", sourceUrl=None)],
+        playlists=[],
+        playlistSongs=[],
+    )
+    await store.push_library(1, payload)
+
+    upsert = next(q for q, _ in conn.calls if "INSERT INTO library_songs" in q)
+    assert "source_url = COALESCE(excluded.source_url, library_songs.source_url)" in upsert
