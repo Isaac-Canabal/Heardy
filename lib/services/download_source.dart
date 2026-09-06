@@ -176,8 +176,18 @@ class DownloadSourceException implements Exception {
   String get userMessage => switch (kind) {
         DownloadSourceErrorKind.notConfigured =>
           'Configura la dirección del servidor de descargas en Ajustes',
-        DownloadSourceErrorKind.network =>
-          'No se pudo contactar con el servidor de descargas',
+        // El detalle técnico va incluido a propósito. Antes esta rama
+        // mostraba sólo la frase fija, y como `network` es el CAJÓN DE SASTRE
+        // de `_rethrowAsSourceError` (cualquier excepción inesperada cae
+        // aquí), el mensaje afirmaba una causa que nunca había comprobado:
+        // un timeout, un fallo de TLS, un DNS que no resuelve y un error de
+        // parseo se veían todos como "el servidor no responde" incluso con
+        // el servidor perfectamente vivo. Sin el detalle no hay forma de
+        // distinguirlos desde la app, que es exactamente donde ocurre el
+        // fallo.
+        DownloadSourceErrorKind.network => message.isEmpty
+            ? 'No se pudo contactar con el servidor de descargas'
+            : 'No se pudo contactar con el servidor de descargas: $message',
         DownloadSourceErrorKind.unauthorized =>
           'La clave de API del servidor no es válida',
         DownloadSourceErrorKind.extraction => message,

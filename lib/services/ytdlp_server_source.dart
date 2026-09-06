@@ -13,8 +13,25 @@ import 'download_source.dart';
 /// que acepta la conexión pero no responde cuelga para siempre y sin registro
 /// (el mismo error que la capa de descargas anterior arrastró durante meses).
 class YtdlpServerSource implements DownloadSource {
-  /// Metadata/búsqueda: rápido o no sirve, la UI está esperando.
-  static const _metadataTimeout = Duration(seconds: 30);
+  /// Búsqueda: la UI está esperando, pero fallar antes de tiempo es peor que
+  /// esperar — ver [_resolveTimeout].
+  static const _searchTimeout = Duration(seconds: 60);
+
+  /// Resolver un vídeo. **Eran 30 s y era demasiado poco**, con un fallo que
+  /// parecía otra cosa: el servidor oficial corre en un plan gratuito con
+  /// ~0,1 vCPU y además se duerme tras un rato inactivo. `/health` es trivial
+  /// y contesta en menos de medio segundo (así que la app y el usuario lo ven
+  /// perfectamente "activo"), pero `/resolve` ejecuta yt-dlp resolviendo el
+  /// desafío de firma de YouTube en JavaScript, que es puro CPU: con esa
+  /// cuota pasa de 30 s con normalidad, y arrancar en frío se suma encima.
+  /// El resultado era un timeout presentado como "no se pudo contactar con el
+  /// servidor" mientras el servidor estaba vivo y trabajando — el peor de los
+  /// mensajes posibles, porque manda a investigar la red.
+  ///
+  /// Medido: el mismo `/resolve` contra un servidor local sin estrangular
+  /// tarda 2,6-3,9 s. Todo lo que hay por encima de eso es la cuota de CPU
+  /// del alojamiento, no el trabajo en sí.
+  static const _resolveTimeout = Duration(seconds: 120);
 
   /// Expandir una playlist larga da bastante más trabajo al servidor.
   static const _playlistTimeout = Duration(seconds: 120);
@@ -100,18 +117,30 @@ class YtdlpServerSource implements DownloadSource {
   }
 
   /// Traduce un fallo de transporte al tipo que la cola sabe interpretar.
+  ///
+  /// La última rama es un cajón de sastre: cualquier excepción que no sea
+  /// ninguna de las anteriores acaba como `network`. Por eso el texto crudo
+  /// viaja SIEMPRE dentro del mensaje (y al log) — sin él, un timeout, un
+  /// fallo de TLS y un error de parseo se ven idénticos, y el usuario lee
+  /// "el servidor no responde" con el servidor vivo.
   Never _rethrowAsSourceError(Object error) {
     if (error is DownloadSourceException) throw error;
+    print('YtdlpServerSource: fallo de transporte (${error.runtimeType}) -> $error');
     if (error is TimeoutException) {
       throw const DownloadSourceException(
         DownloadSourceErrorKind.network,
-        'El servidor de descargas tardó demasiado en responder',
+        // Render duerme el servicio en el plan gratuito: el primer intento
+        // tras un rato de inactividad puede tardar más que el timeout, y el
+        // segundo va rápido. Decirlo evita leer "está caído" cuando está
+        // despertando.
+        'tardó demasiado en responder (si estuvo inactivo, puede estar '
+            'arrancando — probá de nuevo en un minuto)',
       );
     }
-    if (error is SocketException || error is HttpException || error is HandshakeException) {
-      throw DownloadSourceException(DownloadSourceErrorKind.network, error.toString());
-    }
-    throw DownloadSourceException(DownloadSourceErrorKind.network, error.toString());
+    throw DownloadSourceException(
+      DownloadSourceErrorKind.network,
+      '${error.runtimeType}: $error',
+    );
   }
 
   /// Mapea el código HTTP al tipo de error. El 415 del servidor es
@@ -215,7 +244,7 @@ class YtdlpServerSource implements DownloadSource {
 
   @override
   Future<RemoteTrack> resolve(String url) async {
-    final json = await _postJson('/resolve', {'url': url}, _metadataTimeout);
+    final json = await _postJson('/resolve', {'url': url}, _resolveTimeout);
     return RemoteTrack.fromJson(json);
   }
 
@@ -231,7 +260,7 @@ class YtdlpServerSource implements DownloadSource {
     try {
       final response = await client
           .get(_uri('/search', {'q': query, 'limit': '$limit'}), headers: await _headers())
-          .timeout(_metadataTimeout);
+          .timeout(_searchTimeout);
       _checkStatus(response.statusCode, response.body, retryAfterHeader: response.headers['retry-after']);
       final json = jsonDecode(utf8.decode(response.bodyBytes)) as Map<String, dynamic>;
       return (json['results'] as List<dynamic>? ?? const [])
@@ -335,7 +364,12 @@ class YtdlpServerSource implements DownloadSource {
     try {
       // /health no pide autenticación a propósito, para poder distinguir
       // "servidor apagado" de "clave incorrecta".
-      final health = await client.get(_uri('/health')).timeout(const Duration(seconds: 10));
+      //
+      // 45 s y no 10: un servicio dormido en un plan gratuito tarda decenas
+      // de segundos en levantarse, y con 10 s el diagnóstico contestaba
+      // "apagado" justo cuando estaba arrancando — el diagnóstico existe para
+      // resolver esa duda, no para añadirle otra.
+      final health = await client.get(_uri('/health')).timeout(const Duration(seconds: 45));
       if (health.statusCode != 200) {
         return DownloadSourceStatus(
           reachable: false,
