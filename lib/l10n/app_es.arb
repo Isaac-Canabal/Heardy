@@ -380,6 +380,7 @@
   "authErrorWrongCredentials": "Correo o contraseña incorrectos.",
   "authErrorUserDisabled": "Esta cuenta fue deshabilitada.",
   "authErrorTooManyRequests": "Demasiados intentos. Probá de nuevo en un rato.",
+  "authErrorAppNotAuthorized": "Esta compilación de la app no está autorizada a iniciar sesión. Su firma no está registrada en la consola de Firebase.",
   "authRequiredTitle": "Iniciá sesión para descargar",
   "authRequiredBody": "Crear una cuenta es gratis y toma un minuto. La necesitás para bajar canciones desde el servidor de Heardy — tu biblioteca local no la necesita para nada.",
   "authRequiredButton": "Iniciar sesión",

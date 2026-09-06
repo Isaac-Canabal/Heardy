@@ -244,6 +244,7 @@
   "authErrorWrongCredentials": "Wrong email or password.",
   "authErrorUserDisabled": "This account has been disabled.",
   "authErrorTooManyRequests": "Too many attempts. Try again in a while.",
+  "authErrorAppNotAuthorized": "This build of the app is not allowed to sign in. Its signature is not registered in the Firebase console.",
   "authRequiredTitle": "Sign in to download",
   "authRequiredBody": "Creating an account is free and takes a minute. You need it to download songs from Heardy's server — your local library doesn't need it at all.",
   "authRequiredButton": "Sign in",

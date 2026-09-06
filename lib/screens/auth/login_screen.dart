@@ -39,6 +39,27 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   String _errorText(AppLocalizations l10n, Object error) {
+    // El error crudo al log SIEMPRE, antes de traducirlo. Sin esto, cualquier
+    // código no contemplado abajo se ve como "no se pudo completar la
+    // operación" y no queda rastro de cuál era: así fue como un APK de debug
+    // rechazado por la restricción de la clave de Firebase costó una sesión
+    // entera de diagnóstico, con un síntoma que no se parecía en nada a la
+    // causa (y arrastrando de paso a las descargas, que sin sesión reciben
+    // 401 del servidor).
+    print('LoginScreen: fallo de autenticación -> $error');
+
+    // La restricción de la clave de API (paquete + SHA-1 no autorizados) no
+    // llega como un código propio en ninguno de los dos caminos: el SDK la
+    // envuelve y la API REST la manda como texto. Se reconoce por el mensaje,
+    // que es feo pero es lo único que hay, y evita que el caso más confuso de
+    // todos se vea igual que un fallo cualquiera.
+    final raw = error.toString().toUpperCase();
+    if (raw.contains('API_KEY_ANDROID_APP_BLOCKED') ||
+        raw.contains('APP_NOT_AUTHORIZED') ||
+        raw.contains('ARE BLOCKED')) {
+      return l10n.authErrorAppNotAuthorized;
+    }
+
     if (error is FirebaseAuthException) {
       switch (error.code) {
         case 'invalid-email':
