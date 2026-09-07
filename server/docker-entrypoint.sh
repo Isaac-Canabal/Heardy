@@ -21,9 +21,13 @@
 # shell intermedio que se lo coma.
 set -e
 
+# --max-old-space-size acota el heap de V8. Sin límite, Node dimensiona su
+# heap contra la memoria de la MÁQUINA, no contra la del contenedor, y en un
+# plan de 512 MB compartidos con Python + yt-dlp eso termina en un reinicio por
+# exceso de memoria. El proveedor sólo genera tokens: 96 MB le sobran.
 if [ -f /opt/bgutil-server/build/main.js ]; then
     echo "Arrancando el proveedor de PO tokens (sidecar en este contenedor)..."
-    node /opt/bgutil-server/build/main.js &
+    node --max-old-space-size=96 /opt/bgutil-server/build/main.js &
 else
     # No se aborta el arranque: sin proveedor, /resolve y la búsqueda siguen
     # funcionando y /health lo reporta como inalcanzable, que es información

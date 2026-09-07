@@ -96,6 +96,14 @@ enum DownloadSourceErrorKind {
   /// X-Api-Key ausente o incorrecta.
   unauthorized,
 
+  /// 400/422 — el SERVIDOR rechazó la petición por su forma, no por el
+  /// vídeo. Es un fallo de contrato entre dos piezas nuestras, así que
+  /// reintentar el mismo cuerpo no puede funcionar; pero tampoco es culpa del
+  /// vídeo. Antes caía en [notFound] y la app decía "ese vídeo ya no está
+  /// disponible" sobre uno perfectamente sano, mandando a buscar el problema
+  /// al sitio equivocado.
+  badRequest,
+
   /// El servidor respondió pero no pudo extraer, y el fallo **puede ser
   /// pasajero**: su IP bloqueada por YouTube, un corte de red por su lado.
   /// Reintentar tiene sentido.
@@ -190,6 +198,10 @@ class DownloadSourceException implements Exception {
             : 'No se pudo contactar con el servidor de descargas: $message',
         DownloadSourceErrorKind.unauthorized =>
           'La clave de API del servidor no es válida',
+        // Con el detalle: nombra el campo que el servidor rechazó, que es lo
+        // único que permite arreglar un fallo de contrato sin adivinar.
+        DownloadSourceErrorKind.badRequest =>
+          'El servidor rechazó la petición: $message',
         DownloadSourceErrorKind.extraction => message,
         DownloadSourceErrorKind.notFound =>
           'Ese vídeo ya no está disponible (borrado, privado o restringido)',

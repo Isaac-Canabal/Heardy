@@ -166,7 +166,11 @@ class YtdlpServerSource implements DownloadSource {
         throw DownloadSourceException(DownloadSourceErrorKind.notFound, detail);
       case 400:
       case 422:
-        throw DownloadSourceException(DownloadSourceErrorKind.notFound, detail);
+        // NO notFound: un 400/422 lo decide la forma del cuerpo, no el
+        // estado del vídeo. Colapsarlos hacía que un fallo de contrato entre
+        // cliente y servidor se presentara como "ese vídeo ya no está
+        // disponible" sobre un vídeo intacto.
+        throw DownloadSourceException(DownloadSourceErrorKind.badRequest, detail);
       case 429:
         // El propio servidor se autolimitó (no YouTube): distinto de un 502
         // porque acá sí sabemos, con certeza, cuánto hay que esperar.

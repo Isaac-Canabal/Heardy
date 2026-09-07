@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 import asyncpg
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -172,6 +173,29 @@ app = FastAPI(
     openapi_url="/openapi.json" if config.ENABLE_DOCS else None,
     lifespan=lifespan,
 )
+
+@app.exception_handler(RequestValidationError)
+async def _log_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Un 422 con constancia de QUÉ campo falló, no sólo de que falló.
+
+    FastAPI devuelve el detalle al cliente pero no deja nada en el log del
+    servidor, y el cliente lo colapsa en un mensaje suyo. Resultado: un
+    `POST /resolve 422` en los logs de producción sin ninguna pista de qué
+    campo se rechazó ni por qué, sobre un cuerpo que el propio cliente
+    construyó — o sea, un fallo de contrato entre dos piezas nuestras, que es
+    justo el que más cuesta encontrar a ciegas.
+
+    Se registran la ruta, el campo y el tipo de error. **Nunca el valor**: en
+    estas rutas es una URL, y las reglas de este proyecto prohíben juntar
+    identidad y contenido en la misma línea de log.
+    """
+    campos = [
+        {"campo": ".".join(str(p) for p in err.get("loc", ())), "error": err.get("type", "?")}
+        for err in exc.errors()
+    ]
+    log.warning("422 en %s: %s", request.url.path, campos)
+    return JSONResponse(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, content={"detail": campos})
+
 
 # Limita las extracciones simultáneas. yt-dlp es bloqueante, así que además
 # se ejecuta siempre en un hilo (`asyncio.to_thread`) para no congelar el

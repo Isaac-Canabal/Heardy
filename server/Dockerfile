@@ -116,8 +116,11 @@ ENV HEARDY_CACHE_DIR=/data/cache \
 
 EXPOSE 8080
 
-HEALTHCHECK --interval=60s --timeout=5s --start-period=15s --retries=3 \
-    CMD python -c "import os,urllib.request,sys; p=os.environ.get('PORT','8080'); sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{p}/health', timeout=4).status==200 else 1)"
+# Sin HEALTHCHECK de Docker a proposito. Las PaaS traen el suyo (Render sondea
+# /health por HTTP desde fuera), asi que este solo duplicaba el trabajo - y no
+# gratis: lanzaba un interprete de Python entero cada 60 s dentro de un
+# contenedor de 512 MB que ya comparte Python, Node y yt-dlp. Para
+# docker-compose, curl http://localhost:8080/health cumple la misma funcion.
 
 # El entrypoint levanta el proveedor de PO tokens y luego hace `exec` de
 # uvicorn. Resuelve `${PORT:-8080}` por su cuenta: las PaaS inyectan el puerto
