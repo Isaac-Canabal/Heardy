@@ -5,6 +5,7 @@ excepciones tipadas en vez de haber que parsear stderr, y no hay un proceso
 por petición.
 """
 import logging
+import subprocess
 import threading
 from pathlib import Path
 
@@ -26,6 +27,19 @@ AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio[acodec^=mp4a]"
 # lo descarguen dos veces (gastando el doble de presupuesto de IP).
 _video_locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
+
+
+# Cualquier fallo que NO venga de yt-dlp mismo. El caso que lo motivó, visto en
+# producción: el proveedor de PO tokens en "script mode" lanza un proceso Node
+# por token y antes comprueba que responde (`node generate_once.js --version`),
+# con un plazo de 15 s que el plugin fija por su cuenta. En un plan gratuito con
+# ~0,1 vCPU, arrancar Node no entra en ese plazo, y `subprocess.TimeoutExpired`
+# no es una excepción de yt-dlp: subía sin traducir hasta FastAPI y el cliente
+# recibía un 500 opaco sobre un vídeo perfectamente sano.
+#
+# Se tratan como TEMPORALES a propósito: describen un servidor que no da
+# abasto, no un vídeo imposible. La cola reintenta, que es lo correcto.
+_ENVIRONMENT_ERRORS = (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError)
 
 
 class NoAudioTrackError(Exception):
@@ -131,6 +145,19 @@ def _classify(message: str) -> Exception:
     if _ANTIBOT_MARKER in lowered:
         return AntiBotBlockError(message)
     return ExtractionError(message)
+
+
+def _environment_message(error: Exception) -> str:
+    """Texto para un fallo de ENTORNO, no de vídeo. Nombra la causa probable
+    en vez de dejar un mensaje genérico: el sitio donde esto se descubrió fue
+    un traceback en producción, y el cliente no tenía forma de saber que el
+    problema no era la canción que había pedido."""
+    if isinstance(error, subprocess.TimeoutExpired):
+        return (
+            "el proveedor de PO tokens no respondió a tiempo: este servidor no "
+            "da abasto para arrancarlo (típico de un plan con poca CPU)"
+        )
+    return f"fallo del entorno del servidor: {type(error).__name__}"
 
 
 def classify_missing_aac(formats: list[dict]) -> str:
@@ -277,6 +304,8 @@ def _extract(url: str, opts: dict) -> dict:
         raise PermanentlyUnavailableError(f"URL no soportada: {e}") from e
     except (DownloadError, ExtractorError) as e:
         raise _classify(str(e)) from e
+    except _ENVIRONMENT_ERRORS as e:
+        raise ExtractionError(_environment_message(e)) from e
     if info is None:
         raise ExtractionError("yt-dlp no devolvió información para esa URL")
     return info
@@ -368,6 +397,9 @@ def fetch_audio(video_id: str) -> Path:
             if "Requested format is not available" in message:
                 raise _missing_aac_error(url) from e
             raise _classify(message) from e
+        except _ENVIRONMENT_ERRORS as e:
+            partial.unlink(missing_ok=True)
+            raise ExtractionError(_environment_message(e)) from e
 
         if not partial.is_file() or partial.stat().st_size == 0:
             partial.unlink(missing_ok=True)

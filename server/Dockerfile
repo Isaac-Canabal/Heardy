@@ -1,18 +1,20 @@
-# Imagen de un solo proceso: la API y el generador de PO tokens viven juntos.
+# Imagen de un solo CONTENEDOR con dos procesos: la API y el generador de PO
+# tokens, que arranca como sidecar HTTP en loopback (ver docker-entrypoint.sh).
 #
-# El docker-compose.yml de este repo levanta el proveedor como sidecar HTTP
-# (dos contenedores), que es más rápido y sigue siendo el camino recomendado
-# para un servidor propio. Pero las PaaS gratuitas (Render, etc.) sólo dan UN
-# servicio siempre-encendido, y dos servicios que se duermen por separado se
-# rompen entre sí: la API despierta, llama al proveedor dormido y la petición
-# expira antes de que arranque. Por eso esta imagen puede además usar el
-# "script mode" del proveedor, que invoca el generador como subproceso y no
-# necesita servidor aparte.
+# El docker-compose.yml de este repo levanta el proveedor en un contenedor
+# aparte, que sigue siendo el camino recomendado para un servidor propio. Las
+# PaaS gratuitas (Render, etc.) sólo dan UN servicio siempre-encendido, y dos
+# servicios que se duermen por separado se rompen entre sí. Pero "un servicio"
+# no es "un proceso": el sidecar cabe dentro de este mismo contenedor, y eso
+# es lo que hace el entrypoint.
 #
-# Los dos modos conviven: si HEARDY_POT_PROVIDER_SCRIPT_HOME está definido se
-# usa script mode; si no, se sigue usando el sidecar HTTP de siempre. El
-# docker-compose.yml no define esa variable, así que su comportamiento no
-# cambia en absoluto.
+# Antes se resolvía con el "script mode" del proveedor, que invoca el
+# generador como subproceso por cada token. Costó un fallo en producción: el
+# plugin comprueba primero que el script responde (`node ... --version`) con
+# un plazo de 15 s propio, y en un plan con ~0,1 vCPU arrancar Node no entra
+# ahí. El resultado era un 500 opaco sobre vídeos sanos. Sigue soportado
+# (definiendo HEARDY_POT_PROVIDER_SCRIPT_HOME) pero ya no es el camino por
+# defecto de esta imagen, y no conviene en una plataforma con poca CPU.
 
 # ---- Etapa 1: averiguar qué versión del plugin se va a instalar -------------
 # Las dos mitades del proveedor (plugin de pip + servidor Node) DEBEN coincidir
@@ -86,6 +88,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY --from=potbuilder /opt/bgutil/server /opt/bgutil-server
 
 COPY app ./app
+COPY docker-entrypoint.sh /srv/docker-entrypoint.sh
+RUN chmod +x /srv/docker-entrypoint.sh
 
 # Sin privilegios: este servicio habla con internet y ejecuta un extractor
 # que cambia cada semana.
@@ -99,10 +103,12 @@ USER heardy
 # sobreescribirlos: el volumen está en /data y hay que escuchar en todas las
 # interfaces para que el mapeo de puertos llegue a algo.
 #
-# HEARDY_POT_PROVIDER_SCRIPT_HOME se deja SIN definir a propósito: quien use
-# docker-compose sigue con el sidecar HTTP. Para el despliegue de un solo
-# servicio, definila como /opt/bgutil-server en las variables de entorno de la
-# plataforma.
+# HEARDY_POT_PROVIDER_SCRIPT_HOME se deja SIN definir a propósito, y ahora
+# tampoco hay que definirla en la plataforma: docker-entrypoint.sh levanta el
+# proveedor como sidecar en ESTE mismo contenedor, así que el sidecar HTTP es
+# el único camino y el "script mode" queda sólo como alternativa manual. Ver
+# el porqué en ese script — resumido: script mode lanza un Node por token y en
+# un plan con poca CPU no llega a arrancar dentro del plazo del plugin.
 ENV HEARDY_CACHE_DIR=/data/cache \
     HEARDY_HOST=0.0.0.0 \
     HEARDY_PORT=8080 \
@@ -113,8 +119,9 @@ EXPOSE 8080
 HEALTHCHECK --interval=60s --timeout=5s --start-period=15s --retries=3 \
     CMD python -c "import os,urllib.request,sys; p=os.environ.get('PORT','8080'); sys.exit(0 if urllib.request.urlopen(f'http://127.0.0.1:{p}/health', timeout=4).status==200 else 1)"
 
-# Forma shell a propósito, no exec: las PaaS inyectan el puerto a escuchar en
-# la variable PORT y dan el servicio por caído si nadie escucha ahí. El
+# El entrypoint levanta el proveedor de PO tokens y luego hace `exec` de
+# uvicorn. Resuelve `${PORT:-8080}` por su cuenta: las PaaS inyectan el puerto
+# en esa variable y dan el servicio por caído si nadie escucha ahí, y el
 # `:-8080` mantiene intacto el comportamiento de docker-compose, que no la
 # define.
-CMD uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8080}
+CMD ["/srv/docker-entrypoint.sh"]
