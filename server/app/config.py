@@ -113,26 +113,54 @@ POT_PROVIDER_URL = os.environ.get("HEARDY_POT_PROVIDER_URL", "http://127.0.0.1:4
 
 # Alternativa al sidecar HTTP de arriba: el "script mode" del proveedor, que
 # genera cada token invocando un subproceso Node en vez de hablar con un
-# servidor siempre encendido. Vacío = modo HTTP (el de siempre); con valor =
-# ruta al directorio `server/` del proveedor ya compilado (el que contiene
+# servidor siempre encendido. Vacío = modo HTTP; con valor = ruta al
+# directorio `server/` del proveedor ya compilado (el que contiene
 # `build/generate_once.js`).
 #
-# Existe por las PaaS gratuitas, que sólo dan UN servicio: dos servicios que se
-# duermen por separado se rompen entre sí, porque la API despierta, llama al
-# proveedor dormido y la petición expira antes de que arranque. El costo real,
-# documentado por el propio proveedor: es más lento (levanta un proceso Node
-# por token) y lleva mal la concurrencia alta — por eso NO es el valor por
-# defecto y un servidor propio debería seguir con el sidecar HTTP.
+# Es el modo que la imagen Docker trae por defecto, y la razón es memoria, no
+# CPU: en una instancia de 512 MB el sidecar Node es un residente de
+# ~100-150 MB que se suma a Python + yt-dlp + el Node transitorio que yt-dlp
+# lanza para el "n challenge" — y ese Node, la primera vez tras cada arranque,
+# parsea el player entero de YouTube (varios MB de JS) y se lleva cientos de
+# MB durante unos segundos. Con el sidecar residente, ese pico no cabe; sin
+# él, cabe, que es como funcionaba antes de que existiera el sidecar. El
+# script mode sólo lanza Node cuando el token cacheado (6 h) caduca, así que
+# su costo real es una espera larga cada varias horas, no una por petición.
+# Ver ytdlp_client.tune_script_mode_for_slow_cpu para los plazos.
 POT_PROVIDER_SCRIPT_HOME = os.environ.get("HEARDY_POT_PROVIDER_SCRIPT_HOME", "").strip()
+
+# HEARDY_POT_SIDECAR=1 fuerza el modo HTTP con el sidecar dentro del propio
+# contenedor (docker-entrypoint.sh lo levanta). Para instancias con más de
+# 512 MB, donde el sidecar residente sale más barato que arrancar Node cada
+# vez que caduca el token. Anula SCRIPT_HOME para que baste con un solo
+# interruptor: algunas PaaS no dejan definir una variable vacía.
+POT_SIDECAR = os.environ.get("HEARDY_POT_SIDECAR", "").strip() == "1"
+if POT_SIDECAR:
+    POT_PROVIDER_SCRIPT_HOME = ""
+
+# Plazo, en segundos, para cada subproceso Node del script mode (comprobar la
+# versión del script y generar el token). El plugin trae 15 s y 20 s, pensados
+# para un PC: con ~0,1 vCPU arrancar Node y correr BotGuard no entra ahí, y el
+# fallo era un 500 opaco sobre vídeos sanos.
+POT_SCRIPT_TIMEOUT_SECONDS = _int_env("HEARDY_POT_SCRIPT_TIMEOUT", 120)
 
 # Caché LRU en disco: un reintento tras un corte de red no debe volver a
 # golpear a YouTube. El presupuesto de IP es el recurso escaso, no el disco.
 CACHE_DIR = Path(os.environ.get("HEARDY_CACHE_DIR") or (SERVER_ROOT / ".cache"))
 CACHE_MAX_BYTES = _int_env("HEARDY_CACHE_MAX_MB", 2048) * 1024 * 1024
 
+# Caché propia de yt-dlp (player preprocesado para el "n challenge", firmas
+# resueltas), explícita y dentro de CACHE_DIR en vez de ~/.cache: así vive en
+# el mismo volumen que el audio y sobrevive a un reinicio si ese volumen es
+# persistente. Sin ella, cada extracción vuelve a parsear el player entero de
+# YouTube en un Node aparte — el pico de memoria más grande de todo el servicio.
+YTDLP_CACHE_DIR = CACHE_DIR / "ytdlp"
+
 # Extracciones simultáneas. Deliberadamente bajo: el muro de YouTube es un
 # presupuesto acumulado por IP, y la concurrencia lo gasta más rápido sin dar
-# throughput real (medido en docs/investigacion_muro_antibot.md).
+# throughput real (medido en docs/investigacion_muro_antibot.md). La imagen
+# Docker lo baja a 1 además por memoria: dos extracciones a la vez son dos
+# Node transitorios (o un Node y un ffmpeg) sumados en una instancia de 512 MB.
 MAX_CONCURRENT_EXTRACTIONS = _int_env("HEARDY_MAX_CONCURRENT", 2)
 
 # Cota de seguridad para no expandir una playlist de 5.000 vídeos por error.

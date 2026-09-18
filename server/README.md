@@ -360,6 +360,35 @@ docker compose pull                      # actualiza el sidecar de PO tokens
 docker compose up -d
 ```
 
+### Memoria en una PaaS de 512 MB (Render y similares)
+
+La imagen está dimensionada para caber en 512 MB **durante una descarga**, no
+sólo en reposo, y las decisiones salen de medir, no de suponer:
+
+| Proceso | Pico medido | Cuándo |
+|---|---|---|
+| Node del "n challenge" de yt-dlp, parseando el player entero | ~300 MB | en **cada** extracción, si la caché del player preprocesado está apagada (así viene en yt-dlp) |
+| El mismo Node con el player ya preprocesado | ~60 MB | con la caché activa, a partir de la segunda extracción por versión del player |
+| `generate_once.js` (PO token, script mode) | ~130-210 MB | sólo cuando caduca el token cacheado (~6 h) |
+| Sidecar Node del proveedor de PO tokens | ~100-150 MB | **residente**, si se activa |
+
+De ahí lo que hace la imagen por defecto:
+
+- **Script mode** para los PO tokens (sin Node residente). Sus plazos se
+  adaptan a 0,1 vCPU al arrancar (`HEARDY_POT_SCRIPT_TIMEOUT`, 120 s); los del
+  plugin (15-20 s) daban `TimeoutExpired` sobre vídeos sanos. Con
+  `HEARDY_POT_SIDECAR=1` se vuelve al sidecar HTTP — para instancias con más RAM.
+- **Caché del player preprocesado activa** (`app/ytdlp_client.py`), con
+  rotación propia (se conservan las 2 últimas versiones, ~4 MB cada una).
+- **`HEARDY_MAX_CONCURRENT=1`** y `MALLOC_ARENA_MAX=2`, para que ni dos Node
+  transitorios ni las arenas de glibc se sumen.
+
+Tras cada extracción el log deja una línea `memoria tras …: contenedor X MB
+(pico Y MB); python3 …, node …` con el pico real del cgroup — que es la cifra
+contra la que la plataforma decide reiniciar. Si vuelve a haber un reinicio
+por memoria, esa línea dice quién fue; `GET /health/detail` (admin) trae lo
+mismo en JSON.
+
 ### Despliegue oficial (PC propio + Tailscale Funnel)
 
 **Actualización 2026-08-03: se abandonó Oracle Cloud** (fricción de
@@ -427,9 +456,11 @@ nadie deje una terminal abierta.
   un modelo job+polling. Más simple; el coste es que la app muestra
   "Preparando…" antes de que haya progreso por bytes. Migrar a jobs sería
   aditivo.
-- **Concurrencia 2 por defecto.** El muro de YouTube es un presupuesto
-  acumulado por IP, no un límite de tasa: la concurrencia lo gasta más rápido
-  sin dar throughput real. Medido en `../docs/investigacion_muro_antibot.md`.
+- **Concurrencia 2 por defecto en nativo, 1 en la imagen Docker.** El muro de
+  YouTube es un presupuesto acumulado por IP, no un límite de tasa: la
+  concurrencia lo gasta más rápido sin dar throughput real (medido en
+  `../docs/investigacion_muro_antibot.md`). En 512 MB además cada extracción
+  puede levantar un Node de cientos de MB, y dos a la vez no caben.
 - **Caché LRU en disco.** El recurso escaso no es el disco, es el presupuesto
   de peticiones por IP. Un reintento tras un corte de red debe salir del
   disco. Medido: una segunda petición del mismo audio tarda ~0,4 s.

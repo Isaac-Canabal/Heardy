@@ -5,6 +5,7 @@ excepciones tipadas en vez de haber que parsear stderr, y no hay un proceso
 por petición.
 """
 import logging
+import shutil
 import subprocess
 import threading
 from pathlib import Path
@@ -15,6 +16,125 @@ from yt_dlp.utils import DownloadError, ExtractorError, UnsupportedError
 from . import cache, config
 
 log = logging.getLogger(__name__)
+
+
+def tune_script_mode_for_slow_cpu(script_home: str, timeout_seconds: float) -> bool:
+    """Adapta el proveedor de PO tokens en script mode a una CPU de ~0,1 vCPU.
+
+    El plugin bgutil trae dos plazos pensados para un PC: 15 s para
+    `node generate_once.js --version` y 20 s para generar el token. En una PaaS
+    gratuita arrancar Node (jsdom incluido) y correr BotGuard no entra ahí, y
+    el resultado era `subprocess.TimeoutExpired` sobre vídeos sanos. Ambos son
+    atributos de clase, así que se ajustan sin tocar el plugin.
+
+    Además se deja de comprobar la versión de Node con `node --version`
+    (plazo fijo de 5 s dentro del plugin, no configurable): la imagen Docker
+    garantiza Node 22 en el PATH, y un `--version` que tarde más de 5 s bajo
+    carga habría dejado la petición sin PO token por nada. Si `node` no está
+    en el PATH se cae a la comprobación original, que es la que sabe explicarlo.
+
+    Las clases se toman del registro de proveedores de yt-dlp después de que
+    él mismo cargue los plugins — NO importando el módulo del plugin a mano.
+    Probado en vivo: yt-dlp vuelve a ejecutar cada módulo de plugin al cargar
+    aunque ya esté importado, y el `@register_provider` del plugin aborta con
+    "already registered" al verse por segunda vez.
+
+    Devuelve si se aplicó. No se aplica en modo HTTP (el sidecar contesta en
+    segundos) ni si el plugin no está instalado; nunca lanza, para que un
+    cambio interno en una versión futura del plugin degrade a los plazos
+    originales en vez de tumbar el arranque.
+    """
+    if not script_home:
+        return False
+    try:
+        from yt_dlp.extractor.youtube.pot._registry import _pot_providers
+        from yt_dlp.globals import all_plugins_loaded
+        from yt_dlp.plugins import load_all_plugins
+
+        # Misma guarda que usa YoutubeDL: load_all_plugins() vuelve a ejecutar
+        # cada módulo en cada llamada, y el plugin aborta al registrarse dos veces.
+        if not all_plugins_loaded.value:
+            load_all_plugins()
+        script_providers = [
+            cls for key, cls in _pot_providers.value.items() if key.startswith("BgUtilScript")
+        ]
+    except Exception as e:  # noqa: BLE001 — API interna de yt-dlp, puede cambiar
+        log.warning("script mode: no se pudo llegar al plugin bgutil (%s): plazos por defecto", type(e).__name__)
+        return False
+    if not script_providers:
+        log.warning("script mode: el plugin bgutil no está registrado: plazos por defecto")
+        return False
+
+    timeout = float(timeout_seconds)
+    for cls in script_providers:
+        cls._GETPOT_TIMEOUT = timeout
+        cls._GET_SCRIPT_VSN_TIMEOUT = timeout
+        original_jsrt_path = cls._jsrt_path_impl
+
+        def _trusted_jsrt_path(self, _original=original_jsrt_path):
+            found = shutil.which(getattr(self, "_JSRT_EXEC", "") or "")
+            return found or _original(self)
+
+        cls._jsrt_path_impl = _trusted_jsrt_path
+    log.info("proveedor de PO tokens en script mode: plazos a %.0f s", timeout)
+    return True
+
+
+# Cuántas versiones del player preprocesado se conservan. YouTube cambia el
+# player cada pocos días; con dos se cubre la transición sin acumular 4 MB
+# por versión para siempre — la rotación que yt-dlp no hace es ésta.
+PREPROCESSED_PLAYERS_TO_KEEP = 2
+
+
+def enable_preprocessed_player_cache() -> bool:
+    """Hace que yt-dlp guarde en disco el player de YouTube ya preprocesado.
+
+    Medido en esta máquina, y es EL dato de memoria de todo el servicio: para
+    resolver el "n challenge", yt-dlp lanza un Node que parsea el player
+    entero (varios MB de JS) y llega a ~300 MB — en CADA extracción, porque
+    la caché de ese resultado viene apagada en yt-dlp ("files are large and
+    we do not support rotation"). Con la caché encendida, la segunda
+    extracción con el mismo player usa el script `core` sobre el player ya
+    preprocesado y el mismo Node se queda en ~60 MB.
+
+    En una instancia de 512 MB esa diferencia es la que hay entre que una
+    descarga quepa o reinicie el servicio. Los dos reparos de yt-dlp se
+    atienden aquí: los archivos (~4 MB por versión del player) viven en
+    CACHE_DIR, y `prune_preprocessed_players` hace la rotación.
+
+    Es un atributo de clase interno de yt-dlp: si desaparece en una versión
+    futura, esto sólo deja de aplicar y lo dice en el log.
+    """
+    try:
+        from yt_dlp.extractor.youtube.jsc._builtin.ejs import EJSBaseJCP
+    except ImportError as e:
+        log.warning("no se pudo activar la caché del player preprocesado (%s)", type(e).__name__)
+        return False
+    if not hasattr(EJSBaseJCP, "_ENABLE_PREPROCESSED_PLAYER_CACHE"):
+        log.warning("yt-dlp ya no expone _ENABLE_PREPROCESSED_PLAYER_CACHE: sin caché del player")
+        return False
+    EJSBaseJCP._ENABLE_PREPROCESSED_PLAYER_CACHE = True
+    log.info("caché del player preprocesado: activa en %s", config.YTDLP_CACHE_DIR)
+    return True
+
+
+def prune_preprocessed_players(cache_dir: Path, keep: int = PREPROCESSED_PLAYERS_TO_KEEP) -> int:
+    """Borra los players preprocesados más viejos, dejando los `keep` más
+    recientes. Devuelve cuántos borró. Sólo toca los archivos `player,3A…`
+    de la sección del solver: los scripts cacheados en la misma carpeta no se
+    tocan."""
+    folder = cache_dir / "challenge-solver"
+    if not folder.is_dir():
+        return 0
+    players = sorted(folder.glob("player,3A*.json"), key=lambda p: p.stat().st_mtime, reverse=True)
+    removed = 0
+    for stale in players[keep:]:
+        try:
+            stale.unlink()
+            removed += 1
+        except OSError:
+            pass
+    return removed
 
 # Solo AAC en contenedor MP4, nunca recodificado (DD4). Es el formato que la
 # app ya sabe indexar (`m4a` está en AudioIdentityService.audioExtensions) y
@@ -239,11 +359,16 @@ def _base_opts() -> dict:
         # Regex, no nombres exactos, para no romperse si yt-dlp renombra
         # extractores en una actualización futura.
         "allowed_extractors": ["youtube.*"],
+        # Explícita, no ~/.cache: ver config.YTDLP_CACHE_DIR. yt-dlp calla el
+        # aviso de "caché desactivada" con quiet=True, y sin caché el player
+        # se vuelve a parsear entero en cada extracción.
+        "cachedir": str(config.YTDLP_CACHE_DIR),
         # Quien genera los PO Tokens. Sin esto, YouTube devuelve 403 en la
         # mayoría de clientes desde 2025. Dos implementaciones posibles del
-        # mismo proveedor, y hay que elegir UNA: el sidecar HTTP siempre
-        # encendido (por defecto, más rápido) o el script invocado por token
-        # (para plataformas que sólo dan un servicio). Ver POT_PROVIDER_SCRIPT_HOME.
+        # mismo proveedor, y hay que elegir UNA: el servidor HTTP siempre
+        # encendido (más rápido; el de docker-compose y de un PC propio) o el
+        # script invocado por token (sin proceso residente; el de la imagen
+        # Docker en una PaaS de 512 MB). Ver POT_PROVIDER_SCRIPT_HOME en config.
         "extractor_args": {
             "youtubepot-bgutilscript": {"server_home": [config.POT_PROVIDER_SCRIPT_HOME]},
         }

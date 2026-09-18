@@ -20,7 +20,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from . import accounts, config, friends, library_store, presence, quota, usernames, ytdlp_client
+from . import accounts, config, friends, library_store, memwatch, presence, quota, usernames, ytdlp_client
 from .auth import require_account, require_admin, resolve_identity
 from .rate_limit import enforce_rate_limit
 
@@ -135,8 +135,17 @@ async def lifespan(_: FastAPI):
             log.info("cuentas: activas, Postgres conectado")
 
     log.info("yt-dlp %s", ytdlp_client.version())
-    log.info("proveedor de PO tokens: %s", config.POT_PROVIDER_URL)
+    ytdlp_client.enable_preprocessed_player_cache()
+    if config.POT_PROVIDER_SCRIPT_HOME:
+        log.info("proveedor de PO tokens: script mode en %s", config.POT_PROVIDER_SCRIPT_HOME)
+        ytdlp_client.tune_script_mode_for_slow_cpu(
+            config.POT_PROVIDER_SCRIPT_HOME, config.POT_SCRIPT_TIMEOUT_SECONDS
+        )
+    else:
+        log.info("proveedor de PO tokens: %s", config.POT_PROVIDER_URL)
     log.info("caché: %s", config.CACHE_DIR)
+    log.info("extracciones simultáneas: %s", config.MAX_CONCURRENT_EXTRACTIONS)
+    log.info("memoria al arrancar: %s", memwatch.describe())
     log.info("claves de API configuradas: %s", ", ".join(config.API_KEYS.values()) or "ninguna")
     if config.RATE_LIMIT_PER_KEY > 0 or config.DAILY_QUOTA > 0:
         log.info(
@@ -262,9 +271,21 @@ def _require_allowed_url(url: str) -> None:
 
 async def _run(fn, *args):
     """Ejecuta una llamada bloqueante de yt-dlp fuera del bucle de eventos,
-    respetando el límite de concurrencia."""
+    respetando el límite de concurrencia.
+
+    Al salir, con éxito o sin él, devuelve al sistema lo que la extracción
+    liberó y deja en el log cuánto pesa el contenedor: el pico del cgroup es
+    la cifra contra la que Render decide reiniciar, y un reinicio por memoria
+    se diagnostica con esa línea, no con el correo de la plataforma. La línea
+    sólo nombra procesos y tamaños — ni identidad ni URL.
+    """
     async with _extraction_semaphore:
-        return await asyncio.to_thread(fn, *args)
+        try:
+            return await asyncio.to_thread(fn, *args)
+        finally:
+            ytdlp_client.prune_preprocessed_players(config.YTDLP_CACHE_DIR)
+            memwatch.release_freed_memory()
+            log.info("memoria tras %s: %s", fn.__name__, memwatch.describe())
 
 
 def _extraction_error(exc: Exception) -> HTTPException:
@@ -368,6 +389,9 @@ async def health_detail() -> JSONResponse:
                 "enabled": config.ACCOUNTS_ENABLED,
                 "connected": _account_store is not None,
             },
+            # Uso y PICO de memoria del contenedor, por proceso — lo que hay
+            # que mirar cuando la plataforma avisa de un reinicio por memoria.
+            "memory": memwatch.snapshot(),
         }
     )
 
