@@ -342,10 +342,47 @@ def _lock_for(video_id: str) -> threading.Lock:
         return _video_locks.setdefault(video_id, threading.Lock())
 
 
+class _YtdlpLogger:
+    """Saca del silencio los avisos de yt-dlp.
+
+    Con `quiet` y `no_warnings`, los warnings de yt-dlp y de sus plugins —
+    "no se pudo generar el PO token", "formatos omitidos por SABR", la
+    versión del proveedor no coincide — no llegaban a ninguna parte, y el
+    único síntoma en producción era un `Requested format is not available`
+    sin causa. Ya costó más de una sesión de diagnóstico reproducir a mano
+    con `yt-dlp -v` lo que el servidor sabía y callaba.
+
+    Warnings y errores van al log del servidor. Lo demás (la salida normal de
+    pantalla llega como `debug`) se descarta salvo con HEARDY_YTDLP_VERBOSE=1,
+    que además activa el modo verboso de yt-dlp — sólo para diagnosticar: esas
+    líneas incluyen el contexto completo de las peticiones a YouTube.
+
+    Sin identidad en ninguna de estas líneas: yt-dlp no sabe quién pidió qué.
+    """
+
+    def debug(self, message: str) -> None:
+        if config.YTDLP_VERBOSE:
+            log.info("yt-dlp: %s", message)
+
+    def info(self, message: str) -> None:
+        self.debug(message)
+
+    def warning(self, message: str) -> None:
+        log.warning("yt-dlp: %s", message)
+
+    def error(self, message: str) -> None:
+        log.error("yt-dlp: %s", message)
+
+
+_YTDLP_LOGGER = _YtdlpLogger()
+
+
 def _base_opts() -> dict:
     opts = {
         "quiet": True,
         "no_warnings": True,
+        "logger": _YTDLP_LOGGER,
+        "verbose": config.YTDLP_VERBOSE,
         "noprogress": True,
         "skip_download": True,
         "extract_flat": False,
