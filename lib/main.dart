@@ -11,6 +11,7 @@ import 'package:flutter_foreground_task/flutter_foreground_task.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:just_audio_media_kit/just_audio_media_kit.dart';
 
 import 'services/database_helper.dart';
 import 'services/audio_player_handler.dart';
@@ -58,6 +59,12 @@ void main() async {
     // datos de la app por usuario (en Windows, `%APPDATA%\Heardy`).
     final supportDir = await getApplicationSupportDirectory();
     await databaseFactory.setDatabasesPath(supportDir.path);
+
+    // Backend de reproducción de escritorio: libmpv vía just_audio_media_kit
+    // (ver en pubspec.yaml por qué no just_audio_windows). Tiene que
+    // registrarse antes de crear el primer `AudioPlayer`.
+    JustAudioMediaKit.title = 'Heardy';
+    JustAudioMediaKit.ensureInitialized();
   }
 
   if (Platform.isAndroid) {

@@ -62,4 +62,56 @@ void main() {
       );
     });
   });
+
+  // `shouldPersistPlaybackState` existe por el backend de escritorio
+  // (libmpv vía just_audio_media_kit): su `playbackEventStream` emite
+  // decenas de veces por segundo mientras suena, y cada evento escribía
+  // SharedPreferences a disco — 600+ escrituras en medio minuto, medido en
+  // la app real. ExoPlayer no tiene ese problema, así que en Android no se
+  // consulta.
+  group('shouldPersistPlaybackState', () {
+    final base = DateTime(2026, 1, 1, 12, 0, 0);
+    PlaybackSaveSnapshot snap({
+      String mediaId = 'a',
+      bool playing = true,
+      int queueLength = 3,
+      Duration after = Duration.zero,
+    }) =>
+        PlaybackSaveSnapshot(
+          mediaId: mediaId,
+          playing: playing,
+          queueLength: queueLength,
+          savedAt: base.add(after),
+        );
+
+    test('la primera vez siempre guarda', () {
+      expect(shouldPersistPlaybackState(previous: null, next: snap()), isTrue);
+    });
+
+    test('el mismo estado poco después no vuelve a escribir', () {
+      expect(
+        shouldPersistPlaybackState(
+          previous: snap(),
+          next: snap(after: const Duration(seconds: 1)),
+        ),
+        isFalse,
+      );
+    });
+
+    test('cambiar de canción, pausar o cambiar la cola guarda al instante', () {
+      expect(shouldPersistPlaybackState(previous: snap(), next: snap(mediaId: 'b')), isTrue);
+      expect(shouldPersistPlaybackState(previous: snap(), next: snap(playing: false)), isTrue);
+      expect(shouldPersistPlaybackState(previous: snap(), next: snap(queueLength: 4)), isTrue);
+    });
+
+    test('la posición se refresca al pasar el intervalo mínimo', () {
+      expect(
+        shouldPersistPlaybackState(
+          previous: snap(),
+          next: snap(after: const Duration(seconds: 5)),
+        ),
+        isTrue,
+      );
+    });
+  });
 }

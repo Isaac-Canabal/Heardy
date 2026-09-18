@@ -17,9 +17,14 @@ dependencies:
   permission_handler: ^11.0.1
   just_audio: ^0.9.36
   # `just_audio` no declara soporte de Windows (Hallazgo 2 del plan de
-  # escritorio) — sin este paquete de federación, `AudioPlayer()` no tiene
-  # ningún backend nativo ahí y no reproduce nada.
-  just_audio_windows: ^0.2.3
+  # escritorio) — sin un paquete de federación, `AudioPlayer()` no tiene
+  # ningún backend nativo ahí y no reproduce nada. Se usa media_kit (libmpv)
+  # y no `just_audio_windows` (Media Foundation): las descargas de YouTube
+  # son MP4 fragmentado (moof/mdat) y Media Foundation las abre, reporta la
+  # duración y termina al instante sin sonar — verificado en vivo con la
+  # biblioteca real. mpv las reproduce sin remuxear nada.
+  just_audio_media_kit: ^2.1.0
+  media_kit_libs_windows_audio: ^1.0.9
   audio_service: ^0.18.12
   audio_session: ^0.1.18
   provider: ^6.1.1

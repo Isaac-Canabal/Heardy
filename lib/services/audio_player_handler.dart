@@ -20,6 +20,37 @@ bool shouldRecordPlay({required Duration listened, required Duration duration}) 
   return listened.inSeconds >= threshold;
 }
 
+/// Lo que hace que valga la pena volver a escribir el estado de reproducción
+/// a disco: la canción, si suena o no, o el tamaño de la cola. La posición
+/// cambia todo el tiempo y sólo se refresca cada [minInterval].
+class PlaybackSaveSnapshot {
+  final String mediaId;
+  final bool playing;
+  final int queueLength;
+  final DateTime savedAt;
+
+  const PlaybackSaveSnapshot({
+    required this.mediaId,
+    required this.playing,
+    required this.queueLength,
+    required this.savedAt,
+  });
+}
+
+bool shouldPersistPlaybackState({
+  required PlaybackSaveSnapshot? previous,
+  required PlaybackSaveSnapshot next,
+  Duration minInterval = const Duration(seconds: 5),
+}) {
+  if (previous == null) return true;
+  if (previous.mediaId != next.mediaId ||
+      previous.playing != next.playing ||
+      previous.queueLength != next.queueLength) {
+    return true;
+  }
+  return next.savedAt.difference(previous.savedAt) >= minInterval;
+}
+
 class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   final AudioPlayer _player = AudioPlayer();
   final SafUtil _safUtil = SafUtil();
@@ -186,6 +217,10 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
       _saveCurrentState();
     }, onError: (Object e, StackTrace stackTrace) {
       print('A stream error occurred: $e');
+      // El plugin de notificaciones sólo se inicializa en Android (main.dart);
+      // en escritorio `show()` lanza y convierte un error de carga
+      // recuperable en una excepción sin capturar.
+      if (!Platform.isAndroid) return;
       _errorNotification.show(
         999,
         'Error de Reproducción',
@@ -954,16 +989,35 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     }
   }
 
+  PlaybackSaveSnapshot? _lastSavedSnapshot;
+
   /// Guarda el estado actual de reproducción
   Future<void> _saveCurrentState() async {
     try {
       final mediaItemValue = mediaItem.value;
       final queueValue = queue.value;
-      
+
       if (mediaItemValue == null || queueValue.isEmpty) {
         return;
       }
-      
+
+      // En escritorio (libmpv) `playbackEventStream` emite decenas de veces
+      // por segundo mientras suena — cada una escribía SharedPreferences a
+      // disco. ExoPlayer sólo emite en eventos discretos, así que en Android
+      // se deja tal cual.
+      if (!Platform.isAndroid) {
+        final snapshot = PlaybackSaveSnapshot(
+          mediaId: mediaItemValue.id,
+          playing: _player.playing,
+          queueLength: queueValue.length,
+          savedAt: DateTime.now(),
+        );
+        if (!shouldPersistPlaybackState(previous: _lastSavedSnapshot, next: snapshot)) {
+          return;
+        }
+        _lastSavedSnapshot = snapshot;
+      }
+
       await PlaybackStateService.saveState(
         isPlaying: _player.playing,
         currentMediaId: mediaItemValue.id,
