@@ -297,6 +297,7 @@ tokens instalados. No toca YouTube ni el `.venv` de `run.bat`/`setup.bat`.
 | 403 al usar la app recién registrada | Cuenta de Firebase sin verificar el correo — es a propósito (ver "Autenticación"), no un fallo |
 | 404 en `/cache` o `/health/detail` con una clave que sí funciona en el resto | Esa clave es válida pero su etiqueta no está en `HEARDY_ADMIN_LABELS` — no es un error, es que no es admin |
 | 403 / "Sign in to confirm you're not a bot" | El proveedor de PO tokens está caído, o su versión no coincide con la del plugin. Volvé a ejecutar `setup.bat` |
+| `Requested format is not available` en todas las descargas, y `/resolve` lento | Los clientes de YouTube que consulta yt-dlp no sirven desde esa IP/cuenta (en el log: `Unable to download API page: HTTP Error 403` por cliente, y `forcing SABR streaming` en `web`). Cambiá `HEARDY_YT_PLAYER_CLIENTS` — es un reinicio, no un despliegue. Con `HEARDY_YTDLP_VERBOSE=1` el log dice qué cliente falla |
 | 415 | Ese vídeo no tiene pista AAC/M4A. Es definitivo para ese vídeo, no un fallo del servidor |
 | El servidor no arranca, se queja de `HEARDY_DATABASE_URL` | `HEARDY_DAILY_SONGS_PER_USER` está puesto sin `HEARDY_DATABASE_URL` — el cupo diario necesita Postgres persistente, ver "Cupo diario de canciones" |
 | 429 con `reason: "daily_song_quota"` | Esa identidad agotó su cupo diario de canciones — no es un error del servidor, ni el límite de peticiones (ese no trae `reason`) |

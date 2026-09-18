@@ -34,6 +34,15 @@ WizardStyle=modern
 ; SmartScreen va a avisar "editor desconocido". Asumido, no un fallo.
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+; Actualizar sobre una instalación existente mientras Heardy está abierto.
+; El filtro por defecto (*.exe,*.dll,*.chm) no mira `data\app.so`, que es
+; donde vive TODO el código Dart compilado y que el proceso mantiene
+; bloqueado: el instalador cambiaba el .exe y las DLL pero no podía
+; reemplazar app.so, y la app "actualizada" seguía ejecutando el código
+; viejo. Con `force`, un /VERYSILENT también cierra la app en vez de fallar.
+CloseApplications=force
+CloseApplicationsFilter=*.exe,*.dll,*.chm,*.so
+RestartApplications=no
 
 [Languages]
 Name: "spanish"; MessagesFile: "compiler:Languages\Spanish.isl"
@@ -42,8 +51,20 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "Crear un acceso directo en el escritorio"; GroupDescription: "Accesos directos adicionales:"
 
+; Inno Setup sólo sobrescribe lo que la versión nueva trae; nunca borra lo
+; que una versión anterior dejó. `data\` (app.so + flutter_assets) se
+; regenera entero en cada build, así que se limpia antes de copiar para que
+; no queden assets/plugins huérfanos mezclados con lo nuevo. Los .dll de
+; plugins van al mismo saco: uno que la app ya no use quedaría ahí para
+; siempre. Nada de esto toca los datos del usuario, que viven en %APPDATA%.
+[InstallDelete]
+Type: filesandordirs; Name: "{app}\data"
+Type: files; Name: "{app}\*.dll"
+
 [Files]
-Source: "{#MyReleaseDir}\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+; *.lib/*.exp son artefactos del enlazador que `flutter build windows` deja
+; en la carpeta Release; la app no los necesita y sólo abultan el instalador.
+Source: "{#MyReleaseDir}\*"; DestDir: "{app}"; Excludes: "*.lib,*.exp"; Flags: recursesubdirs createallsubdirs ignoreversion
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -52,3 +73,9 @@ Name: "{group}\Desinstalar {#MyAppName}"; Filename: "{uninstallexe}"
 
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "Abrir {#MyAppName}"; Flags: nowait postinstall skipifsilent
+
+; El desinstalador no pasa por Restart Manager (eso es sólo CloseApplications,
+; del instalador): con Heardy abierto, heardy.exe/las DLL/app.so quedaban en
+; uso y sobrevivían en disco. Cerrarla antes de borrar.
+[UninstallRun]
+Filename: "{sys}\taskkill.exe"; Parameters: "/IM {#MyAppExeName} /F"; Flags: runhidden; RunOnceId: "CloseHeardy"

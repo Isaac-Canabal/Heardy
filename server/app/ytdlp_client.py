@@ -424,6 +424,12 @@ def _base_opts() -> dict:
         # quiet=True.
         "js_runtimes": {"deno": {}, "node": {}},
     }
+    if config.YT_PLAYER_CLIENTS:
+        # Ver config.YT_PLAYER_CLIENTS: los clientes por defecto de yt-dlp con
+        # cookies daban 403 + SABR desde el servidor oficial. yt-dlp consulta
+        # TODOS los de la lista y mezcla sus formatos, así que uno que falle
+        # cuesta su tiempo en cada extracción aunque otro ya haya respondido.
+        opts["extractor_args"]["youtube"] = {"player_client": list(config.YT_PLAYER_CLIENTS)}
     if config.COOKIES_FILE:
         opts["cookiefile"] = config.COOKIES_FILE
     return opts
