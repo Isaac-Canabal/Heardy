@@ -279,6 +279,14 @@ system out of the shipped APK and behind an interface the client barely needs to
 - A background-download batch needs its own Android foreground service (distinct from the one that already
   backs audio playback) so the queue keeps running while the app isn't in the foreground; falling back on app
   resume is a secondary safety net, not the primary mechanism.
+- **The server image is sized for 512 MB *during a download*, and every knob in it was measured, not
+  guessed** (numbers in `server/README.md`). The single biggest consumer is not the API: it's the transient
+  Node process yt-dlp spawns to solve YouTube's JS challenge, which parses the whole player (~300 MB) on
+  *every* extraction unless yt-dlp's preprocessed-player cache is on — the server turns it on and rotates the
+  files itself. A resident PO-token sidecar on top of that did not fit and caused restarts mid-download, so the
+  image defaults to the provider's script mode (no resident Node, with timeouts widened for a 0.1 vCPU box)
+  and one extraction at a time. After each extraction the server logs the container's cgroup peak per
+  process; when the platform reports a memory restart, read that line before changing anything.
 
 ### Spotify bridge
 

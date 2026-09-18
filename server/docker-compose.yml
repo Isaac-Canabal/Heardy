@@ -6,6 +6,13 @@ services:
     env_file: .env
     environment:
       HEARDY_POT_PROVIDER_URL: http://bgutil-pot:4416
+      # La imagen trae el script mode por defecto (pensado para una PaaS de
+      # 512 MB); acá el proveedor es el contenedor bgutil-pot de abajo, así
+      # que se vacía para volver al modo HTTP.
+      HEARDY_POT_PROVIDER_SCRIPT_HOME: ""
+      # Un servidor propio no tiene el techo de 512 MB: se recupera el valor
+      # por defecto de config.py.
+      HEARDY_MAX_CONCURRENT: "2"
     # Solo loopback por defecto: se llega desde fuera por Tailscale, no
     # exponiendo el puerto a la LAN entera ni, mucho menos, a internet.
     # Cambia a "8080:8080" a conciencia si de verdad quieres oírlo en la LAN.
