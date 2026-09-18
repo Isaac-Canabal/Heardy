@@ -57,3 +57,20 @@ def test_admin_labels_varias():
 
 def test_admin_labels_espacios_y_vacios_se_ignoran():
     assert parse_admin_labels(" isaac , , ana ,") == frozenset({"isaac", "ana"})
+
+
+# --- parse_player_clients -------------------------------------------------
+from app.config import parse_player_clients  # noqa: E402
+
+
+def test_player_clients_lista_normal():
+    assert parse_player_clients("web_music, mweb,web") == ["web_music", "mweb", "web"]
+
+
+def test_player_clients_default_significa_los_de_yt_dlp():
+    assert parse_player_clients("default") == []
+    assert parse_player_clients("") == []
+
+
+def test_player_clients_ignora_entradas_vacias():
+    assert parse_player_clients("web_music,,mweb,") == ["web_music", "mweb"]

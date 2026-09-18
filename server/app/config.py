@@ -144,6 +144,33 @@ if POT_SIDECAR:
 # fallo era un 500 opaco sobre vídeos sanos.
 POT_SCRIPT_TIMEOUT_SECONDS = _int_env("HEARDY_POT_SCRIPT_TIMEOUT", 120)
 
+def parse_player_clients(raw: str) -> list[str]:
+    """`HEARDY_YT_PLAYER_CLIENTS` ("web_music,mweb,web") -> lista sin vacíos.
+    Función pura, como las de arriba. La palabra `default` (o la lista vacía)
+    significa "los clientes por defecto de yt-dlp"."""
+    clients = [c.strip() for c in raw.split(",") if c.strip()]
+    if clients == ["default"]:
+        return []
+    return clients
+
+
+# Qué "clientes" de YouTube consulta yt-dlp para sacar los formatos. Los que
+# yt-dlp elige por defecto con cookies (web_embedded, tv_downgraded, web) se
+# vieron fallar en el servidor oficial: los dos primeros devolvían 403 al
+# pedir la API (6-9 s cada uno, en cada extracción) y el tercero sólo da
+# formatos SABR, que no se pueden descargar — resultado: "Requested format is
+# not available" en todas las descargas y búsquedas lentísimas. Medido el
+# 2026-09-18 con el log verboso de yt-dlp.
+#
+# web_music y mweb aceptan cookies, no están forzados a SABR y devuelven el
+# m4a (itag 140); web queda de respaldo para que /resolve siempre tenga
+# metadata. Es un blanco móvil de YouTube, por eso es variable de entorno:
+# cambiarlo en la plataforma es un reinicio, no un despliegue. `default`
+# vuelve a la elección de yt-dlp.
+YT_PLAYER_CLIENTS = parse_player_clients(
+    os.environ.get("HEARDY_YT_PLAYER_CLIENTS", "web_music,mweb,web")
+)
+
 # Sólo para diagnosticar: vuelca al log la salida verbosa de yt-dlp (qué
 # cliente usó, si obtuvo PO token, qué formatos descartó). Apagado por
 # defecto: esas líneas incluyen el contexto completo de cada petición a
