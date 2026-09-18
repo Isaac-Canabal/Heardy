@@ -144,6 +144,12 @@ if POT_SIDECAR:
 # fallo era un 500 opaco sobre vídeos sanos.
 POT_SCRIPT_TIMEOUT_SECONDS = _int_env("HEARDY_POT_SCRIPT_TIMEOUT", 120)
 
+# Sólo para diagnosticar: vuelca al log la salida verbosa de yt-dlp (qué
+# cliente usó, si obtuvo PO token, qué formatos descartó). Apagado por
+# defecto: esas líneas incluyen el contexto completo de cada petición a
+# YouTube. Los warnings y errores de yt-dlp van al log siempre, con o sin esto.
+YTDLP_VERBOSE = os.environ.get("HEARDY_YTDLP_VERBOSE", "").strip() == "1"
+
 # Caché LRU en disco: un reintento tras un corte de red no debe volver a
 # golpear a YouTube. El presupuesto de IP es el recurso escaso, no el disco.
 CACHE_DIR = Path(os.environ.get("HEARDY_CACHE_DIR") or (SERVER_ROOT / ".cache"))

@@ -158,6 +158,8 @@ async def lifespan(_: FastAPI):
         log.warning("autenticación DESACTIVADA (HEARDY_ALLOW_NO_AUTH=1)")
     if config.ENABLE_DOCS:
         log.warning("/docs y /openapi.json están expuestos (HEARDY_ENABLE_DOCS=1)")
+    if config.YTDLP_VERBOSE:
+        log.warning("yt-dlp en modo verboso (HEARDY_YTDLP_VERBOSE=1): sólo para diagnosticar")
     if not config.ADMIN_LABELS:
         log.warning(
             "HEARDY_ADMIN_LABELS vacío: DELETE /cache y GET /health/detail no los "
