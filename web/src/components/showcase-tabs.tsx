@@ -15,7 +15,7 @@ export function ShowcaseTabs({ items }: { items: ShowcaseTabItem[] }) {
   if (items.length === 0) return null;
   return (
     <Tabs defaultValue={items[0].id} className="gap-8">
-      <TabsList className="h-auto w-full flex-wrap justify-start gap-1 bg-transparent p-0">
+      <TabsList className="h-auto w-full flex-wrap justify-start gap-1 bg-transparent p-0 group-data-horizontal/tabs:h-auto">
         {items.map((item) => (
           <TabsTrigger
             key={item.id}
