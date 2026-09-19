@@ -1473,6 +1473,10 @@ class _QueueBottomSheetState extends State<QueueBottomSheet> {
               onReorder: (oldIndex, newIndex) {
                 widget.audioHandler.moveQueueItem(oldIndex, newIndex);
               },
+              // Cada fila ya trae su propio asa (`ReorderableDragStartListener`
+              // abajo); en escritorio el asa por defecto se sumaba a esa y se
+              // veían dos.
+              buildDefaultDragHandles: false,
               padding: const EdgeInsets.symmetric(vertical: 12),
               itemBuilder: (context, index) {
                 final item = list[index];
