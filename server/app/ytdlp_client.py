@@ -10,6 +10,7 @@ import subprocess
 import threading
 from pathlib import Path
 
+import httpx
 import yt_dlp
 from yt_dlp.utils import DownloadError, ExtractorError, UnsupportedError
 
@@ -367,7 +368,18 @@ class _YtdlpLogger:
     def info(self, message: str) -> None:
         self.debug(message)
 
+    # Lo que yt-dlp avisa, como warning y no como error, cuando se le pide
+    # ignorar la falta de formatos: es exactamente lo que hace el /resolve
+    # ligero a propósito (ver _metadata_only_opts), así que no informa de nada.
+    _EXPECTED_WITHOUT_FORMATS = (
+        "Requested format is not available",
+        "No video formats found",
+        "Only images are available for download",
+    )
+
     def warning(self, message: str) -> None:
+        if message.startswith(self._EXPECTED_WITHOUT_FORMATS):
+            return
         log.warning("yt-dlp: %s", message)
 
     def error(self, message: str) -> None:
@@ -450,7 +462,68 @@ def _clean_artist(info: dict) -> str:
     return channel.strip() or "Desconocido"
 
 
-def _to_track(info: dict) -> dict:
+def jpeg_thumbnail_candidates(info: dict) -> list[str]:
+    """URLs de miniatura en JPEG, de mejor a peor, según la preferencia de yt-dlp.
+
+    JPEG y no la "mejor" a secas: yt-dlp elige `maxresdefault.webp`, y un
+    `.m4a` sólo admite JPEG/PNG como carátula — el escritor de tags de la app
+    descarta el WebP en silencio y la canción queda sin carátula en disco.
+    Las variantes `vi_webp/…/x.webp` de i.ytimg.com tienen siempre su gemela
+    `vi/…/x.jpg`, así que un WebP se convierte en candidato en vez de tirarse.
+    """
+    # Por el NOMBRE del tamaño, no por la preferencia de yt-dlp: para vídeos
+    # antiguos yt-dlp puntúa alto los fotogramas `0.jpg`…`3.jpg` (120×90), que
+    # como carátula no sirven. `hqdefault` existe para todo vídeo.
+    order = {"maxresdefault": 0, "hq720": 1, "sddefault": 2, "hqdefault": 3, "mqdefault": 4}
+    seen: list[str] = []
+    for thumb in info.get("thumbnails") or []:
+        url = str(thumb.get("url") or "")
+        if not url:
+            continue
+        path = url.split("?", 1)[0]
+        if path.endswith(".webp") and "/vi_webp/" in path:
+            url = path.replace("/vi_webp/", "/vi/")[: -len(".webp")] + ".jpg"
+        elif not path.endswith((".jpg", ".jpeg")):
+            continue
+        if url not in seen:
+            seen.append(url)
+
+    def rank(url: str) -> tuple[int, int]:
+        name = url.split("?", 1)[0].rsplit("/", 1)[-1].rsplit(".", 1)[0]
+        return (order.get(name, len(order)), 1 if "?" in url else 0)
+
+    return sorted(seen, key=rank)
+
+
+def pick_thumbnail(info: dict, probe=None) -> str:
+    """La carátula que se manda a la app.
+
+    `probe(url) -> bool` comprueba que la URL existe (HEAD). Hace falta porque
+    yt-dlp lista `maxresdefault` aunque el vídeo no la tenga (issue 340 de
+    yt-dlp); se prueban sólo las tres primeras — `hqdefault.jpg` existe
+    siempre y queda de red. Sin `probe` (listados aplanados de búsqueda y
+    playlist, donde una petición por entrada saldría cara) se devuelve la
+    mejor candidata sin comprobar; la app tiene su propio respaldo por id.
+    """
+    candidates = jpeg_thumbnail_candidates(info)
+    if not candidates:
+        return info.get("thumbnail") or ""
+    if probe is not None:
+        for url in candidates[:3]:
+            if probe(url):
+                return url
+        return next((u for u in candidates if "/hqdefault." in u), candidates[-1])
+    return candidates[0]
+
+
+def _thumbnail_exists(url: str) -> bool:
+    try:
+        return httpx.head(url, timeout=3.0, follow_redirects=True).status_code == 200
+    except Exception:  # noqa: BLE001 — una miniatura no puede tumbar un /resolve
+        return False
+
+
+def _to_track(info: dict, probe_thumbnail: bool = False) -> dict:
     """Normaliza la salida de yt-dlp al DTO que consume la app."""
     video_id = info.get("id") or ""
     return {
@@ -459,7 +532,7 @@ def _to_track(info: dict) -> dict:
         "artist": _clean_artist(info),
         "album": (info.get("album") or None),
         "durationSeconds": int(info.get("duration") or 0),
-        "thumbnailUrl": info.get("thumbnail") or "",
+        "thumbnailUrl": pick_thumbnail(info, _thumbnail_exists if probe_thumbnail else None),
         "sourceUrl": info.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}",
     }
 
@@ -479,17 +552,54 @@ def _extract(url: str, opts: dict) -> dict:
     return info
 
 
-def resolve(url: str) -> dict:
-    """Metadata de un vídeo suelto. `noplaylist` para que una URL de vídeo
-    dentro de una playlist devuelva el vídeo, no la playlist entera."""
-    opts = _base_opts() | {"noplaylist": True}
-    info = _extract(url, opts)
+def _metadata_only_opts() -> dict:
+    """Opciones para sacar SÓLO metadata, sin pagar la extracción completa.
+
+    /resolve no necesita formatos: sólo título, artista, álbum, duración y
+    miniatura. La extracción completa los saca igual, pero de paso consulta
+    cada cliente de YouTube, genera un PO token (~20 s en 0,1 vCPU, por vídeo)
+    y resuelve el "n challenge" en un Node aparte — trabajo que /audio va a
+    repetir entero segundos después para el mismo vídeo. Medido: los mismos
+    campos en 2-3 s en vez de 17-25 s, y eso en un PC rápido.
+
+    Cómo: sólo el cliente `web` (usa la respuesta embebida en la página, sin
+    llamada a la API), sin bajar el player JS ni pedir PO token, y sin que la
+    falta de formatos sea un error. Si esto falla por lo que sea — vídeo con
+    restricción de edad que sólo otro cliente puede abrir, cambio de YouTube —
+    `resolve` cae a la extracción completa, que es la que decide.
+    """
+    opts = _base_opts() | {"noplaylist": True, "ignore_no_formats_error": True}
+    opts["extractor_args"] = dict(opts["extractor_args"]) | {
+        "youtube": {"player_client": ["web"], "player_skip": ["js"], "fetch_pot": ["never"]},
+    }
+    return opts
+
+
+def _first_video(info: dict) -> dict:
     if info.get("_type") == "playlist":
         entries = [e for e in (info.get("entries") or []) if e]
         if not entries:
             raise ExtractionError("La URL es una playlist vacía")
-        info = entries[0]
-    return _to_track(info)
+        return entries[0]
+    return info
+
+
+def resolve(url: str) -> dict:
+    """Metadata de un vídeo suelto. `noplaylist` para que una URL de vídeo
+    dentro de una playlist devuelva el vídeo, no la playlist entera.
+
+    Primero el camino ligero (ver `_metadata_only_opts`); la extracción
+    completa sólo si aquél falla o vuelve sin lo mínimo (título y duración).
+    """
+    try:
+        info = _first_video(_extract(url, _metadata_only_opts()))
+        if info.get("title") and info.get("duration"):
+            return _to_track(info, probe_thumbnail=True)
+        log.info("resolve ligero sin título/duración, se repite completo")
+    except EXTRACTION_ERRORS as e:
+        log.info("resolve ligero falló (%s), se repite completo", type(e).__name__)
+    info = _first_video(_extract(url, _base_opts() | {"noplaylist": True}))
+    return _to_track(info, probe_thumbnail=True)
 
 
 def resolve_playlist(url: str) -> dict:
