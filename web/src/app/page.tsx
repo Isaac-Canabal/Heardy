@@ -209,7 +209,7 @@ export default function HomePage() {
               </CardHeader>
               <CardContent>
                 <MediaShowcase
-                  media={[{ kind: "image", src: null, alt: "Heardy en Windows", device: "desktop" }]}
+                  media={[{ kind: "image", src: "/media/escritorio-reproductor.png", alt: "Heardy en Windows", device: "desktop" }]}
                 />
               </CardContent>
             </Card>

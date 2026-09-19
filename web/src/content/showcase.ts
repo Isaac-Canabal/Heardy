@@ -36,7 +36,7 @@ export const showcase: ShowcaseItem[] = [
       "Elige una carpeta de tu dispositivo y Heardy la convierte en tu biblioteca: cada subcarpeta es una playlist, y puedes crear, reordenar y combinar playlists sin mover un solo archivo.",
     media: [
       { kind: "image", src: "/media/movil-playlists.jpg", alt: "Lista de playlists con carátula, número de canciones y duración, y el minirreproductor abajo", device: "phone" },
-      { kind: "image", src: null, alt: "Biblioteca en la versión de escritorio", device: "desktop" },
+      { kind: "image", src: "/media/escritorio-reproductor.png", alt: "Versión de escritorio: barra lateral, lista de la playlist y panel de reproducción con la letra", device: "desktop" },
     ],
   },
   {
@@ -50,7 +50,7 @@ export const showcase: ShowcaseItem[] = [
       { kind: "image", src: "/media/movil-letra-traducida.jpg", alt: "Letra con la traducción al español debajo de cada línea", device: "phone" },
       { kind: "image", src: "/media/movil-cola.jpg", alt: "Cola de reproducción con las próximas canciones", device: "phone" },
       { kind: "image", src: "/media/movil-opciones.jpg", alt: "Opciones de aleatorio, repetir y temporizador de pausa", device: "phone" },
-      { kind: "image", src: null, alt: "Pantalla de reproducción en escritorio", device: "desktop" },
+      { kind: "image", src: "/media/escritorio-reproductor.png", alt: "Panel de reproducción en escritorio con letra sincronizada", device: "desktop" },
     ],
   },
   {
@@ -77,8 +77,7 @@ export const showcase: ShowcaseItem[] = [
     description:
       "Si creas una cuenta, Heardy sincroniza el índice de tu biblioteca y tu historial entre tus dispositivos, y puedes ver qué están escuchando tus amigos. El audio nunca sale de tu dispositivo.",
     media: [
-      { kind: "image", src: null, alt: "Pantalla de amigos y escuchando ahora", device: "phone" },
-      { kind: "image", src: null, alt: "Estado de sincronización", device: "desktop" },
+      { kind: "image", src: "/media/movil-cuenta.jpg", alt: "Ajustes de la cuenta: sesión, amigos, sincronización y el interruptor de escuchando ahora", device: "phone" },
     ],
   },
 ];

@@ -1,6 +1,5 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { useState } from "react";
 import { MenuIcon } from "lucide-react";
@@ -32,9 +31,8 @@ export function SiteHeader() {
   return (
     <header className="sticky top-0 z-40 border-b border-border/60 glass">
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
-        <Link href="/" className="flex items-center gap-2.5 font-semibold">
-          <Image src="/icon.png" alt="" width={32} height={32} className="rounded-lg" priority />
-          <span className="sr-only">{site.name}</span>
+        <Link href="/" className="text-sm font-semibold text-muted-foreground transition-colors hover:text-foreground">
+          Inicio
         </Link>
 
         <nav className="hidden items-center gap-1 md:flex" aria-label="Principal">
