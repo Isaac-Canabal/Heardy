@@ -6,7 +6,7 @@ Reproductor de música para tu propia biblioteca, en Android y Windows. La músi
 
 ## Descargas
 
-- **Android**: APK en la [última release](https://github.com/Isaac-Canabal/Heardy/releases/latest) (`app-release.apk`). Al instalar fuera de la tienda, Android pide permitir "orígenes desconocidos" para el navegador o el gestor de archivos.
+- **Android**: APK en la [última release](https://github.com/Isaac-Canabal/Heardy/releases/latest) (`Heardy.apk`). Al instalar fuera de la tienda, Android pide permitir "orígenes desconocidos" para el navegador o el gestor de archivos.
 - **Windows**: instalador en la [última release](https://github.com/Isaac-Canabal/Heardy/releases/latest) (`Heardy-Setup.exe`). El instalador no está firmado con certificado, así que SmartScreen avisa de "editor desconocido" la primera vez: *Más información → Ejecutar de todas formas*.
 
 La página del proyecto, con capturas y el detalle de cada función, vive en `web/` (ver más abajo).
