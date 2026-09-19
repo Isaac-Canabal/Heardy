@@ -10,6 +10,7 @@ import '../screens/friends_screen.dart';
 import '../screens/sync_status_screen.dart';
 import '../services/database_helper.dart';
 import '../theme/app_theme.dart';
+import '../services/artwork_repair_service.dart';
 import '../services/download_source.dart';
 import '../services/storage_service.dart';
 import '../l10n/app_localizations.dart';
@@ -426,6 +427,8 @@ class SettingsScreen extends StatelessWidget {
                     onPressed: () => _pickLibraryFolder(context),
                   ),
                 ),
+                const SizedBox(height: 8),
+                const _ArtworkRepairButton(),
               ],
             ),
           ),
@@ -1374,6 +1377,88 @@ class _CustomThemeSheetState extends State<_CustomThemeSheet> {
           if (c != null) onValid(c);
         },
       ),
+    );
+  }
+}
+
+
+/// Vuelve a bajar las carátulas de las canciones descargadas que no la
+/// tienen (ver ArtworkRepairService). Un solo toque, progreso en el propio
+/// botón, y las listas se refrescan al terminar.
+class _ArtworkRepairButton extends StatefulWidget {
+  const _ArtworkRepairButton();
+
+  @override
+  State<_ArtworkRepairButton> createState() => _ArtworkRepairButtonState();
+}
+
+class _ArtworkRepairButtonState extends State<_ArtworkRepairButton> {
+  bool _working = false;
+  int _done = 0;
+  int _total = 0;
+
+  Future<void> _repair() async {
+    final l10n = AppLocalizations.of(context)!;
+    final messenger = ScaffoldMessenger.of(context);
+    final music = context.read<MusicProvider>();
+    setState(() {
+      _working = true;
+      _done = 0;
+      _total = 0;
+    });
+    var repaired = 0;
+    try {
+      repaired = await ArtworkRepairService().repairMissing(
+        onProgress: (done, total) {
+          if (!mounted) return;
+          setState(() {
+            _done = done;
+            _total = total;
+          });
+        },
+      );
+    } catch (e) {
+      print('SettingsScreen: no se pudieron recuperar carátulas: $e');
+    } finally {
+      if (mounted) setState(() => _working = false);
+    }
+    if (repaired > 0) music.notifyLibraryChanged();
+    messenger.showSnackBar(SnackBar(content: Text(l10n.settingsRepairArtworkDone(repaired))));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          l10n.settingsRepairArtworkBody,
+          style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 12, height: 1.4),
+        ),
+        const SizedBox(height: 8),
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            style: OutlinedButton.styleFrom(
+              foregroundColor: Colors.white,
+              side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+              padding: const EdgeInsets.symmetric(vertical: 12),
+            ),
+            icon: _working
+                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.image_search_rounded, size: 18),
+            label: Text(
+              _working && _total > 0
+                  ? l10n.settingsRepairArtworkWorking(_done, _total)
+                  : l10n.settingsRepairArtwork,
+              style: const TextStyle(fontWeight: FontWeight.w600),
+            ),
+            onPressed: _working ? null : _repair,
+          ),
+        ),
+      ],
     );
   }
 }

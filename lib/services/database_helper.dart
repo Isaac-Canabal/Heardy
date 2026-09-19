@@ -360,6 +360,11 @@ class DatabaseHelper {
     return maps.isNotEmpty ? Song.fromMap(maps.first) : null;
   }
 
+  Future<int> updateSongArtPath(String id, String artPath) async {
+    final db = await database;
+    return db.update('songs', {'artPath': artPath}, where: 'id = ?', whereArgs: [id]);
+  }
+
   /// Marks every previously-imported song (uri IS NOT NULL) as missing.
   /// Call once at the start of a scan; each file actually found on disk
   /// clears its own row's flag via [touchSongFound] as the scan proceeds,

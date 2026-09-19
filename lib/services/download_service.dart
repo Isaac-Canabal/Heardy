@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 
 import '../models/song.dart';
 import 'audio_identity.dart';
+import 'cover_art.dart';
 import 'database_helper.dart';
 import 'download_source.dart';
 import 'library_storage.dart';
@@ -22,35 +23,6 @@ enum DownloadOutcome {
   /// Ya estaba en la biblioteca (mismo hash de audio). No se duplicaron
   /// bytes; solo se añadió a la playlist destino si faltaba.
   alreadyInLibrary,
-}
-
-/// Las URLs de carátula que se van a intentar, en orden, para una pista.
-///
-/// Un `.m4a` sólo admite JPEG/PNG como carátula: `audio_metadata_reader`
-/// descarta un WebP en silencio ("Skipping cover art") y la canción queda sin
-/// carátula en disco. Las miniaturas `vi_webp/…/x.webp` de i.ytimg.com tienen
-/// siempre su gemela `vi/…/x.jpg`, así que se prefiere ésa. Y como yt-dlp
-/// lista `maxresdefault` aunque el vídeo no la tenga, `hqdefault.jpg` (que
-/// existe para todo vídeo) queda de respaldo cuando se conoce el id.
-List<String> coverArtCandidates(String thumbnailUrl, String videoId) {
-  final candidates = <String>[];
-  final url = thumbnailUrl.trim();
-  if (url.isNotEmpty) {
-    final query = url.indexOf('?');
-    final path = query == -1 ? url : url.substring(0, query);
-    if (path.contains('/vi_webp/') && path.endsWith('.webp')) {
-      final withoutExt = path.substring(0, path.length - '.webp'.length);
-      candidates.add('${withoutExt.replaceFirst('/vi_webp/', '/vi/')}.jpg');
-    } else {
-      candidates.add(url);
-    }
-  }
-  final id = videoId.trim();
-  if (id.isNotEmpty) {
-    final fallback = 'https://i.ytimg.com/vi/$id/hqdefault.jpg';
-    if (!candidates.contains(fallback)) candidates.add(fallback);
-  }
-  return candidates;
 }
 
 class DownloadResult {
@@ -168,7 +140,7 @@ class DownloadService {
       _throwIfCancelled(isCancelled);
 
       // 2. Carátula, antes de escribir tags para poder empotrarla.
-      final coverBytes = await _fetchThumbnail(track.thumbnailUrl, track.id);
+      final coverBytes = await _fetchCoverArt(track.thumbnailUrl, track.id);
 
       // 3. Tags dentro del archivo. Esto es lo que hace que el archivo sea
       // autodescriptivo en disco: si el usuario lo copia a otro reproductor,
@@ -234,12 +206,18 @@ class DownloadService {
         if (playlistId != null) {
           await _addToPlaylist(playlistId, existing.id);
         }
+        // La fila ya existía pero sin carátula (descargas anteriores a que
+        // las miniaturas llegaran en JPEG): ésta es la ocasión de dársela.
+        if (coverBytes != null && !await _hasArtwork(existing)) {
+          final artPath = await saveCoverArt(existing.id, coverBytes);
+          if (artPath.isNotEmpty) await _db.updateSongArtPath(existing.id, artPath);
+        }
         return DownloadResult(DownloadOutcome.alreadyInLibrary, existing, track);
       }
 
       // 10. Carátula en el directorio privado, misma convención que
       // MetadataService._saveArtwork: un archivo por canción, nunca un blob.
-      final artPath = coverBytes == null ? '' : await _saveArtwork(identity.hash, coverBytes);
+      final artPath = coverBytes == null ? '' : await saveCoverArt(identity.hash, coverBytes);
 
       final song = Song(
         id: identity.hash,
@@ -302,31 +280,18 @@ class DownloadService {
     }
   }
 
-  Future<Uint8List?> _fetchThumbnail(String url, String videoId) async {
-    final candidates = coverArtCandidates(url, videoId);
-    if (candidates.isEmpty) return null;
+  Future<Uint8List?> _fetchCoverArt(String url, String videoId) async {
+    if (coverArtCandidates(url, videoId).isEmpty) return null;
     final client = _clientFactory();
     try {
-      for (final candidate in candidates) {
-        try {
-          final response = await client
-              .get(Uri.parse(candidate))
-              .timeout(const Duration(seconds: 20));
-          if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
-            return response.bodyBytes;
-          }
-          print('DownloadService: miniatura $candidate -> HTTP ${response.statusCode}');
-        } catch (e) {
-          print('DownloadService: no se pudo bajar la miniatura ($candidate): $e');
-        }
-      }
-      // Quedarse sin carátula no arruina una descarga: song_tile y
-      // now_playing ya tienen el degradado por título como respaldo.
-      return null;
+      return await fetchCoverArt(client, url, videoId);
     } finally {
       client.close();
     }
   }
+
+  Future<bool> _hasArtwork(Song song) async =>
+      song.artPath.isNotEmpty && await File(song.artPath).exists();
 
   Future<void> _writeTags(File file, RemoteTrack track, Uint8List? cover) async {
     try {
@@ -341,7 +306,7 @@ class DownloadService {
         if (track.album != null) metadata.setAlbum(track.album!);
         if (cover != null) {
           metadata.setPictures([
-            Picture(cover, _mimeForImage(cover), PictureType.coverFront),
+            Picture(cover, mimeForImage(cover), PictureType.coverFront),
           ]);
         }
       });
@@ -354,52 +319,6 @@ class DownloadService {
     }
   }
 
-  /// Sniff por número mágico, no por la extensión de la URL: las miniaturas
-  /// de YouTube se sirven como .jpg pero pueden llegar en WebP.
-  String _mimeForImage(Uint8List bytes) {
-    if (bytes.length >= 8 &&
-        bytes[0] == 0x89 &&
-        bytes[1] == 0x50 &&
-        bytes[2] == 0x4E &&
-        bytes[3] == 0x47) {
-      return 'image/png';
-    }
-    if (bytes.length >= 12 &&
-        bytes[0] == 0x52 &&
-        bytes[1] == 0x49 &&
-        bytes[2] == 0x46 &&
-        bytes[3] == 0x46 &&
-        bytes[8] == 0x57 &&
-        bytes[9] == 0x45 &&
-        bytes[10] == 0x42 &&
-        bytes[11] == 0x50) {
-      return 'image/webp';
-    }
-    return 'image/jpeg';
-  }
-
-  Future<String> _saveArtwork(String songId, Uint8List bytes) async {
-    try {
-      final docDir = await getApplicationDocumentsDirectory();
-      final thumbDir = Directory('${docDir.path}/thumbnails');
-      if (!await thumbDir.exists()) {
-        await thumbDir.create(recursive: true);
-      }
-      final ext = switch (_mimeForImage(bytes)) {
-        'image/png' => 'png',
-        'image/webp' => 'webp',
-        _ => 'jpg',
-      };
-      final path = '${thumbDir.path}/$songId.$ext';
-      await File(path).writeAsBytes(bytes);
-      return path;
-    } catch (e) {
-      print('DownloadService: no se pudo guardar la carátula de $songId: $e');
-      // Cadena vacía = sin carátula, la misma convención que ya usa
-      // MetadataService. Nunca se escribe un archivo de relleno.
-      return '';
-    }
-  }
 
   /// "Artista - Título.m4a", legible desde un explorador de archivos, porque
   /// estos archivos son del usuario y va a verlos.
