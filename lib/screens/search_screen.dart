@@ -13,6 +13,7 @@ import '../services/audio_player_handler.dart';
 import '../services/database_helper.dart';
 import '../services/download_source.dart';
 import '../theme/app_theme.dart';
+import '../widgets/desktop_shell_scope.dart';
 import '../widgets/playlist_target_sheet.dart';
 import '../widgets/song_tile.dart';
 import '../l10n/app_localizations.dart';
@@ -81,6 +82,7 @@ class _SearchScreenState extends State<SearchScreen> {
   }
 
   Future<void> _play(Song song, List<Song> results) async {
+    DesktopShellScope.maybeOf(context)?.openNowPlaying();
     final audioHandler = context.read<AudioPlayerHandler>();
     final albumLabel = AppLocalizations.of(context)!.searchResultsAlbumLabel;
     await context.read<MusicProvider>().playSearchResults(results, song, audioHandler, albumLabel);

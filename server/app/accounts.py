@@ -119,7 +119,7 @@ async def check_and_add(
     criterio que `quota.py`/`rate_limit.py`. Cobra una CANTIDAD, no un golpe
     por petición: una subida de historial de 500 filas cuesta 500, no 1 — el
     mecanismo que hace viable la migración masiva de un usuario existente
-    (ver server/README.md, "Migración")."""
+    (ver .env.example, HEARDY_ACCOUNTS_ENABLED)."""
     if limit <= 0:
         return 0
     today = clock().date()

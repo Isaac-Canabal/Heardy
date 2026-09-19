@@ -7,6 +7,7 @@ import '../services/audio_player_handler.dart';
 import '../services/download_source.dart';
 import '../models/playlist.dart';
 import '../models/song.dart';
+import '../widgets/desktop_shell_scope.dart';
 import '../widgets/song_tile.dart';
 import '../widgets/mini_player.dart';
 import '../widgets/playlist_target_sheet.dart';
@@ -532,6 +533,7 @@ class _PlaylistDetailScreenState extends State<PlaylistDetailScreen> {
 
   /// Map entire playlist items to MediaItem instances, load the queue, and play target song.
   Future<void> _playSong(AudioPlayerHandler audioHandler, List<Song> playlistSongs, Song targetSong, String playlistName) async {
+    DesktopShellScope.maybeOf(context)?.openNowPlaying();
     final List<MediaItem> mediaItems = playlistSongs.map((song) {
       return MediaItem(
         id: song.id,

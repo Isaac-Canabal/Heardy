@@ -1,6 +1,7 @@
 """API HTTP que Heardy consume para importar audio a la biblioteca local.
 
-Ver ../README.md para despliegue y CLAUDE.md (DD1) para por qué existe este
+Ver .env.example para las opciones, el README de la raíz para el despliegue y
+CLAUDE.md (DD1) para por qué existe este
 servicio en vez de un extractor embebido en la app.
 """
 import asyncio
@@ -85,7 +86,7 @@ async def lifespan(_: FastAPI):
         raise RuntimeError(
             "Falta HEARDY_API_KEY o HEARDY_API_KEYS. Generá una clave y ponela en "
             "server/.env, o arrancá con HEARDY_ALLOW_NO_AUTH=1 si solo escuchás en "
-            "loopback. Ver server/README.md."
+            "loopback. Ver server/.env.example."
         )
     if config.DAILY_SONGS_PER_USER > 0 and not config.DATABASE_URL:
         # Mismo espíritu que el chequeo de arriba: un cupo diario sin
@@ -94,7 +95,7 @@ async def lifespan(_: FastAPI):
         raise RuntimeError(
             "HEARDY_DAILY_SONGS_PER_USER está activo pero falta HEARDY_DATABASE_URL. "
             "El cupo diario necesita Postgres persistente (Neon) para sobrevivir un "
-            "reinicio — ver server/README.md, sección 'Cupo diario'."
+            "reinicio — ver server/.env.example, HEARDY_DATABASE_URL."
         )
     if config.ACCOUNTS_ENABLED and not config.DATABASE_URL:
         # Cuentas sin persistencia no son cuentas.
@@ -682,6 +683,11 @@ async def get_account(account: accounts.Account = Depends(current_account)) -> d
         "libraryVersion": account.library_version,
         "hasLibrary": account.library_version > 0,
         "friendCount": friend_count,
+        # El interruptor de "escuchando ahora" tal como lo tiene el SERVIDOR:
+        # la app lo compara con su preferencia local y corrige la diferencia
+        # en cada sincronizacion (ver SyncProvider). Sin esto, un interruptor
+        # encendido solo en el telefono se veia como "sin actividad" para todos.
+        "shareNowPlaying": await _account_store.share_now_playing(account.id),
     }
 
 

@@ -25,6 +25,8 @@ class SettingsProvider with ChangeNotifier {
   static const _customCombinedKey = 'custom_theme_combined';
   static const _accountPromptSeenKey = 'account_prompt_seen';
   static const _shareNowPlayingKey = 'share_now_playing';
+  static const _legalAcceptedVersionKey = 'legal_accepted_version';
+  static const _legalAcceptedAtKey = 'legal_accepted_at';
 
   AppThemePreset _preset = AppThemePreset.navy;
   bool _loaded = false;
@@ -40,6 +42,7 @@ class SettingsProvider with ChangeNotifier {
   bool _customCombined = true;
   bool _accountPromptSeen = false;
   bool _shareNowPlaying = false;
+  String? _legalAcceptedVersion;
 
   AppThemePreset get preset => _preset;
   bool get isLoaded => _loaded;
@@ -51,6 +54,10 @@ class SettingsProvider with ChangeNotifier {
   bool get customCombined => _customCombined;
   bool get accountPromptSeen => _accountPromptSeen;
   bool get shareNowPlaying => _shareNowPlaying;
+
+  /// Versión de los textos legales que el usuario aceptó en esta instalación;
+  /// `null` si nunca. Ver legal_texts.dart.
+  String? get legalAcceptedVersion => _legalAcceptedVersion;
 
   /// Dirección del microservidor de descargas (`server/` en este repo).
   /// **Fija, compilada en el binario** (ver [OfficialServer]): ya no se
@@ -115,6 +122,7 @@ class SettingsProvider with ChangeNotifier {
     _customCombined = prefs.getBool(_customCombinedKey) ?? true;
     _accountPromptSeen = prefs.getBool(_accountPromptSeenKey) ?? false;
     _shareNowPlaying = prefs.getBool(_shareNowPlayingKey) ?? false;
+    _legalAcceptedVersion = prefs.getString(_legalAcceptedVersionKey);
     _loaded = true;
     notifyListeners();
   }
@@ -129,6 +137,14 @@ class SettingsProvider with ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_accountPromptSeenKey, true);
+  }
+
+  Future<void> acceptLegal(String version) async {
+    _legalAcceptedVersion = version;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_legalAcceptedVersionKey, version);
+    await prefs.setString(_legalAcceptedAtKey, DateTime.now().toIso8601String());
   }
 
   Future<void> setShareNowPlaying(bool enabled) async {

@@ -12,6 +12,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:just_audio_media_kit/just_audio_media_kit.dart';
+import 'package:window_manager/window_manager.dart';
 
 import 'services/database_helper.dart';
 import 'services/audio_player_handler.dart';
@@ -25,10 +26,14 @@ import 'providers/download_provider.dart';
 import 'providers/music_provider.dart';
 import 'providers/settings_provider.dart';
 import 'providers/sync_provider.dart';
+import 'screens/legal_screen.dart';
 import 'screens/main_shell_screen.dart';
 import 'screens/playlist_detail_screen.dart';
+import 'services/desktop_layout.dart';
 import 'services/desktop_shortcuts.dart';
+import 'services/desktop_title_bar.dart';
 import 'theme/app_theme.dart';
+import 'widgets/desktop_title_bar.dart';
 
 /// `true` en Windows/Linux/macOS. Todo lo que sólo existe en el APK Android
 /// (SAF, notificación de reproducción, tarea en primer plano, cuenta vía
@@ -65,6 +70,22 @@ void main() async {
     // registrarse antes de crear el primer `AudioPlayer`.
     JustAudioMediaKit.title = 'Heardy';
     JustAudioMediaKit.ensureInitialized();
+
+    // Barra de título propia (widgets/desktop_title_bar.dart): se oculta
+    // sólo la franja nativa de arriba, el marco se conserva (redimensionar
+    // desde los bordes, ajustar a los lados y arrastrar siguen siendo del
+    // sistema). La ventana se muestra cuando el primer frame está listo,
+    // no antes, para no ver un rectángulo vacío mientras arranca Flutter.
+    await windowManager.ensureInitialized();
+    const windowOptions = WindowOptions(
+      title: 'Heardy',
+      minimumSize: Size(900, 600),
+      titleBarStyle: TitleBarStyle.hidden,
+    );
+    windowManager.waitUntilReadyToShow(windowOptions, () async {
+      await windowManager.show();
+      await windowManager.focus();
+    });
   }
 
   if (Platform.isAndroid) {
@@ -246,8 +267,9 @@ class HeardyApp extends StatelessWidget {
           supportedLocales: AppLocalizations.supportedLocales,
           initialRoute: '/',
           onGenerateRoute: RouteGenerator.generateRoute,
-          builder: (context, child) =>
-              child == null ? const SizedBox.shrink() : _DesktopPlaybackShortcuts(child: child),
+          builder: (context, child) => child == null
+              ? const SizedBox.shrink()
+              : _DesktopPlaybackShortcuts(child: _DesktopWindowChrome(child: child)),
         );
       },
     );
@@ -260,7 +282,7 @@ class RouteGenerator {
 
     switch (settings.name) {
       case '/':
-        return MaterialPageRoute(builder: (_) => const MainShellScreen());
+        return MaterialPageRoute(builder: (_) => const LegalGate(child: MainShellScreen()));
       case '/playlist':
         if (args is String) {
           return MaterialPageRoute(
@@ -289,7 +311,8 @@ class RouteGenerator {
 }
 
 /// Atajos de teclado de escritorio (W3 del plan de escritorio): espacio =
-/// pausa/reproduce, flechas = retroceder/adelantar 10s. Sólo si no hay un
+/// pausa/reproduce, flechas izquierda/derecha = retroceder/adelantar 10s,
+/// flechas arriba/abajo = volumen. Sólo si no hay un
 /// campo de texto con foco — si no, escribir un espacio en el buscador o al
 /// renombrar una playlist activaría play/pause en vez de escribir.
 /// `desktopShortcutFor` (services/desktop_shortcuts.dart) es la única parte
@@ -319,11 +342,47 @@ class _DesktopPlaybackShortcuts extends StatelessWidget {
           case DesktopPlaybackShortcut.seekForward:
             audioHandler.seekRelative(const Duration(seconds: 10));
             return KeyEventResult.handled;
+          case DesktopPlaybackShortcut.volumeUp:
+            audioHandler.setVolume(steppedVolume(audioHandler.volume.value, up: true));
+            return KeyEventResult.handled;
+          case DesktopPlaybackShortcut.volumeDown:
+            audioHandler.setVolume(steppedVolume(audioHandler.volume.value, up: false));
+            return KeyEventResult.handled;
           case DesktopPlaybackShortcut.none:
             return KeyEventResult.ignored;
         }
       },
       child: child,
+    );
+  }
+}
+
+/// En escritorio, la barra de título propia va por encima de TODO el
+/// `Navigator` raíz: así también queda arriba en las pantallas que se abren
+/// a pantalla completa fuera del shell (login, ajustes, restaurar desde la
+/// cuenta, perfil de un amigo…), que si no dejarían la ventana sin forma de
+/// moverse o cerrarse. El `MediaQuery` se recorta a la altura que de verdad
+/// queda debajo, para que nada calcule con los 40 px que ya no tiene. En
+/// Android devuelve el hijo tal cual.
+class _DesktopWindowChrome extends StatelessWidget {
+  final Widget child;
+  const _DesktopWindowChrome({required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_isDesktop) return child;
+    final mq = MediaQuery.of(context);
+    final height = (mq.size.height - desktopTitleBarHeight).clamp(0.0, double.infinity);
+    return Column(
+      children: [
+        const DesktopTitleBar(),
+        Expanded(
+          child: MediaQuery(
+            data: mq.copyWith(size: Size(mq.size.width, height)),
+            child: child,
+          ),
+        ),
+      ],
     );
   }
 }

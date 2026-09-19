@@ -116,17 +116,21 @@ def week_start_utc(now_utc: datetime.datetime, utc_offset_minutes: int) -> datet
     return monday_local - offset
 
 
-def month_window_start_utc(now_utc: datetime.datetime) -> datetime.datetime:
-    """Ventana deslizante de 30 días, sin huso — réplica a propósito de
-    `database_helper.dart:1012`. Ver week_start_utc: la misma razón para no
-    "arreglarlo" en un solo lado."""
-    return now_utc - datetime.timedelta(days=30)
+def month_start_utc(now_utc: datetime.datetime, utc_offset_minutes: int) -> datetime.datetime:
+    """Día 1 del mes a las 00:00 en el huso de la cuenta mirada — réplica a
+    propósito de `_getStartOfMonth()` (database_helper.dart). Antes era una
+    ventana deslizante de 30 días; se cambió en los dos lados a la vez, que es
+    la única forma de que lo propio y lo que ve un amigo sigan coincidiendo."""
+    offset = datetime.timedelta(minutes=utc_offset_minutes)
+    local_now = now_utc + offset
+    first_local = local_now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+    return first_local - offset
 
 
 def period_start_utc(period: str, now_utc: datetime.datetime, utc_offset_minutes: int) -> datetime.datetime:
     if period == "week":
         return week_start_utc(now_utc, utc_offset_minutes)
-    return month_window_start_utc(now_utc)
+    return month_start_utc(now_utc, utc_offset_minutes)
 
 
 def parse_played_at(value: str) -> datetime.datetime:

@@ -6,12 +6,19 @@ import '../services/audio_player_handler.dart';
 import '../theme/app_theme.dart';
 import '../screens/now_playing_screen.dart';
 import '../l10n/app_localizations.dart';
+import 'desktop_shell_scope.dart';
 
 class MiniPlayer extends StatelessWidget {
   const MiniPlayer({super.key});
 
   @override
   Widget build(BuildContext context) {
+    // En el shell de escritorio la barra inferior de reproducción ya ocupa
+    // este papel; las pantallas que incrustan su propio MiniPlayer (detalle
+    // de playlist) no tienen que saberlo.
+    if (DesktopShellScope.maybeOf(context) != null) {
+      return const SizedBox.shrink();
+    }
     final audioHandler = Provider.of<AudioPlayerHandler>(context);
 
     return StreamBuilder<MediaItem?>(

@@ -3,7 +3,7 @@ REM Instalacion unica del servidor de descargas de Heardy, sin Docker.
 REM Crea el entorno virtual, instala las dependencias de Python y compila el
 REM proveedor de PO tokens (que es una aplicacion Node).
 REM
-REM Requisitos previos: Python 3.10+ y Node.js LTS en el PATH. Ver README.md.
+REM Requisitos previos: Python 3.10+ y Node.js LTS en el PATH. Ver el README de la raiz del repo.
 
 setlocal
 cd /d "%~dp0"

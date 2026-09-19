@@ -47,6 +47,7 @@ class _FakeCloudSource implements CloudSource {
       libraryVersion: libraryVersion,
       hasLibrary: libraryVersion > 0,
       friendCount: friendCount,
+      shareNowPlaying: shareNowPlayingOnServer,
     );
   }
 
@@ -116,7 +117,14 @@ class _FakeCloudSource implements CloudSource {
   @override
   Future<String> sendFriendRequest(String username) => throw UnimplementedError();
   @override
-  Future<bool> setShareNowPlaying(bool enabled) async => enabled;
+  Future<bool> setShareNowPlaying(bool enabled) async {
+    shareNowPlayingOnServer = enabled;
+    setShareCalls++;
+    return enabled;
+  }
+
+  bool shareNowPlayingOnServer = false;
+  int setShareCalls = 0;
   @override
   Future<String> setUsername(String username) => throw UnimplementedError();
 }
@@ -311,6 +319,38 @@ void main() {
     await provider.syncNow();
 
     expect(source.cloudSongs.map((s) => s['songId']), contains('s9'));
+  });
+
+  group('escuchando ahora: el interruptor llega al servidor', () {
+    test('cambiarlo lo empuja al servidor y devuelve lo confirmado', () async {
+      final source = _FakeCloudSource();
+      final provider = SyncProvider(source: source, db: db, shareNowPlayingEnabled: () => true);
+
+      expect(await provider.setShareNowPlaying(true), isTrue);
+      expect(source.shareNowPlayingOnServer, isTrue);
+      expect(await provider.setShareNowPlaying(false), isFalse);
+      expect(source.shareNowPlayingOnServer, isFalse);
+    });
+
+    test('la sincronización corrige un servidor que no coincide con la preferencia local', () async {
+      // El caso real: interruptor encendido en el teléfono desde una versión
+      // que nunca se lo decía al servidor — los amigos veían "sin actividad".
+      final source = _FakeCloudSource()..shareNowPlayingOnServer = false;
+      final provider = SyncProvider(source: source, db: db, shareNowPlayingEnabled: () => true);
+      await provider.syncNow();
+
+      expect(source.setShareCalls, 1);
+      expect(source.shareNowPlayingOnServer, isTrue);
+      expect(provider.lastError, isNull);
+    });
+
+    test('si ya coinciden no se hace ninguna petición', () async {
+      final source = _FakeCloudSource()..shareNowPlayingOnServer = true;
+      final provider = SyncProvider(source: source, db: db, shareNowPlayingEnabled: () => true);
+      await provider.syncNow();
+
+      expect(source.setShareCalls, 0);
+    });
   });
 
   group('insertRestoredPlays', () {

@@ -48,6 +48,14 @@ class FakeAccountStore:
         self.bumped_with: tuple[int, str | None] | None = None
         self.username: str | None = None
 
+    share_now_playing_by_user: dict[int, bool] = {}
+
+    async def share_now_playing(self, user_id: int) -> bool:
+        return self.share_now_playing_by_user.get(user_id, False)
+
+    async def set_share_now_playing(self, user_id: int, enabled: bool) -> None:
+        self.share_now_playing_by_user[user_id] = enabled
+
     async def set_utc_offset(self, user_id: int, minutes: int) -> None:
         self.utc_offset = minutes
 
@@ -217,7 +225,7 @@ def test_account_devuelve_la_forma_que_el_cliente_parsea(client):
     response = client.get("/account")
     assert response.status_code == 200
     body = response.json()
-    assert set(body) == {"identity", "username", "libraryVersion", "hasLibrary", "friendCount"}
+    assert set(body) == {"identity", "username", "libraryVersion", "hasLibrary", "friendCount", "shareNowPlaying"}
 
 
 def test_username_invalido_devuelve_400_con_motivo(client):

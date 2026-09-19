@@ -143,6 +143,7 @@ class SyncProvider with ChangeNotifier {
       final errors = [
         await _runStep('historial', _pushUnsyncedHistory),
         await _runStep('biblioteca', _pushLibraryIfChanged),
+        await _runStep('presencia', _reconcileShareNowPlaying),
       ].whereType<String>().toList();
 
       if (errors.isEmpty) {
@@ -153,6 +154,35 @@ class SyncProvider with ChangeNotifier {
     } finally {
       _isSyncing = false;
       notifyListeners();
+    }
+  }
+
+  /// El interruptor de "escuchando ahora" vive en dos sitios: la preferencia
+  /// local (SettingsProvider) y la fila de la cuenta en el servidor, que es
+  /// quien descarta la presencia si está apagado. Hubo una versión en la que
+  /// el interruptor sólo se guardaba en local y nadie veía nada: por eso
+  /// además de empujarlo al cambiarlo ([setShareNowPlaying]) se reconcilia en
+  /// cada sincronización, que arregla sola las instalaciones que ya lo tenían
+  /// encendido.
+  Future<void> _reconcileShareNowPlaying() async {
+    final account = _account;
+    if (account == null) return;
+    final wanted = _shareEnabled();
+    if (account.shareNowPlaying == wanted) return;
+    await _source.setShareNowPlaying(wanted);
+  }
+
+  /// Empuja el interruptor al servidor en cuanto cambia. Devuelve lo que el
+  /// servidor confirmó, o `null` si no se pudo hablar con él — la preferencia
+  /// local se mantiene y la próxima sincronización lo vuelve a intentar.
+  Future<bool?> setShareNowPlaying(bool enabled) async {
+    try {
+      final confirmed = await _source.setShareNowPlaying(enabled);
+      if (!confirmed) _clearPresence();
+      return confirmed;
+    } catch (e) {
+      print('SyncProvider: no se pudo guardar "escuchando ahora" en el servidor: $e');
+      return null;
     }
   }
 

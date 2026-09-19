@@ -139,7 +139,8 @@ lib/
 │                                     # `flutter gen-l10n` and is gitignored
 └── theme/app_theme.dart             # color presets + a custom mode (user-chosen primary/secondary)
 
-server/                              # FastAPI + yt-dlp microservice — see server/README.md
+server/                              # FastAPI + yt-dlp microservice — options in server/.env.example,
+                                     # scripts (setup/run/health/test.bat) and docker-compose.yml alongside
 ```
 
 ### State management: Provider
@@ -251,7 +252,7 @@ touches on its own. Importing many files at once must cost the user one interact
 ## Download system
 
 The app never talks to YouTube directly — all extraction fragility lives in a small FastAPI + yt-dlp
-microservice (`server/`, see `server/README.md`). This keeps the fragile, frequently-changing part of the
+microservice (`server/`; every option is documented in `server/.env.example`). This keeps the fragile, frequently-changing part of the
 system out of the shipped APK and behind an interface the client barely needs to know about.
 
 - **`DownloadSource`** (`download_source.dart`) is the abstract seam — resolve a single URL, resolve a
@@ -280,13 +281,25 @@ system out of the shipped APK and behind an interface the client barely needs to
   backs audio playback) so the queue keeps running while the app isn't in the foreground; falling back on app
   resume is a secondary safety net, not the primary mechanism.
 - **The server image is sized for 512 MB *during a download*, and every knob in it was measured, not
-  guessed** (numbers in `server/README.md`). The single biggest consumer is not the API: it's the transient
+  guessed** (table below). The single biggest consumer is not the API: it's the transient
   Node process yt-dlp spawns to solve YouTube's JS challenge, which parses the whole player (~300 MB) on
   *every* extraction unless yt-dlp's preprocessed-player cache is on — the server turns it on and rotates the
   files itself. A resident PO-token sidecar on top of that did not fit and caused restarts mid-download, so the
   image defaults to the provider's script mode (no resident Node, with timeouts widened for a 0.1 vCPU box)
   and one extraction at a time. After each extraction the server logs the container's cgroup peak per
   process; when the platform reports a memory restart, read that line before changing anything.
+
+  | Process | Measured peak | When |
+  |---|---|---|
+  | Node solving YouTube's JS challenge, parsing the whole player | ~300 MB | **every** extraction if the preprocessed-player cache is off (yt-dlp's default) |
+  | Same Node with the preprocessed player | ~60 MB | with the cache on, from the second extraction per player version |
+  | `generate_once.js` (PO token, script mode) | ~130-210 MB | only when the cached token expires (~6 h) |
+  | Resident PO-token sidecar (Node) | ~100-150 MB | always, if enabled (`HEARDY_POT_SIDECAR=1`) |
+
+  Knobs that follow: script mode by default with widened timeouts (`HEARDY_POT_SCRIPT_TIMEOUT`), the
+  preprocessed-player cache on with our own rotation, `HEARDY_MAX_CONCURRENT=1`, `MALLOC_ARENA_MAX=2` plus
+  `malloc_trim` after each extraction, and `HEARDY_YT_PLAYER_CLIENTS` to pick which YouTube clients get
+  queried (a moving target: changing it on the platform is a restart, not a deploy).
 
 ### Spotify bridge
 

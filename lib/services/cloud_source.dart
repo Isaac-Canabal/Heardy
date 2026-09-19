@@ -62,12 +62,18 @@ class CloudAccount {
   final bool hasLibrary;
   final int friendCount;
 
+  /// Lo que el servidor tiene guardado para "escuchando ahora". Es él quien
+  /// descarta la presencia si está apagado, así que la preferencia local sólo
+  /// vale si coincide con esto.
+  final bool shareNowPlaying;
+
   const CloudAccount({
     required this.identity,
     required this.username,
     required this.libraryVersion,
     required this.hasLibrary,
     required this.friendCount,
+    this.shareNowPlaying = false,
   });
 
   factory CloudAccount.fromJson(Map<String, dynamic> json) => CloudAccount(
@@ -76,6 +82,7 @@ class CloudAccount {
         libraryVersion: (json['libraryVersion'] as num?)?.toInt() ?? 0,
         hasLibrary: json['hasLibrary'] == true,
         friendCount: (json['friendCount'] as num?)?.toInt() ?? 0,
+        shareNowPlaying: json['shareNowPlaying'] == true,
       );
 }
 

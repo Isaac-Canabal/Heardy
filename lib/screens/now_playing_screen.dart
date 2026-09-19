@@ -14,6 +14,33 @@ import '../theme/app_theme.dart';
 import '../widgets/max_width_center.dart';
 import '../l10n/app_localizations.dart';
 
+const Color kNowPlayingFallbackColor = Color(0xFF1E1E1E);
+
+/// Color dominante de una carátula, para el degradado de fondo. Compartido
+/// por esta pantalla y el panel de escritorio; nunca lanza — sin carátula, o
+/// si falla la extracción, devuelve el gris neutro de siempre. `size` le
+/// pide a PaletteGenerator una miniatura en vez de la imagen a resolución
+/// completa, que es la mitad del costo.
+Future<Color> dominantColorForArt(String artPath) async {
+  if (artPath.isEmpty) return kNowPlayingFallbackColor;
+  final file = File(artPath);
+  if (!file.existsSync()) return kNowPlayingFallbackColor;
+  try {
+    final palette = await PaletteGenerator.fromImageProvider(
+      FileImage(file),
+      size: const Size(100, 100),
+      maximumColorCount: 12,
+    );
+    return palette.dominantColor?.color ??
+        palette.darkMutedColor?.color ??
+        palette.darkVibrantColor?.color ??
+        kNowPlayingFallbackColor;
+  } catch (e) {
+    print('Error extracting dominant color: $e');
+    return kNowPlayingFallbackColor;
+  }
+}
+
 class NowPlayingScreen extends StatefulWidget {
   const NowPlayingScreen({super.key});
 
@@ -23,67 +50,22 @@ class NowPlayingScreen extends StatefulWidget {
 
 class _NowPlayingScreenState extends State<NowPlayingScreen> {
   MediaItem? _currentMediaItem;
-  Color _dominantColor = const Color(0xFF1E1E1E);
+  Color _dominantColor = kNowPlayingFallbackColor;
 
   void _updatePalette(MediaItem? item) async {
     if (item == null) return;
     final artPath = item.extras?['artPath'] as String? ?? '';
-    if (artPath.isEmpty) {
-      if (mounted) {
-        setState(() {
-          _dominantColor = const Color(0xFF1E1E1E);
-        });
-      }
-      return;
-    }
-
-    final file = File(artPath);
-    if (!file.existsSync()) {
-      if (mounted) {
-        setState(() {
-          _dominantColor = const Color(0xFF1E1E1E);
-        });
-      }
-      return;
-    }
-
-    try {
-      // El slide-up del mini player a esta pantalla tarda ~300ms (ver
-      // _openNowPlaying en mini_player.dart); si la extracción de paleta
-      // arranca en el primer frame (el post-frame callback que llama a este
-      // método dispara casi al instante), su trabajo de CPU compite con esos
-      // mismos frames animados y se sentía como un tranco/atasco al expandir.
-      // Esperar a que la transición termine antes de decodificar evita el
-      // solapamiento; `size` además le pide a PaletteGenerator una miniatura
-      // en vez de la imagen a resolución completa, que es la otra mitad del
-      // costo.
-      await Future.delayed(const Duration(milliseconds: 320));
-      if (!mounted) return;
-      final paletteGenerator = await PaletteGenerator.fromImageProvider(
-        FileImage(file),
-        size: const Size(100, 100),
-        maximumColorCount: 12,
-      );
-
-      final extractedColor =
-          paletteGenerator.dominantColor?.color ??
-          paletteGenerator.darkMutedColor?.color ??
-          paletteGenerator.darkVibrantColor?.color ??
-          const Color(0xFF1E1E1E);
-
-      if (mounted) {
-        setState(() {
-          _dominantColor = extractedColor;
-        });
-      }
-    } catch (e) {
-      print('Error extracting dominant color: $e');
-      if (mounted) {
-        setState(() {
-          _dominantColor = const Color(0xFF1E1E1E);
-        });
-      }
-    }
+    // El slide-up del mini player a esta pantalla tarda ~300ms (ver
+    // _openNowPlaying en mini_player.dart); si la extracción de paleta
+    // arranca en el primer frame (el post-frame callback que llama a este
+    // método dispara casi al instante), su trabajo de CPU compite con esos
+    // mismos frames animados y se sentía como un tranco/atasco al expandir.
+    // Esperar a que la transición termine antes de decodificar evita el
+    // solapamiento.
+    await Future.delayed(const Duration(milliseconds: 320));
+    if (!mounted) return;
+    final color = await dominantColorForArt(artPath);
+    if (mounted) setState(() => _dominantColor = color);
   }
 
   @override
@@ -663,7 +645,7 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
                       // StreamBuilder's — it belongs to the options sheet
                       // we're popping, and by the time the custom-minutes
                       // dialog chains off of it later it's already disposed.
-                      _showSleepTimerPicker(this.context, audioHandler);
+                      showSleepTimerPicker(this.context, audioHandler);
                     },
                   );
                 },
@@ -671,150 +653,6 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
               const SizedBox(height: 8),
             ],
           ),
-        );
-      },
-    );
-  }
-
-  void _showSleepTimerPicker(
-    BuildContext context,
-    AudioPlayerHandler audioHandler,
-  ) {
-    final l10n = AppLocalizations.of(context)!;
-    showModalBottomSheet(
-      context: context,
-      backgroundColor: const Color(0xFF1A1A1A),
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (sheetContext) {
-        return SafeArea(
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  l10n.nowPlayingSleepTimerTitle,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 16,
-                    fontWeight: FontWeight.bold,
-                  ),
-                ),
-                const SizedBox(height: 16),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    ...[15, 30, 45, 60].map((minutes) {
-                      return ActionChip(
-                        label: Text(
-                          '$minutes min',
-                          style: const TextStyle(color: Colors.white),
-                        ),
-                        backgroundColor: Colors.white.withValues(alpha: 0.08),
-                        onPressed: () {
-                          audioHandler.startSleepTimer(
-                            Duration(minutes: minutes),
-                          );
-                          Navigator.of(sheetContext).pop();
-                        },
-                      );
-                    }),
-                    // Peer chip, not a buried link below the presets — same visual
-                    // weight so a custom duration is just as discoverable.
-                    ActionChip(
-                      avatar: const Icon(
-                        Icons.edit_outlined,
-                        size: 16,
-                        color: Color(0xFF8C9EFF),
-                      ),
-                      label: Text(
-                        l10n.nowPlayingCustomChip,
-                        style: const TextStyle(color: Color(0xFF8C9EFF)),
-                      ),
-                      backgroundColor: const Color(
-                        0xFF8C9EFF,
-                      ).withValues(alpha: 0.12),
-                      onPressed: () async {
-                        Navigator.of(sheetContext).pop();
-                        final customMinutes = await _promptCustomMinutes(
-                          context,
-                        );
-                        if (customMinutes != null) {
-                          audioHandler.startSleepTimer(
-                            Duration(minutes: customMinutes),
-                          );
-                        }
-                      },
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  Future<int?> _promptCustomMinutes(BuildContext context) {
-    final l10n = AppLocalizations.of(context)!;
-    final controller = TextEditingController();
-    const minMinutes = 1;
-    const maxMinutes =
-        720; // 12 h — generous upper bound against fat-finger input
-    return showDialog<int>(
-      context: context,
-      builder: (dialogContext) {
-        String? errorText;
-        return StatefulBuilder(
-          builder: (dialogContext, setState) {
-            return AlertDialog(
-              backgroundColor: const Color(0xFF1A1A1A),
-              title: Text(
-                l10n.nowPlayingMinutesDialogTitle,
-                style: const TextStyle(color: Colors.white),
-              ),
-              content: TextField(
-                controller: controller,
-                keyboardType: TextInputType.number,
-                autofocus: true,
-                style: const TextStyle(color: Colors.white),
-                decoration: InputDecoration(
-                  hintText: l10n.nowPlayingMinutesHint(minMinutes, maxMinutes),
-                  hintStyle: const TextStyle(color: Colors.white38),
-                  errorText: errorText,
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.of(dialogContext).pop(),
-                  child: Text(l10n.commonCancel),
-                ),
-                TextButton(
-                  onPressed: () {
-                    final value = int.tryParse(controller.text.trim());
-                    if (value == null ||
-                        value < minMinutes ||
-                        value > maxMinutes) {
-                      setState(() {
-                        errorText = l10n.nowPlayingMinutesError(
-                          minMinutes,
-                          maxMinutes,
-                        );
-                      });
-                      return;
-                    }
-                    Navigator.of(dialogContext).pop(value);
-                  },
-                  child: Text(l10n.commonAccept),
-                ),
-              ],
-            );
-          },
         );
       },
     );
@@ -860,17 +698,167 @@ class _NowPlayingScreenState extends State<NowPlayingScreen> {
   }
 }
 
+/// Selector del temporizador de sueño. De nivel superior (no un método de
+/// la pantalla) porque el panel de escritorio lo abre también.
+void showSleepTimerPicker(
+  BuildContext context,
+  AudioPlayerHandler audioHandler,
+) {
+  final l10n = AppLocalizations.of(context)!;
+  showModalBottomSheet(
+    context: context,
+    backgroundColor: const Color(0xFF1A1A1A),
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (sheetContext) {
+      return SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                l10n.nowPlayingSleepTimerTitle,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: [
+                  ...[15, 30, 45, 60].map((minutes) {
+                    return ActionChip(
+                      label: Text(
+                        '$minutes min',
+                        style: const TextStyle(color: Colors.white),
+                      ),
+                      backgroundColor: Colors.white.withValues(alpha: 0.08),
+                      onPressed: () {
+                        audioHandler.startSleepTimer(
+                          Duration(minutes: minutes),
+                        );
+                        Navigator.of(sheetContext).pop();
+                      },
+                    );
+                  }),
+                  // Peer chip, not a buried link below the presets — same visual
+                  // weight so a custom duration is just as discoverable.
+                  ActionChip(
+                    avatar: const Icon(
+                      Icons.edit_outlined,
+                      size: 16,
+                      color: Color(0xFF8C9EFF),
+                    ),
+                    label: Text(
+                      l10n.nowPlayingCustomChip,
+                      style: const TextStyle(color: Color(0xFF8C9EFF)),
+                    ),
+                    backgroundColor: const Color(
+                      0xFF8C9EFF,
+                    ).withValues(alpha: 0.12),
+                    onPressed: () async {
+                      Navigator.of(sheetContext).pop();
+                      final customMinutes = await _promptCustomMinutes(context);
+                      if (customMinutes != null) {
+                        audioHandler.startSleepTimer(
+                          Duration(minutes: customMinutes),
+                        );
+                      }
+                    },
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+    },
+  );
+}
+
+Future<int?> _promptCustomMinutes(BuildContext context) {
+  final l10n = AppLocalizations.of(context)!;
+  final controller = TextEditingController();
+  const minMinutes = 1;
+  const maxMinutes =
+      720; // 12 h — generous upper bound against fat-finger input
+  return showDialog<int>(
+    context: context,
+    builder: (dialogContext) {
+      String? errorText;
+      return StatefulBuilder(
+        builder: (dialogContext, setState) {
+          return AlertDialog(
+            backgroundColor: const Color(0xFF1A1A1A),
+            title: Text(
+              l10n.nowPlayingMinutesDialogTitle,
+              style: const TextStyle(color: Colors.white),
+            ),
+            content: TextField(
+              controller: controller,
+              keyboardType: TextInputType.number,
+              autofocus: true,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                hintText: l10n.nowPlayingMinutesHint(minMinutes, maxMinutes),
+                hintStyle: const TextStyle(color: Colors.white38),
+                errorText: errorText,
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: Text(l10n.commonCancel),
+              ),
+              TextButton(
+                onPressed: () {
+                  final value = int.tryParse(controller.text.trim());
+                  if (value == null ||
+                      value < minMinutes ||
+                      value > maxMinutes) {
+                    setState(() {
+                      errorText = l10n.nowPlayingMinutesError(
+                        minMinutes,
+                        maxMinutes,
+                      );
+                    });
+                    return;
+                  }
+                  Navigator.of(dialogContext).pop(value);
+                },
+                child: Text(l10n.commonAccept),
+              ),
+            ],
+          );
+        },
+      );
+    },
+  );
+}
+
 // --- LYRICS BOTTOM SHEET ---
 class LyricsBottomSheet extends StatefulWidget {
   final MediaItem mediaItem;
   final AudioPlayerHandler audioHandler;
   final Color dominantColor;
 
+  /// `true` dentro del panel de escritorio: sin el cristal, la altura del
+  /// 85 % ni el asa de arrastre del bottom sheet — sólo la cabecera compacta
+  /// (traducir) y la letra, ocupando lo que el panel le dé.
+  final bool embedded;
+
   const LyricsBottomSheet({
     super.key,
     required this.mediaItem,
     required this.audioHandler,
     required this.dominantColor,
+    this.embedded = false,
   });
 
   @override
@@ -1068,8 +1056,8 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.embedded) return _buildEmbedded(context);
     final media = MediaQuery.of(context);
-    final isSynced = _parsedLines.isNotEmpty;
 
     return BackdropFilter(
       filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
@@ -1172,183 +1160,205 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
               ),
             ),
             const Divider(color: Colors.white12, height: 1),
-            Expanded(
-              child: _isLoading
-                  ? const Center(
-                      child: CircularProgressIndicator(
-                        color: Color(0xFF8C9EFF),
-                      ),
-                    )
-                  : _lyricsText == null
-                  ? Center(
-                      child: Text(
-                        AppLocalizations.of(context)!.lyricsUnavailable,
-                        style: const TextStyle(
-                          color: Colors.white38,
-                          fontSize: 16,
-                        ),
-                      ),
-                    )
-                  : NotificationListener<ScrollNotification>(
-                      onNotification: (notification) {
-                        if (notification is UserScrollNotification) {
-                          _userScrolling = true;
-                          _lastScrollTime = DateTime.now();
-                        }
-                        return false;
-                      },
-                      child: isSynced
-                          ? ListView.builder(
-                              controller: _scrollController,
-                              itemCount: _parsedLines.length,
-                              padding: const EdgeInsets.symmetric(
-                                horizontal: 24,
-                                vertical: 20,
-                              ),
-                              itemBuilder: (context, index) {
-                                final line = _parsedLines[index];
-                                final isActive = index == _activeIndex;
-
-                                return GestureDetector(
-                                  key: _lyricKeys[index],
-                                  onTap: () {
-                                    widget.audioHandler.seek(line.time);
-                                    setState(() {
-                                      _activeIndex = index;
-                                      _userScrolling = false;
-                                    });
-                                    _scrollToActiveLine(index);
-                                  },
-                                  child: AnimatedDefaultTextStyle(
-                                    duration: const Duration(milliseconds: 200),
-                                    style: TextStyle(
-                                      color: isActive
-                                          ? Colors.white
-                                          : Colors.white38,
-                                      fontSize: isActive ? 21 : 18,
-                                      fontWeight: isActive
-                                          ? FontWeight.bold
-                                          : FontWeight.w500,
-                                      height: 1.5,
-                                    ),
-                                    child: Padding(
-                                      padding: const EdgeInsets.symmetric(
-                                        vertical: 10.0,
-                                      ),
-                                      child: Column(
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Text(
-                                            line.text,
-                                            textAlign: TextAlign.left,
-                                          ),
-                                          if (_showTranslation &&
-                                              _translatedLines != null &&
-                                              index <
-                                                  _translatedLines!.length &&
-                                              _translatedLines![index]
-                                                  .trim()
-                                                  .isNotEmpty)
-                                            Padding(
-                                              padding: const EdgeInsets.only(
-                                                top: 4,
-                                              ),
-                                              child: Text(
-                                                _translatedLines![index],
-                                                textAlign: TextAlign.left,
-                                                style: TextStyle(
-                                                  color: Colors.white
-                                                      .withValues(alpha: 0.4),
-                                                  fontSize:
-                                                      (isActive ? 21 : 18) - 4,
-                                                  fontStyle: FontStyle.italic,
-                                                  fontWeight: FontWeight.w400,
-                                                ),
-                                              ),
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                  ),
-                                );
-                              },
-                            )
-                          : SingleChildScrollView(
-                              padding: const EdgeInsets.all(24.0),
-                              child:
-                                  _showTranslation && _translatedLines != null
-                                  ? Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: List.generate(
-                                        _lyricsText!.split('\n').length,
-                                        (index) {
-                                          final plainLines = _lyricsText!.split(
-                                            '\n',
-                                          );
-                                          final original = plainLines[index];
-                                          final translation =
-                                              index < _translatedLines!.length
-                                              ? _translatedLines![index]
-                                              : '';
-                                          return Padding(
-                                            padding: const EdgeInsets.only(
-                                              bottom: 10,
-                                            ),
-                                            child: Column(
-                                              crossAxisAlignment:
-                                                  CrossAxisAlignment.start,
-                                              children: [
-                                                Text(
-                                                  original,
-                                                  style: const TextStyle(
-                                                    color: Colors.white70,
-                                                    fontSize: 18,
-                                                    height: 1.6,
-                                                  ),
-                                                ),
-                                                if (translation
-                                                    .trim()
-                                                    .isNotEmpty)
-                                                  Padding(
-                                                    padding:
-                                                        const EdgeInsets.only(
-                                                          top: 2,
-                                                        ),
-                                                    child: Text(
-                                                      translation,
-                                                      style: TextStyle(
-                                                        color: Colors.white
-                                                            .withValues(
-                                                              alpha: 0.4,
-                                                            ),
-                                                        fontSize: 14,
-                                                        fontStyle:
-                                                            FontStyle.italic,
-                                                      ),
-                                                    ),
-                                                  ),
-                                              ],
-                                            ),
-                                          );
-                                        },
-                                      ),
-                                    )
-                                  : Text(
-                                      _lyricsText!,
-                                      style: const TextStyle(
-                                        color: Colors.white70,
-                                        fontSize: 18,
-                                        height: 1.6,
-                                      ),
-                                    ),
-                            ),
-                    ),
-            ),
+            Expanded(child: _buildLyricsBody(context)),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildLyricsBody(BuildContext context) {
+    final isSynced = _parsedLines.isNotEmpty;
+    return _isLoading
+        ? const Center(
+            child: CircularProgressIndicator(color: Color(0xFF8C9EFF)),
+          )
+        : _lyricsText == null
+        ? Center(
+            child: Text(
+              AppLocalizations.of(context)!.lyricsUnavailable,
+              style: const TextStyle(color: Colors.white38, fontSize: 16),
+            ),
+          )
+        : NotificationListener<ScrollNotification>(
+            onNotification: (notification) {
+              if (notification is UserScrollNotification) {
+                _userScrolling = true;
+                _lastScrollTime = DateTime.now();
+              }
+              return false;
+            },
+            child: isSynced
+                ? ListView.builder(
+                    controller: _scrollController,
+                    itemCount: _parsedLines.length,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 24,
+                      vertical: 20,
+                    ),
+                    itemBuilder: (context, index) {
+                      final line = _parsedLines[index];
+                      final isActive = index == _activeIndex;
+
+                      return GestureDetector(
+                        key: _lyricKeys[index],
+                        onTap: () {
+                          widget.audioHandler.seek(line.time);
+                          setState(() {
+                            _activeIndex = index;
+                            _userScrolling = false;
+                          });
+                          _scrollToActiveLine(index);
+                        },
+                        child: AnimatedDefaultTextStyle(
+                          duration: const Duration(milliseconds: 200),
+                          style: TextStyle(
+                            color: isActive ? Colors.white : Colors.white38,
+                            fontSize: isActive ? 21 : 18,
+                            fontWeight: isActive
+                                ? FontWeight.bold
+                                : FontWeight.w500,
+                            height: 1.5,
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 10.0),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(line.text, textAlign: TextAlign.left),
+                                if (_showTranslation &&
+                                    _translatedLines != null &&
+                                    index < _translatedLines!.length &&
+                                    _translatedLines![index].trim().isNotEmpty)
+                                  Padding(
+                                    padding: const EdgeInsets.only(top: 4),
+                                    child: Text(
+                                      _translatedLines![index],
+                                      textAlign: TextAlign.left,
+                                      style: TextStyle(
+                                        color: Colors.white.withValues(
+                                          alpha: 0.4,
+                                        ),
+                                        fontSize: (isActive ? 21 : 18) - 4,
+                                        fontStyle: FontStyle.italic,
+                                        fontWeight: FontWeight.w400,
+                                      ),
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      );
+                    },
+                  )
+                : SingleChildScrollView(
+                    padding: const EdgeInsets.all(24.0),
+                    child: _showTranslation && _translatedLines != null
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: List.generate(
+                              _lyricsText!.split('\n').length,
+                              (index) {
+                                final plainLines = _lyricsText!.split('\n');
+                                final original = plainLines[index];
+                                final translation =
+                                    index < _translatedLines!.length
+                                    ? _translatedLines![index]
+                                    : '';
+                                return Padding(
+                                  padding: const EdgeInsets.only(bottom: 10),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        original,
+                                        style: const TextStyle(
+                                          color: Colors.white70,
+                                          fontSize: 18,
+                                          height: 1.6,
+                                        ),
+                                      ),
+                                      if (translation.trim().isNotEmpty)
+                                        Padding(
+                                          padding: const EdgeInsets.only(
+                                            top: 2,
+                                          ),
+                                          child: Text(
+                                            translation,
+                                            style: TextStyle(
+                                              color: Colors.white.withValues(
+                                                alpha: 0.4,
+                                              ),
+                                              fontSize: 14,
+                                              fontStyle: FontStyle.italic,
+                                            ),
+                                          ),
+                                        ),
+                                    ],
+                                  ),
+                                );
+                              },
+                            ),
+                          )
+                        : Text(
+                            _lyricsText!,
+                            style: const TextStyle(
+                              color: Colors.white70,
+                              fontSize: 18,
+                              height: 1.6,
+                            ),
+                          ),
+                  ),
+          );
+  }
+
+  Widget _buildEmbedded(BuildContext context) {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 4, 8, 4),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  [
+                    _item.title,
+                    if ((_item.artist ?? '').isNotEmpty) _item.artist!,
+                  ].join(' · '),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(color: Colors.white54, fontSize: 12),
+                ),
+              ),
+              if (_isTranslating)
+                const Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 12),
+                  child: SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  ),
+                )
+              else
+                IconButton(
+                  iconSize: 20,
+                  visualDensity: VisualDensity.compact,
+                  icon: Icon(
+                    Icons.translate_rounded,
+                    color: _showTranslation
+                        ? const Color(0xFF8C9EFF)
+                        : Colors.white70,
+                  ),
+                  onPressed: _lyricsText == null ? null : _toggleTranslation,
+                ),
+            ],
+          ),
+        ),
+        const Divider(color: Colors.white12, height: 1),
+        Expanded(child: _buildLyricsBody(context)),
+      ],
     );
   }
 }
@@ -1357,7 +1367,13 @@ class _LyricsBottomSheetState extends State<LyricsBottomSheet> {
 class QueueBottomSheet extends StatefulWidget {
   final AudioPlayerHandler audioHandler;
 
-  const QueueBottomSheet({super.key, required this.audioHandler});
+  final bool embedded;
+
+  const QueueBottomSheet({
+    super.key,
+    required this.audioHandler,
+    this.embedded = false,
+  });
 
   @override
   State<QueueBottomSheet> createState() => _QueueBottomSheetState();
@@ -1373,6 +1389,7 @@ class _QueueBottomSheetState extends State<QueueBottomSheet> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.embedded) return _buildQueueList(context);
     final media = MediaQuery.of(context);
     final l10n = AppLocalizations.of(context)!;
 
@@ -1424,116 +1441,112 @@ class _QueueBottomSheetState extends State<QueueBottomSheet> {
               ),
             ),
             const Divider(color: Colors.white12, height: 1),
-            Expanded(
-              child: StreamBuilder<List<MediaItem>>(
-                stream: widget.audioHandler.queue,
-                builder: (context, queueSnapshot) {
-                  final list = queueSnapshot.data ?? [];
-                  if (list.isEmpty) {
-                    return Center(
-                      child: Text(
-                        l10n.queueEmpty,
-                        style: const TextStyle(
-                          color: Colors.white38,
-                          fontSize: 16,
-                        ),
-                      ),
-                    );
-                  }
-
-                  return StreamBuilder<MediaItem?>(
-                    stream: widget.audioHandler.mediaItem,
-                    builder: (context, mediaSnapshot) {
-                      final currentItem = mediaSnapshot.data;
-
-                      return ReorderableListView.builder(
-                        itemCount: list.length,
-                        onReorder: (oldIndex, newIndex) {
-                          widget.audioHandler.moveQueueItem(oldIndex, newIndex);
-                        },
-                        padding: const EdgeInsets.symmetric(vertical: 12),
-                        itemBuilder: (context, index) {
-                          final item = list[index];
-                          final isPlaying = currentItem?.id == item.id;
-
-                          return Dismissible(
-                            key: ValueKey('dismiss_${item.id}'),
-                            direction: DismissDirection.endToStart,
-                            background: Container(
-                              alignment: Alignment.centerRight,
-                              padding: const EdgeInsets.only(right: 20.0),
-                              color: Colors.redAccent.withValues(alpha: 0.8),
-                              child: const Icon(
-                                Icons.delete,
-                                color: Colors.white,
-                              ),
-                            ),
-                            onDismissed: (_) {
-                              widget.audioHandler.removeQueueItem(item);
-                            },
-                            child: Material(
-                              key: ValueKey('tile_${item.id}'),
-                              color: isPlaying
-                                  ? Colors.white.withValues(alpha: 0.06)
-                                  : Colors.transparent,
-                              child: ListTile(
-                                leading: ClipRRect(
-                                  borderRadius: BorderRadius.circular(6),
-                                  child: _buildThumbnail(item),
-                                ),
-                                title: Text(
-                                  item.title,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    color: isPlaying
-                                        ? const Color(0xFF8C9EFF)
-                                        : Colors.white,
-                                    fontWeight: isPlaying
-                                        ? FontWeight.bold
-                                        : FontWeight.normal,
-                                    fontSize: 15,
-                                  ),
-                                ),
-                                subtitle: Text(
-                                  '${item.artist ?? l10n.commonUnknownArtist} • ${_formatDuration(item.duration)}',
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: TextStyle(
-                                    color: isPlaying
-                                        ? const Color(
-                                            0xFF8C9EFF,
-                                          ).withValues(alpha: 0.7)
-                                        : Colors.white38,
-                                    fontSize: 13,
-                                  ),
-                                ),
-                                trailing: ReorderableDragStartListener(
-                                  index: index,
-                                  child: const Padding(
-                                    padding: EdgeInsets.all(8.0),
-                                    child: Icon(
-                                      Icons.drag_handle,
-                                      color: Colors.white38,
-                                    ),
-                                  ),
-                                ),
-                                onTap: () {
-                                  widget.audioHandler.playFromMediaId(item.id);
-                                },
-                              ),
-                            ),
-                          );
-                        },
-                      );
-                    },
-                  );
-                },
-              ),
-            ),
+            Expanded(child: _buildQueueList(context)),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildQueueList(BuildContext context) {
+    final l10n = AppLocalizations.of(context)!;
+    return StreamBuilder<List<MediaItem>>(
+      stream: widget.audioHandler.queue,
+      builder: (context, queueSnapshot) {
+        final list = queueSnapshot.data ?? [];
+        if (list.isEmpty) {
+          return Center(
+            child: Text(
+              l10n.queueEmpty,
+              style: const TextStyle(color: Colors.white38, fontSize: 16),
+            ),
+          );
+        }
+
+        return StreamBuilder<MediaItem?>(
+          stream: widget.audioHandler.mediaItem,
+          builder: (context, mediaSnapshot) {
+            final currentItem = mediaSnapshot.data;
+
+            return ReorderableListView.builder(
+              itemCount: list.length,
+              onReorder: (oldIndex, newIndex) {
+                widget.audioHandler.moveQueueItem(oldIndex, newIndex);
+              },
+              // Cada fila ya trae su propio asa (`ReorderableDragStartListener`
+              // abajo); en escritorio el asa por defecto se sumaba a esa y se
+              // veían dos.
+              buildDefaultDragHandles: false,
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              itemBuilder: (context, index) {
+                final item = list[index];
+                final isPlaying = currentItem?.id == item.id;
+
+                return Dismissible(
+                  key: ValueKey('dismiss_${item.id}'),
+                  direction: DismissDirection.endToStart,
+                  background: Container(
+                    alignment: Alignment.centerRight,
+                    padding: const EdgeInsets.only(right: 20.0),
+                    color: Colors.redAccent.withValues(alpha: 0.8),
+                    child: const Icon(Icons.delete, color: Colors.white),
+                  ),
+                  onDismissed: (_) {
+                    widget.audioHandler.removeQueueItem(item);
+                  },
+                  child: Material(
+                    key: ValueKey('tile_${item.id}'),
+                    color: isPlaying
+                        ? Colors.white.withValues(alpha: 0.06)
+                        : Colors.transparent,
+                    child: ListTile(
+                      leading: ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: _buildThumbnail(item),
+                      ),
+                      title: Text(
+                        item.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: isPlaying
+                              ? const Color(0xFF8C9EFF)
+                              : Colors.white,
+                          fontWeight: isPlaying
+                              ? FontWeight.bold
+                              : FontWeight.normal,
+                          fontSize: 15,
+                        ),
+                      ),
+                      subtitle: Text(
+                        '${item.artist ?? l10n.commonUnknownArtist} • ${_formatDuration(item.duration)}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: isPlaying
+                              ? const Color(0xFF8C9EFF).withValues(alpha: 0.7)
+                              : Colors.white38,
+                          fontSize: 13,
+                        ),
+                      ),
+                      trailing: ReorderableDragStartListener(
+                        index: index,
+                        child: const Padding(
+                          padding: EdgeInsets.all(8.0),
+                          child: Icon(Icons.drag_handle, color: Colors.white38),
+                        ),
+                      ),
+                      onTap: () {
+                        widget.audioHandler.playFromMediaId(item.id);
+                      },
+                    ),
+                  ),
+                );
+              },
+            );
+          },
+        );
+      },
     );
   }
 
@@ -1555,11 +1568,16 @@ class SeekBar extends StatefulWidget {
   final Duration duration;
   final ValueChanged<Duration> onChangeEnd;
 
+  /// `true` en la barra inferior de escritorio: los tiempos van a los lados
+  /// del slider, en una sola fila, en vez de debajo.
+  final bool inline;
+
   const SeekBar({
     super.key,
     required this.position,
     required this.duration,
     required this.onChangeEnd,
+    this.inline = false,
   });
 
   @override
@@ -1582,32 +1600,59 @@ class _SeekBarState extends State<SeekBar> {
     final value = (_dragValue ?? widget.position.inMilliseconds.toDouble())
         .clamp(0.0, hasDuration ? maxMs : 1.0);
 
+    final slider = SliderTheme(
+      data: SliderTheme.of(context).copyWith(
+        trackHeight: 4,
+        thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
+        overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
+        activeTrackColor: const Color(0xFF8C9EFF),
+        inactiveTrackColor: Colors.white10,
+        thumbColor: const Color(0xFF8C9EFF),
+      ),
+      child: Slider(
+        min: 0,
+        max: hasDuration ? maxMs : 1,
+        value: hasDuration ? value : 0,
+        onChanged: hasDuration ? (v) => setState(() => _dragValue = v) : null,
+        onChangeEnd: hasDuration
+            ? (v) {
+                widget.onChangeEnd(Duration(milliseconds: v.toInt()));
+                setState(() => _dragValue = null);
+              }
+            : null,
+      ),
+    );
+    const timeStyle = TextStyle(color: Colors.white54, fontSize: 12);
+    // Mientras se arrastra, el tiempo de la izquierda sigue al pulgar — si
+    // no, la barra en línea (donde el número está pegado al slider) parece
+    // no reaccionar hasta soltar.
+    final shownPosition = _dragValue == null
+        ? widget.position
+        : Duration(milliseconds: _dragValue!.toInt());
+
+    if (widget.inline) {
+      return Row(
+        children: [
+          SizedBox(
+            width: 40,
+            child: Text(
+              _formatDuration(shownPosition),
+              textAlign: TextAlign.right,
+              style: timeStyle,
+            ),
+          ),
+          Expanded(child: slider),
+          SizedBox(
+            width: 40,
+            child: Text(_formatDuration(widget.duration), style: timeStyle),
+          ),
+        ],
+      );
+    }
+
     return Column(
       children: [
-        SliderTheme(
-          data: SliderTheme.of(context).copyWith(
-            trackHeight: 4,
-            thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 6),
-            overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
-            activeTrackColor: const Color(0xFF8C9EFF),
-            inactiveTrackColor: Colors.white10,
-            thumbColor: const Color(0xFF8C9EFF),
-          ),
-          child: Slider(
-            min: 0,
-            max: hasDuration ? maxMs : 1,
-            value: hasDuration ? value : 0,
-            onChanged: hasDuration
-                ? (v) => setState(() => _dragValue = v)
-                : null,
-            onChangeEnd: hasDuration
-                ? (v) {
-                    widget.onChangeEnd(Duration(milliseconds: v.toInt()));
-                    setState(() => _dragValue = null);
-                  }
-                : null,
-          ),
-        ),
+        slider,
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24.0),
           child: Row(

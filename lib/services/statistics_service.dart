@@ -10,12 +10,10 @@ import 'database_helper.dart';
 
 /// Las cuatro consultas del periodo, en paralelo.
 ///
-/// **Ojo con las definiciones de periodo, que son incoherentes entre sí y lo
-/// son a propósito** (ver `DatabaseHelper`): "semana" es la semana natural
-/// desde el lunes en hora local, y "mes" es una ventana deslizante de 30 días
-/// sin huso horario. Cualquier arreglo tiene que hacerse a la vez aquí y en el
-/// servidor, o las estadísticas propias y las que ve un amigo dejarían de
-/// coincidir y se leería como un fallo.
+/// Periodos naturales en hora local (ver `DatabaseHelper`): "semana" desde el
+/// lunes y "mes" desde el día 1. Cualquier cambio tiene que hacerse a la vez
+/// aquí y en el servidor (library_store.py), o las estadísticas propias y las
+/// que ve un amigo dejarían de coincidir y se leería como un fallo.
 Future<StatisticsData> loadLocalStatistics({
   required bool isWeek,
   DatabaseHelper? db,
