@@ -85,9 +85,10 @@ export default function HomePage() {
             </div>
             <p className="text-2xl font-medium text-foreground/95 md:text-3xl">{site.tagline}</p>
             <p className="max-w-xl text-lg text-muted-foreground">
-              Un reproductor de música local, sin suscripciones ni catálogos ajenos: organiza tu
-              colección por carpetas y playlists, sigue las letras sincronizadas y descubre qué
-              escuchas más. Todo en tu teléfono o en tu PC.
+              Tu música donde quieras, cuando quieras y como quieras. Un reproductor local, sin
+              suscripciones ni catálogos ajenos: organiza tu colección por carpetas y playlists,
+              sigue las letras sincronizadas y descubre qué escuchas más, sin conexión y sin que
+              nada salga de tu teléfono o tu PC.
             </p>
             <p className="text-xs text-muted-foreground">
               Gratis, sin anuncios ni analítica. Licencia MIT.{" "}
