@@ -29,13 +29,23 @@ def test_week_start_utc_con_desfase_positivo():
     assert start == _utc(2026, 8, 23, 11, 0)
 
 
-def test_month_window_es_una_ventana_deslizante_sin_huso():
+def test_month_start_utc_es_el_dia_1_en_el_huso_de_la_cuenta():
+    # 24 de agosto a las 12:00 UTC, cuenta en UTC-5: el mes empezó el 1 de
+    # agosto a las 00:00 local = 05:00 UTC.
     now = _utc(2026, 8, 24, 12, 0)
-    start = library_store.month_window_start_utc(now)
-    assert start == now - datetime.timedelta(days=30)
+    assert library_store.month_start_utc(now, -300) == _utc(2026, 8, 1, 5, 0)
+
+
+def test_month_start_utc_cambia_de_mes_segun_el_huso():
+    # 1 de septiembre a las 02:00 UTC: en UTC-5 todavía es 31 de agosto, así
+    # que el mes vigente es agosto.
+    now = _utc(2026, 9, 1, 2, 0)
+    assert library_store.month_start_utc(now, -300) == _utc(2026, 8, 1, 5, 0)
+    # En UTC+2 ya es 1 de septiembre a las 04:00: el mes empezó a las 22:00 UTC del 31.
+    assert library_store.month_start_utc(now, 120) == _utc(2026, 8, 31, 22, 0)
 
 
 def test_period_start_utc_despacha_por_nombre():
     now = _utc(2026, 8, 24, 12, 0)
-    assert library_store.period_start_utc("month", now, -300) == library_store.month_window_start_utc(now)
+    assert library_store.period_start_utc("month", now, -300) == library_store.month_start_utc(now, -300)
     assert library_store.period_start_utc("week", now, -300) == library_store.week_start_utc(now, -300)

@@ -26,6 +26,7 @@ import 'providers/download_provider.dart';
 import 'providers/music_provider.dart';
 import 'providers/settings_provider.dart';
 import 'providers/sync_provider.dart';
+import 'screens/legal_screen.dart';
 import 'screens/main_shell_screen.dart';
 import 'screens/playlist_detail_screen.dart';
 import 'services/desktop_layout.dart';
@@ -281,7 +282,7 @@ class RouteGenerator {
 
     switch (settings.name) {
       case '/':
-        return MaterialPageRoute(builder: (_) => const MainShellScreen());
+        return MaterialPageRoute(builder: (_) => const LegalGate(child: MainShellScreen()));
       case '/playlist':
         if (args is String) {
           return MaterialPageRoute(

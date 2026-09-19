@@ -683,6 +683,11 @@ async def get_account(account: accounts.Account = Depends(current_account)) -> d
         "libraryVersion": account.library_version,
         "hasLibrary": account.library_version > 0,
         "friendCount": friend_count,
+        # El interruptor de "escuchando ahora" tal como lo tiene el SERVIDOR:
+        # la app lo compara con su preferencia local y corrige la diferencia
+        # en cada sincronizacion (ver SyncProvider). Sin esto, un interruptor
+        # encendido solo en el telefono se veia como "sin actividad" para todos.
+        "shareNowPlaying": await _account_store.share_now_playing(account.id),
     }
 
 

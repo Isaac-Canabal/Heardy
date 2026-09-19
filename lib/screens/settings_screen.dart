@@ -7,6 +7,7 @@ import '../providers/settings_provider.dart';
 import '../providers/sync_provider.dart';
 import '../screens/auth/login_screen.dart';
 import '../screens/friends_screen.dart';
+import '../screens/legal_screen.dart';
 import '../screens/sync_status_screen.dart';
 import '../services/database_helper.dart';
 import '../theme/app_theme.dart';
@@ -543,6 +544,23 @@ class SettingsScreen extends StatelessWidget {
                     height: 1.4,
                   ),
                 ),
+                const SizedBox(height: 12),
+                SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton.icon(
+                    style: OutlinedButton.styleFrom(
+                      foregroundColor: Colors.white,
+                      side: BorderSide(color: Colors.white.withValues(alpha: 0.3)),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                      padding: const EdgeInsets.symmetric(vertical: 12),
+                    ),
+                    icon: const Icon(Icons.gavel_rounded, size: 18),
+                    label: Text(l10n.legalTitle, style: const TextStyle(fontWeight: FontWeight.w600)),
+                    onPressed: () => Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => const LegalScreen()),
+                    ),
+                  ),
+                ),
               ],
             ),
           ),
@@ -942,7 +960,16 @@ class _AccountSection extends StatelessWidget {
                 l10n.presenceShareBody,
                 style: TextStyle(color: Colors.white.withValues(alpha: 0.45), fontSize: 11),
               ),
-              onChanged: (enabled) => context.read<SettingsProvider>().setShareNowPlaying(enabled),
+              onChanged: (enabled) async {
+                final messenger = ScaffoldMessenger.of(context);
+                final sync = context.read<SyncProvider>();
+                final notSaved = l10n.presenceShareNotSaved;
+                await context.read<SettingsProvider>().setShareNowPlaying(enabled);
+                final confirmed = await sync.setShareNowPlaying(enabled);
+                if (confirmed == null) {
+                  messenger.showSnackBar(SnackBar(content: Text(notSaved)));
+                }
+              },
             ),
             const SizedBox(height: 4),
             TextButton(

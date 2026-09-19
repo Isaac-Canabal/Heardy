@@ -117,16 +117,6 @@ class _TitleBarBrand extends StatelessWidget {
               filterQuality: FilterQuality.medium,
             ),
           ),
-          const SizedBox(width: 10),
-          Text(
-            'Heardy',
-            style: TextStyle(
-              color: Colors.white.withValues(alpha: 0.85),
-              fontSize: 13,
-              fontWeight: FontWeight.w600,
-              letterSpacing: -0.1,
-            ),
-          ),
         ],
       ),
     );

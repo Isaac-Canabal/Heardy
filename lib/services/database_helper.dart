@@ -1177,6 +1177,15 @@ class DatabaseHelper {
     await db.rawUpdate('UPDATE play_history SET syncedAt = NULL');
   }
 
+  /// Día 1 del mes en curso a las 00:00 en hora local: el "mes" de las
+  /// estadísticas es el mes natural, igual que la semana es la semana
+  /// natural. El servidor replica esta definición (library_store.py,
+  /// month_start_utc) para que lo que ve un amigo coincida con lo propio.
+  String _getStartOfMonth() {
+    final now = DateTime.now();
+    return DateTime(now.year, now.month, 1).toIso8601String();
+  }
+
   String _getStartOfWeek() {
     final now = DateTime.now();
     final daysToSubtract = now.weekday - 1;
@@ -1203,7 +1212,7 @@ class DatabaseHelper {
 
   Future<List<Map<String, dynamic>>> getTopSongsThisMonth({int limit = 10}) async {
     final db = await database;
-    final oneMonthAgo = DateTime.now().subtract(Duration(days: 30)).toIso8601String();
+    final oneMonthAgo = _getStartOfMonth();
     
     final result = await db.rawQuery('''
       SELECT s.id, s.title, s.artist, s.artPath, COUNT(*) as playCount
@@ -1233,7 +1242,7 @@ class DatabaseHelper {
 
   Future<int> getTotalPlaysThisMonth() async {
     final db = await database;
-    final oneMonthAgo = DateTime.now().subtract(Duration(days: 30)).toIso8601String();
+    final oneMonthAgo = _getStartOfMonth();
     
     final result = await db.rawQuery('''
       SELECT COUNT(*) as total
@@ -1259,7 +1268,7 @@ class DatabaseHelper {
 
   Future<int> getTotalListenTimeThisMonth() async {
     final db = await database;
-    final oneMonthAgo = DateTime.now().subtract(Duration(days: 30)).toIso8601String();
+    final oneMonthAgo = _getStartOfMonth();
 
     final result = await db.rawQuery('''
       SELECT COALESCE(SUM(playDuration), 0) as total
@@ -1292,7 +1301,7 @@ class DatabaseHelper {
 
   Future<List<Map<String, dynamic>>> getTopArtistsThisMonth() async {
     final db = await database;
-    final oneMonthAgo = DateTime.now().subtract(Duration(days: 30)).toIso8601String();
+    final oneMonthAgo = _getStartOfMonth();
 
     return await db.rawQuery('''
       SELECT s.artist, COUNT(*) as playCount
