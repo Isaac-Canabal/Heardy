@@ -140,6 +140,8 @@ lib/
 └── theme/app_theme.dart             # color presets + a custom mode (user-chosen primary/secondary)
 
 server/                              # FastAPI + yt-dlp microservice — see server/README.md
+
+web/                                  # public marketing site (Next.js) — see "Website" below
 ```
 
 ### State management: Provider
@@ -421,6 +423,31 @@ flutter clean                    # wipe build/ and .dart_tool/ — use if you hi
 No CI config, no `analysis_options.yaml` beyond `flutter_lints` default. Signing config for release builds is
 kept out of version control (`android/keystore.properties`, the release keystore itself) — see the gitignored
 local notes for where they actually live on this machine; never document that location here.
+
+## Website (`web/`)
+
+The public marketing site — landing page, "Cómo funciona", legal pages — is a separate Next.js app in `web/`,
+independent of the Flutter app. **It does not deploy on Vercel, Netlify, or any git-connected CI/CD.** There is
+no pipeline that watches `git push` — a merge to any branch, including the default one, changes nothing on the
+live site until someone runs the deploy command by hand from `web/`.
+
+- **Host: Cloudflare Workers, static assets only** (`web/wrangler.jsonc`, `assets.directory: "./out"`) — not
+  Cloudflare Pages, not Vercel. `next.config.ts` builds a static export (`output: "export"`); Wrangler just
+  uploads the resulting `out/` folder, there is no server-side Worker code.
+- **Deploy is one manual command, from `web/`:**
+  ```bash
+  cd web
+  npm run deploy      # runs `next build` then `wrangler deploy` — builds AND publishes in one step
+  ```
+  Live at `https://heardy.vainastech.workers.dev`. A commit merged to a branch, even the default one, is
+  **not** live until this command has been run from a machine with `wrangler` authenticated against the
+  account.
+- `npm run preview` (`next build && wrangler dev`) serves the static export locally through Wrangler, for
+  checking a build before deploying it — separate from `npm run dev` (plain `next dev`, live-reloading but not
+  representative of the static-export output).
+- After deploying, verify the live change actually landed rather than assuming the deploy succeeded — e.g.
+  `curl -s https://heardy.vainastech.workers.dev/ | grep '<a distinctive class or string from the change>'` —
+  since a build error or a stale `out/` can make `wrangler deploy` succeed while uploading the wrong content.
 
 ## Security rules
 
