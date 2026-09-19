@@ -11,7 +11,7 @@ type Props = {
   draft?: boolean;
 };
 
-export function LegalPage({ title, intro, children, draft = true }: Props) {
+export function LegalPage({ title, intro, children, draft = false }: Props) {
   return (
     <article className="mx-auto max-w-3xl px-4 py-14">
       <header className="space-y-4">
@@ -51,13 +51,5 @@ export function LegalSection({ id, title, children }: { id: string; title: strin
       <h2 className="text-2xl font-semibold tracking-tight">{title}</h2>
       {children}
     </section>
-  );
-}
-
-export function LegalNote({ children }: { children: ReactNode }) {
-  return (
-    <p className="rounded-lg border border-dashed border-brand-light/40 bg-brand/10 px-3 py-2 text-sm text-brand-light">
-      Nota de redacción: {children}
-    </p>
   );
 }

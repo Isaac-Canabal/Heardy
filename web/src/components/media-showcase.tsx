@@ -71,9 +71,9 @@ export function MediaFrame({ media, className }: { media: ShowcaseMedia; classNa
  */
 export function MediaShowcase({ media, className }: { media: ShowcaseMedia[]; className?: string }) {
   return (
-    <div className={cn("flex flex-col items-center gap-6 md:flex-row md:items-end md:justify-center", className)}>
+    <div className={cn("flex flex-col items-center gap-6 md:flex-row md:flex-wrap md:items-end md:justify-center", className)}>
       {media.map((m, i) => (
-        <MediaFrame key={`${m.device}-${i}`} media={m} className={m.device === "desktop" ? "md:flex-1" : undefined} />
+        <MediaFrame key={`${m.device}-${i}`} media={m} className={m.device === "desktop" ? "md:basis-full md:max-w-3xl" : undefined} />
       ))}
     </div>
   );

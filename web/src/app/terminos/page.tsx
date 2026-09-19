@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { LegalNote, LegalPage, LegalSection } from "@/components/legal-page";
+import { LegalPage, LegalSection } from "@/components/legal-page";
 import { site } from "@/content/site";
 
 export const metadata: Metadata = {
@@ -14,6 +14,7 @@ export default function TermsPage() {
     <LegalPage
       title="Términos de uso"
       intro="Estas condiciones regulan la descarga y el uso de la aplicación Heardy y de los servicios opcionales asociados a ella. Al instalar o usar Heardy aceptas estos términos."
+      draft={false}
     >
       <LegalSection id="servicio" title="1. Qué es Heardy">
         <p>
@@ -64,15 +65,15 @@ export default function TermsPage() {
           </li>
         </ul>
         <p>
-          El operador no controla, revisa ni aprueba los enlaces que el usuario introduce, no conserva
-          el audio extraído y no adquiere ningún derecho sobre él. El operador se reserva el derecho a
-          limitar, suspender o retirar esta función en cualquier momento, incluida la posibilidad de
-          bloquear enlaces o cuentas ante indicios de uso indebido.
+          El servidor actúa como una herramienta técnica que ejecuta, a petición expresa del usuario y
+          para él, la obtención de un archivo concreto; el operador no selecciona, controla, revisa ni
+          aprueba los enlaces que el usuario introduce, no conserva el audio extraído más allá de una
+          caché técnica temporal, no lo pone a disposición de otros usuarios y no adquiere ningún
+          derecho sobre él. El operador se reserva el derecho a limitar, suspender o retirar esta
+          función en cualquier momento, incluida la posibilidad de bloquear enlaces o cuentas ante
+          indicios de uso indebido, y atenderá los requerimientos legítimos de autoridades y titulares
+          de derechos conforme a la sección 8.
         </p>
-        <LegalNote>
-          conviene que un abogado confirme el encaje de esta función con la excepción de copia privada
-          y con las obligaciones de intermediarios en Colombia y en los países de destino previstos.
-        </LegalNote>
       </LegalSection>
 
       <LegalSection id="uso-permitido" title="4. Uso permitido y prohibiciones">
@@ -121,16 +122,12 @@ export default function TermsPage() {
 
       <LegalSection id="edad" title="6. Edad mínima">
         <p>
-          Para usar Heardy debes tener al menos 14 años. Si la legislación de tu país exige una edad
-          superior para aceptar condiciones de uso o para el tratamiento de datos personales sin
-          autorización de los padres o tutores, se aplica esa edad. Los menores de edad que usen la
-          cuenta opcional deben hacerlo con el conocimiento y la autorización de sus padres o tutores.
+          Para usar Heardy debes tener al menos 14 años. Para crear la cuenta opcional (que implica el
+          tratamiento de datos personales) debes ser mayor de edad conforme a la ley de tu país; los
+          mayores de 14 y menores de edad solo pueden crearla con la autorización de sus padres o
+          tutores, quienes responden de ese uso. Si tu legislación exige una edad superior para
+          aceptar condiciones de uso o para consentir el tratamiento de datos, se aplica esa edad.
         </p>
-        <LegalNote>
-          la edad de 14 años sigue el criterio general del ordenamiento colombiano para el
-          consentimiento de adolescentes; revisar si conviene exigir directamente la mayoría de edad
-          para la cuenta opcional.
-        </LegalNote>
       </LegalSection>
 
       <LegalSection id="garantias" title="7. Sin garantías y limitación de responsabilidad">
@@ -168,14 +165,14 @@ export default function TermsPage() {
           <li>una declaración de que la información facilitada es exacta.</li>
         </ol>
         <p>
-          El operador analizará la notificación en un plazo razonable, podrá retirar o desactivar el
-          acceso al dato señalado y podrá informar al usuario afectado, quien tendrá la posibilidad de
-          presentar una respuesta. Las notificaciones abusivas o de mala fe podrán ser desestimadas.
+          El operador acusará recibo y analizará la notificación en un plazo máximo de quince días
+          hábiles; si resulta fundada, retirará o desactivará el acceso al dato señalado e informará al
+          usuario afectado, quien podrá presentar una respuesta con la misma información y bajo la misma
+          declaración de buena fe. El dato se mantendrá retirado salvo que la respuesta acredite que el
+          uso es lícito o que el reclamante desista. Las notificaciones incompletas, abusivas o de mala
+          fe podrán ser desestimadas, y el operador podrá suspender las cuentas que reincidan en
+          infracciones acreditadas.
         </p>
-        <LegalNote>
-          este procedimiento es una versión simplificada; un abogado debería adaptarlo al régimen de
-          responsabilidad de intermediarios que resulte aplicable.
-        </LegalNote>
       </LegalSection>
 
       <LegalSection id="terminacion" title="9. Suspensión y terminación">
@@ -206,12 +203,19 @@ export default function TermsPage() {
         </p>
       </LegalSection>
 
-      <LegalSection id="contacto" title="12. Contacto">
+      <LegalSection id="aceptacion" title="12. Aceptación">
         <p>
-          Consultas generales: <a href={`mailto:${site.contactEmail}`}>{site.contactEmail}</a>.
-          Reclamaciones de derechos de autor:{" "}
-          <a href={`mailto:${site.legalEmail}`}>{site.legalEmail}</a>. Privacidad y datos personales:{" "}
-          <a href={`mailto:${site.privacyEmail}`}>{site.privacyEmail}</a>.
+          Aceptas estos términos al marcar la casilla correspondiente antes de descargar la aplicación
+          desde este sitio y, de nuevo, al aceptarlos dentro de la aplicación la primera vez que la
+          abres; en ambos casos se registra la versión aceptada y la fecha. Si no estás de acuerdo con
+          ellos, no instales ni uses Heardy.
+        </p>
+      </LegalSection>
+
+      <LegalSection id="contacto" title="13. Contacto">
+        <p>
+          Consultas, reclamaciones de derechos de autor y asuntos de privacidad:{" "}
+          <a href={`mailto:${site.contactEmail}`}>{site.contactEmail}</a>.
         </p>
       </LegalSection>
     </LegalPage>

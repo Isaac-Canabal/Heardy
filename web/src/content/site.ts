@@ -10,12 +10,13 @@ export const site = {
   url: "https://heardy.example.com",
   repoUrl: "https://github.com/Isaac-Canabal/Heardy",
   licenseUrl: "https://github.com/Isaac-Canabal/Heardy/blob/main/LICENSE",
-  // PENDIENTE: correos reales. Son placeholders evidentes a propósito.
-  contactEmail: "contacto@PENDIENTE.example",
-  legalEmail: "legal@PENDIENTE.example",
-  privacyEmail: "privacidad@PENDIENTE.example",
-  // PENDIENTE: nombre o razón social del operador responsable.
-  operatorName: "[Nombre del operador — PENDIENTE]",
+  // Un solo buzón para contacto, reclamaciones de derechos y datos personales.
+  contactEmail: "vainastech@gmail.com",
+  legalEmail: "vainastech@gmail.com",
+  privacyEmail: "vainastech@gmail.com",
+  // Quien responde de la app y del tratamiento de datos. Si más adelante hay
+  // una razón social, va aquí.
+  operatorName: "VainasTech",
   operatorLocation: "Colombia",
   // Fecha de la última revisión de los textos legales.
   legalUpdatedAt: "2026-09-19",

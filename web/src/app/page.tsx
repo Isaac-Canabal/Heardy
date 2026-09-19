@@ -192,7 +192,7 @@ export default function HomePage() {
               </CardHeader>
               <CardContent>
                 <MediaShowcase
-                  media={[{ kind: "image", src: null, alt: "Heardy en Android", device: "phone" }]}
+                  media={[{ kind: "image", src: "/media/movil-reproductor.jpg", alt: "Heardy en Android", device: "phone" }]}
                 />
               </CardContent>
             </Card>

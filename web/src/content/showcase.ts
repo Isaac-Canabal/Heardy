@@ -35,7 +35,7 @@ export const showcase: ShowcaseItem[] = [
     description:
       "Elige una carpeta de tu dispositivo y Heardy la convierte en tu biblioteca: cada subcarpeta es una playlist, y puedes crear, reordenar y combinar playlists sin mover un solo archivo.",
     media: [
-      { kind: "image", src: null, alt: "Biblioteca de playlists en el móvil", device: "phone" },
+      { kind: "image", src: "/media/movil-playlists.jpg", alt: "Lista de playlists con carátula, número de canciones y duración, y el minirreproductor abajo", device: "phone" },
       { kind: "image", src: null, alt: "Biblioteca en la versión de escritorio", device: "desktop" },
     ],
   },
@@ -43,9 +43,13 @@ export const showcase: ShowcaseItem[] = [
     id: "reproductor",
     title: "Reproductor y letras",
     description:
-      "Controles completos, cola de reproducción, reproducción en segundo plano y letras sincronizadas línea a línea, con traducción opcional al idioma que elijas.",
+      "Controles completos, cola de reproducción reordenable, aleatorio, repetición y temporizador de pausa. Letras sincronizadas línea a línea, con traducción opcional debajo de cada verso.",
     media: [
-      { kind: "video", src: null, alt: "Letras sincronizadas en el reproductor", device: "phone" },
+      { kind: "image", src: "/media/movil-reproductor.jpg", alt: "Pantalla de reproducción con la carátula, el título y los controles", device: "phone" },
+      { kind: "image", src: "/media/movil-letra.jpg", alt: "Letra sincronizada con la línea actual resaltada", device: "phone" },
+      { kind: "image", src: "/media/movil-letra-traducida.jpg", alt: "Letra con la traducción al español debajo de cada línea", device: "phone" },
+      { kind: "image", src: "/media/movil-cola.jpg", alt: "Cola de reproducción con las próximas canciones", device: "phone" },
+      { kind: "image", src: "/media/movil-opciones.jpg", alt: "Opciones de aleatorio, repetir y temporizador de pausa", device: "phone" },
       { kind: "image", src: null, alt: "Pantalla de reproducción en escritorio", device: "desktop" },
     ],
   },
@@ -53,18 +57,18 @@ export const showcase: ShowcaseItem[] = [
     id: "estadisticas",
     title: "Estadísticas de escucha",
     description:
-      "Tus canciones y artistas más escuchados, rachas y tiempo total. Todo se calcula en tu dispositivo, y puedes compartirlo como imagen cuando quieras.",
+      "Tus canciones y artistas más escuchados, reproducciones y tiempo total, por semana o por mes. Todo se calcula en tu dispositivo, y puedes compartirlo como imagen cuando quieras.",
     media: [
-      { kind: "image", src: null, alt: "Estadísticas de escucha", device: "phone" },
+      { kind: "image", src: "/media/movil-estadisticas.jpg", alt: "Vista previa de la imagen de estadísticas para compartir: reproducciones, tiempo escuchado, top de artistas y canciones", device: "phone" },
     ],
   },
   {
     id: "bandeja",
-    title: "Bandeja de importación",
+    title: "Bandeja e importación",
     description:
-      "Los archivos que llegan sueltos a la carpeta aparecen en una bandeja: selecciónalos todos y asígnalos a una o varias playlists en una sola acción.",
+      "Los archivos que llegan sueltos a la carpeta aparecen en una bandeja: selecciónalos todos y asígnalos a una o varias playlists en una sola acción. Si tienes tu propio servidor, también puedes importar audio desde un enlace, con una cola que avanza sola y se reanuda si se corta.",
     media: [
-      { kind: "image", src: null, alt: "Bandeja de importación", device: "phone" },
+      { kind: "image", src: "/media/movil-importar.jpg", alt: "Cola de importación con el progreso de la canción actual y las siguientes en espera", device: "phone" },
     ],
   },
   {

@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { LegalNote, LegalPage, LegalSection } from "@/components/legal-page";
+import { LegalPage, LegalSection } from "@/components/legal-page";
 import { site } from "@/content/site";
 
 export const metadata: Metadata = {
@@ -32,6 +32,7 @@ export default function PrivacyPage() {
     <LegalPage
       title="Política de privacidad"
       intro="Heardy está diseñado para que la mayor parte de tus datos no salga nunca de tu dispositivo. Esta política explica qué información se trata cuando decides usar las funciones opcionales que sí requieren un servidor, y qué derechos tienes sobre ella."
+      draft={false}
     >
       <LegalSection id="responsable" title="1. Responsable del tratamiento">
         <p>
@@ -115,9 +116,12 @@ export default function PrivacyPage() {
       <LegalSection id="donde" title="6. Dónde se procesan los datos y encargados">
         <p>
           El servidor opcional y la base de datos se ejecutan en infraestructura de proveedores
-          externos que actúan como encargados del tratamiento y que pueden alojar los datos en los
-          Estados Unidos u otros países. Esto supone una transferencia internacional de datos, que se
-          ampara en tu autorización expresa y en las garantías contractuales de dichos proveedores.
+          externos que actúan como encargados del tratamiento y que alojan los datos en los Estados
+          Unidos. Esto supone una transferencia internacional de datos, que se ampara en tu
+          autorización previa, expresa e informada (artículo 26 de la Ley 1581 de 2012 y Circular
+          Externa 005 de 2017 de la Superintendencia de Industria y Comercio) y en los acuerdos de
+          tratamiento de datos de dichos proveedores, que incluyen las cláusulas contractuales tipo
+          aprobadas por la Comisión Europea para los usuarios de la Unión Europea.
         </p>
         <ul>
           {providers.map((p) => (
@@ -135,11 +139,6 @@ export default function PrivacyPage() {
           los metadatos de la canción (véase <Link href="/licencias">Licencias y créditos</Link>).
           No cedemos tus datos a ningún otro tercero ni los vendemos.
         </p>
-        <LegalNote>
-          confirmar con un abogado si la autorización expresa es suficiente para la transferencia
-          internacional según la Circular Externa 005 de 2017 de la SIC y, para usuarios de la UE, qué
-          mecanismo del capítulo V del RGPD invocan los proveedores.
-        </LegalNote>
       </LegalSection>
 
       <LegalSection id="compartir" title="7. Qué ven otros usuarios">
@@ -156,10 +155,11 @@ export default function PrivacyPage() {
         <p>
           Los datos de tu cuenta se conservan mientras la cuenta exista. La información de «escuchando
           ahora» caduca automáticamente al terminar cada canción y no se almacena de forma permanente.
-          Los registros técnicos del servidor se conservan durante un periodo breve y limitado
-          [PENDIENTE: indicar plazo, p. ej. 30 días]. Al borrar tus datos (sección 9) se eliminan de
-          la base de datos de forma inmediata; las copias de seguridad de los proveedores pueden
-          tardar un tiempo adicional en purgarse [PENDIENTE: confirmar plazo con los proveedores].
+          Los registros técnicos del servidor se conservan como máximo 30 días. Al borrar tus datos
+          (sección 9) se eliminan de la base de datos de forma inmediata; las copias de seguridad
+          automáticas del proveedor de base de datos se purgan en un plazo máximo de 30 días
+          adicionales. Si el servicio opcional dejara de prestarse, los datos de todas las cuentas se
+          eliminarían en ese mismo plazo.
         </p>
       </LegalSection>
 
@@ -196,10 +196,11 @@ export default function PrivacyPage() {
 
       <LegalSection id="menores" title="11. Menores de edad">
         <p>
-          Heardy no está dirigido a menores de 14 años y no crea cuentas a sabiendas para ellos. Los
-          adolescentes que usen la cuenta opcional deben contar con la autorización de sus padres o
-          tutores. Si crees que un menor ha facilitado datos sin esa autorización, escríbenos y los
-          eliminaremos.
+          Heardy no está dirigido a menores de 14 años y no crea cuentas a sabiendas para ellos. La
+          cuenta opcional está pensada para mayores de edad; un mayor de 14 años y menor de edad solo
+          puede crearla con la autorización de sus padres o tutores, en los términos del artículo 7 de
+          la Ley 1581 de 2012 y del artículo 12 del Decreto 1377 de 2013. Si crees que un menor ha
+          facilitado datos sin esa autorización, escríbenos y los eliminaremos.
         </p>
       </LegalSection>
 
