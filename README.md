@@ -63,7 +63,17 @@ Recordá que lo que importás con el servidor es responsabilidad tuya: solo cont
 
 ## Página web (`web/`)
 
-Next.js + shadcn/ui, en la rama `feature/website`. `cd web && npm install && npm run dev` la sirve en `http://localhost:3000`. Las capturas y vídeos se declaran en `web/src/content/showcase.ts` y se colocan en `web/public/media/`; las URLs de descarga, en `web/src/content/downloads.ts`. Se despliega tal cual en Vercel apuntando a la carpeta `web/`.
+Next.js + shadcn/ui, en la rama `feature/website`. `cd web && npm install && npm run dev` la sirve en `http://localhost:3000`; `npm run build` y `npm run lint` deben quedar limpios.
+
+Todo lo variable está en `web/src/content/`:
+
+- `site.ts` — URL pública (para OpenGraph), repo, nombre del operador y correos de contacto (vienen marcados `PENDIENTE`).
+- `downloads.ts` — URLs de descarga (por defecto, la última release de GitHub: `app-release.apk` y `Heardy-Setup.exe`, que hay que adjuntar a la release **con esos nombres exactos**), versión y tamaño aproximado, y `termsVersion`: súbelo cuando cambien los términos y el sitio volverá a pedir la aceptación.
+- `showcase.ts` — capturas y vídeos de "Cómo funciona": copia los archivos a `web/public/media/` y sustituye `src: null` por la ruta (`kind: "image"` o `"video"`; `device: "phone"` o `"desktop"` elige el marco). Las dos tarjetas de "Escritorio y móvil" están directamente en `src/app/page.tsx`.
+
+Los textos legales (`src/app/terminos`, `privacidad`, `licencias`) son borradores con aviso visible y notas para el revisor (`<LegalNote>`); al revisarlos, `draft={false}` y fuera las notas. Las animaciones son de LottieFiles por CDN (Lottie Simple License; créditos en `/licencias` y `src/content/lottie.ts`).
+
+Despliegue en Vercel: importar el repo con **Root Directory = `web`**; sin variables de entorno. Tras el primer despliegue, poner el dominio real en `site.ts`.
 
 ## Arquitectura
 
