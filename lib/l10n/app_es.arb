@@ -153,6 +153,16 @@
   "nowPlayingQueueButton": "Cola",
   "nowPlayingRewind5": "Retroceder 5 s",
   "nowPlayingForward5": "Adelantar 5 s",
+  "desktopVolume": "Volumen",
+  "desktopShowNowPlaying": "Mostrar reproduciendo ahora",
+  "desktopHideNowPlaying": "Ocultar panel",
+  "desktopNowPlayingFrom": "Reproduciendo desde {playlist}",
+  "@desktopNowPlayingFrom": {
+    "placeholders": {
+      "playlist": {"type": "String"}
+    }
+  },
+  "desktopNowPlaying": "Reproduciendo",
   "nowPlayingShuffleTitle": "Aleatorio",
   "nowPlayingRepeatTitle": "Repetir",
   "nowPlayingOnLabel": "Activado",

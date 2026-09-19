@@ -11,6 +11,7 @@ class PlaybackStateService {
   static const _shuffleModeKey = 'shuffle_mode';
   static const _speedKey = 'playback_speed';
   static const _playlistIdKey = 'playlist_id';
+  static const _volumeKey = 'player_volume';
 
   static final PlaybackStateService _instance = PlaybackStateService._internal();
   factory PlaybackStateService() => _instance;
@@ -83,6 +84,28 @@ class PlaybackStateService {
       };
     } catch (e) {
       print('Error restaurando estado de reproducción: $e');
+      return null;
+    }
+  }
+
+  /// El volumen es independiente del resto del estado: no se borra con
+  /// `clearState` (que la cola quede inválida no es motivo para subir el
+  /// volumen de golpe la próxima vez).
+  static Future<void> saveVolume(double volume) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble(_volumeKey, volume);
+    } catch (e) {
+      print('Error guardando el volumen: $e');
+    }
+  }
+
+  static Future<double?> restoreVolume() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      return prefs.getDouble(_volumeKey);
+    } catch (e) {
+      print('Error restaurando el volumen: $e');
       return null;
     }
   }

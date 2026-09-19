@@ -30,6 +30,17 @@ void main() {
       );
     });
 
+    test('flechas arriba/abajo son volumen', () {
+      expect(
+        desktopShortcutFor(LogicalKeyboardKey.arrowUp),
+        DesktopPlaybackShortcut.volumeUp,
+      );
+      expect(
+        desktopShortcutFor(LogicalKeyboardKey.arrowDown),
+        DesktopPlaybackShortcut.volumeDown,
+      );
+    });
+
     test('cualquier otra tecla no hace nada', () {
       expect(
         desktopShortcutFor(LogicalKeyboardKey.keyA),

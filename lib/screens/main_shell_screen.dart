@@ -7,7 +7,11 @@ import '../providers/settings_provider.dart';
 import '../providers/sync_provider.dart';
 import '../services/account_prompt.dart';
 import '../services/database_helper.dart';
+import '../services/desktop_layout.dart';
 import '../theme/app_theme.dart';
+import '../widgets/desktop_now_playing_panel.dart';
+import '../widgets/desktop_playback_bar.dart';
+import '../widgets/desktop_shell_scope.dart';
 import '../widgets/max_width_center.dart';
 import '../widgets/mini_player.dart';
 import '../l10n/app_localizations.dart';
@@ -15,6 +19,7 @@ import 'auth/login_screen.dart';
 import 'home_screen.dart';
 import 'import_screen.dart';
 import 'inbox_screen.dart';
+import 'playlist_detail_screen.dart';
 import 'search_screen.dart';
 import 'settings_screen.dart';
 
@@ -27,7 +32,12 @@ class MainShellScreen extends StatefulWidget {
 
 class _MainShellScreenState extends State<MainShellScreen>
     with WidgetsBindingObserver {
-  int _index = 0;
+  // Un `ValueNotifier` y no un `int` en `setState`: en el escritorio las
+  // pestañas viven dentro de la ruta raíz de un `Navigator` anidado, y una
+  // ruta ya construida no se reconstruye porque el shell haga `setState`.
+  final ValueNotifier<int> _tab = ValueNotifier<int>(0);
+  final GlobalKey<NavigatorState> _contentNav = GlobalKey<NavigatorState>();
+  bool _panelOpen = false;
 
   @override
   void initState() {
@@ -96,7 +106,28 @@ class _MainShellScreenState extends State<MainShellScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _tab.dispose();
     super.dispose();
+  }
+
+  void _selectTab(int i) {
+    // En el escritorio, elegir una sección en la barra lateral también
+    // vuelve a la raíz del contenido (si se estaba dentro de una playlist).
+    _contentNav.currentState?.popUntil((route) => route.isFirst);
+    _tab.value = i;
+    setState(() {});
+  }
+
+  void _openPlaylist(String playlistId) {
+    final nav = _contentNav.currentState;
+    if (nav == null) return;
+    nav.popUntil((route) => route.isFirst);
+    nav.pushNamed('/playlist', arguments: playlistId);
+  }
+
+  void _setPanel(bool open) {
+    if (_panelOpen == open) return;
+    setState(() => _panelOpen = open);
   }
 
   @override
@@ -115,12 +146,6 @@ class _MainShellScreenState extends State<MainShellScreen>
     context.read<SyncProvider>().onAppResumed();
   }
 
-  /// A partir de acá la ventana da para el diseño de dos columnas (barra
-  /// lateral + contenido). Por debajo se usa el diseño de teléfono tal cual,
-  /// que es también lo que ve Android siempre — ver W3 del plan de
-  /// escritorio.
-  static const double desktopBreakpoint = 900;
-
   @override
   Widget build(BuildContext context) {
     // Suscribirse a SettingsProvider para redibujar instantáneamente cuando cambie el tema/idioma
@@ -132,47 +157,95 @@ class _MainShellScreenState extends State<MainShellScreen>
     // iteración del bucle — así que sumarle +1 por "current" lo contaría dos
     // veces.
     final downloadCount = context.watch<DownloadProvider>().pendingCount;
-    final isDesktopLayout =
-        MediaQuery.of(context).size.width >= desktopBreakpoint;
+    final width = MediaQuery.sizeOf(context).width;
 
-    return isDesktopLayout
-        ? _buildDesktopLayout(context, inboxCount, downloadCount)
+    return isDesktopLayout(width)
+        ? _buildDesktopLayout(context, width, inboxCount, downloadCount)
         : _buildMobileLayout(context, inboxCount, downloadCount);
   }
 
-  /// Dos columnas: barra lateral de navegación + playlists a la izquierda,
-  /// contenido a todo el ancho restante, y el mini player abajo cruzando las
-  /// dos columnas (igual que cualquier reproductor de escritorio).
+  /// Tres columnas: barra lateral de navegación + playlists a la izquierda,
+  /// el contenido (con su propio `Navigator`, para que abrir una playlist no
+  /// tape la barra lateral ni el panel) con la barra de reproducción debajo,
+  /// y a la derecha, cuando está abierto, el panel de "reproduciendo ahora"
+  /// a un tercio de la ventana — ver W3 del plan de escritorio.
   Widget _buildDesktopLayout(
     BuildContext context,
+    double width,
     int inboxCount,
     int downloadCount,
   ) {
-    return Scaffold(
-      body: Container(
-        decoration: AppTheme.gradientScaffold(),
-        child: Column(
-          children: [
-            Expanded(
-              child: Row(
-                // `stretch` es lo que le da altura real a las dos columnas.
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _DesktopSidebar(
-                    selectedIndex: _index,
-                    inboxCount: inboxCount,
-                    downloadCount: downloadCount,
-                    onSelect: (i) => setState(() => _index = i),
-                  ),
-                  const VerticalDivider(width: 1, color: Colors.white12),
-                  Expanded(child: _buildTabs()),
-                ],
+    final spec = desktopLayoutFor(width: width, panelOpen: _panelOpen);
+    return DesktopShellScope(
+      panelOpen: _panelOpen,
+      openNowPlaying: () => _setPanel(true),
+      toggleNowPlaying: () => _setPanel(!_panelOpen),
+      openPlaylist: _openPlaylist,
+      child: Scaffold(
+        body: Container(
+          decoration: AppTheme.gradientScaffold(),
+          child: Row(
+            // `stretch` es lo que le da altura real a las columnas.
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SizedBox(
+                width: spec.sidebarWidth,
+                child: _DesktopSidebar(
+                  selectedIndex: _tab.value,
+                  inboxCount: inboxCount,
+                  downloadCount: downloadCount,
+                  onSelect: _selectTab,
+                  onOpenPlaylist: _openPlaylist,
+                ),
               ),
-            ),
-            const MiniPlayer(),
-          ],
+              const VerticalDivider(width: 1, color: Colors.white12),
+              Expanded(
+                child: Column(
+                  children: [
+                    Expanded(child: _buildContentNavigator()),
+                    DesktopPlaybackBar(
+                      panelOpen: _panelOpen,
+                      onTogglePanel: () => _setPanel(!_panelOpen),
+                    ),
+                  ],
+                ),
+              ),
+              if (_panelOpen) ...[
+                const VerticalDivider(width: 1, color: Colors.white12),
+                SizedBox(
+                  width: spec.panelWidth,
+                  child: DesktopNowPlayingPanel(
+                    onClose: () => _setPanel(false),
+                    onOpenPlaylist: _openPlaylist,
+                  ),
+                ),
+              ],
+            ],
+          ),
         ),
       ),
+    );
+  }
+
+  Widget _buildContentNavigator() {
+    return Navigator(
+      key: _contentNav,
+      onGenerateRoute: (settings) {
+        if (settings.name == '/playlist' && settings.arguments is String) {
+          return MaterialPageRoute(
+            settings: settings,
+            builder: (_) =>
+                PlaylistDetailScreen(playlistId: settings.arguments as String),
+          );
+        }
+        return MaterialPageRoute(
+          settings: settings,
+          builder: (_) => ValueListenableBuilder<int>(
+            valueListenable: _tab,
+            builder: (_, index, __) => _buildTabs(index),
+          ),
+        );
+      },
     );
   }
 
@@ -194,7 +267,7 @@ class _MainShellScreenState extends State<MainShellScreen>
         child: MaxWidthCenter(
           child: Stack(
             children: [
-              _buildTabs(),
+              _buildTabs(_tab.value),
               const Positioned(
                 left: 0,
                 right: 0,
@@ -208,8 +281,8 @@ class _MainShellScreenState extends State<MainShellScreen>
       bottomNavigationBar: MaxWidthCenter(
         stretchHeight: false,
         child: NavigationBar(
-          selectedIndex: _index,
-          onDestinationSelected: (i) => setState(() => _index = i),
+          selectedIndex: _tab.value,
+          onDestinationSelected: _selectTab,
           height: 68,
           destinations: [
             NavigationDestination(
@@ -262,9 +335,9 @@ class _MainShellScreenState extends State<MainShellScreen>
   /// Las cinco pantallas, compartidas por los dos diseños — un solo
   /// `IndexedStack` para que cambiar de sección (o de diseño al
   /// redimensionar la ventana) no pierda el estado de ninguna.
-  Widget _buildTabs() {
+  Widget _buildTabs(int index) {
     return IndexedStack(
-      index: _index,
+      index: index,
       // ImportScreen ya no es const (Fase 8: toma un SpotifyService
       // inyectable para tests), así que la lista entera deja de serlo.
       children: [
@@ -286,12 +359,14 @@ class _DesktopSidebar extends StatelessWidget {
   final int inboxCount;
   final int downloadCount;
   final ValueChanged<int> onSelect;
+  final ValueChanged<String> onOpenPlaylist;
 
   const _DesktopSidebar({
     required this.selectedIndex,
     required this.inboxCount,
     required this.downloadCount,
     required this.onSelect,
+    required this.onOpenPlaylist,
   });
 
   @override
@@ -299,131 +374,126 @@ class _DesktopSidebar extends StatelessWidget {
     final l10n = AppLocalizations.of(context)!;
     final playlists = context.watch<MusicProvider>().playlists;
 
-    return SizedBox(
-      width: 260,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 22, 20, 18),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.graphic_eq_rounded,
-                  color: AppTheme.primaryLight,
-                  size: 22,
-                ),
-                const SizedBox(width: 10),
-                const Text(
-                  'Heardy',
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -0.3,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          _SidebarItem(
-            icon: Icons.library_music_outlined,
-            selectedIcon: Icons.library_music_rounded,
-            label: l10n.homeTitle,
-            selected: selectedIndex == 0,
-            onTap: () => onSelect(0),
-          ),
-          _SidebarItem(
-            icon: Icons.inbox_outlined,
-            selectedIcon: Icons.inbox_rounded,
-            label: l10n.navInbox,
-            badgeCount: inboxCount,
-            selected: selectedIndex == 1,
-            onTap: () => onSelect(1),
-          ),
-          _SidebarItem(
-            icon: Icons.cloud_download_outlined,
-            selectedIcon: Icons.cloud_download_rounded,
-            label: l10n.navAdd,
-            badgeCount: downloadCount,
-            selected: selectedIndex == 2,
-            onTap: () => onSelect(2),
-          ),
-          _SidebarItem(
-            icon: Icons.search_outlined,
-            selectedIcon: Icons.search_rounded,
-            label: l10n.searchTitle,
-            selected: selectedIndex == 3,
-            onTap: () => onSelect(3),
-          ),
-          _SidebarItem(
-            icon: Icons.settings_outlined,
-            selectedIcon: Icons.settings_rounded,
-            label: l10n.settingsTitle,
-            selected: selectedIndex == 4,
-            onTap: () => onSelect(4),
-          ),
-          const Divider(
-            height: 28,
-            indent: 20,
-            endIndent: 20,
-            color: Colors.white12,
-          ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-            child: Text(
-              l10n.homeTitle.toUpperCase(),
-              style: TextStyle(
-                color: Colors.white.withValues(alpha: 0.45),
-                fontSize: 11,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 1.2,
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 22, 20, 18),
+          child: Row(
+            children: [
+              Icon(
+                Icons.graphic_eq_rounded,
+                color: AppTheme.primaryLight,
+                size: 22,
               ),
+              const SizedBox(width: 10),
+              const Text(
+                'Heardy',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: -0.3,
+                ),
+              ),
+            ],
+          ),
+        ),
+        _SidebarItem(
+          icon: Icons.library_music_outlined,
+          selectedIcon: Icons.library_music_rounded,
+          label: l10n.homeTitle,
+          selected: selectedIndex == 0,
+          onTap: () => onSelect(0),
+        ),
+        _SidebarItem(
+          icon: Icons.inbox_outlined,
+          selectedIcon: Icons.inbox_rounded,
+          label: l10n.navInbox,
+          badgeCount: inboxCount,
+          selected: selectedIndex == 1,
+          onTap: () => onSelect(1),
+        ),
+        _SidebarItem(
+          icon: Icons.cloud_download_outlined,
+          selectedIcon: Icons.cloud_download_rounded,
+          label: l10n.navAdd,
+          badgeCount: downloadCount,
+          selected: selectedIndex == 2,
+          onTap: () => onSelect(2),
+        ),
+        _SidebarItem(
+          icon: Icons.search_outlined,
+          selectedIcon: Icons.search_rounded,
+          label: l10n.searchTitle,
+          selected: selectedIndex == 3,
+          onTap: () => onSelect(3),
+        ),
+        _SidebarItem(
+          icon: Icons.settings_outlined,
+          selectedIcon: Icons.settings_rounded,
+          label: l10n.settingsTitle,
+          selected: selectedIndex == 4,
+          onTap: () => onSelect(4),
+        ),
+        const Divider(
+          height: 28,
+          indent: 20,
+          endIndent: 20,
+          color: Colors.white12,
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+          child: Text(
+            l10n.homeTitle.toUpperCase(),
+            style: TextStyle(
+              color: Colors.white.withValues(alpha: 0.45),
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
             ),
           ),
-          Expanded(
-            child: playlists.isEmpty
-                ? Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    child: Text(
-                      l10n.homeEmptyTitle,
-                      style: TextStyle(
-                        color: Colors.white.withValues(alpha: 0.35),
-                        fontSize: 12,
-                      ),
+        ),
+        Expanded(
+          child: playlists.isEmpty
+              ? Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  child: Text(
+                    l10n.homeEmptyTitle,
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: 0.35),
+                      fontSize: 12,
                     ),
-                  )
-                : ListView.builder(
-                    padding: const EdgeInsets.only(bottom: 12),
-                    itemCount: playlists.length,
-                    itemBuilder: (context, index) {
-                      final playlist = playlists[index];
-                      return ListTile(
-                        dense: true,
-                        visualDensity: VisualDensity.compact,
-                        leading: Icon(
-                          Icons.queue_music_rounded,
-                          size: 18,
-                          color: Colors.white.withValues(alpha: 0.5),
-                        ),
-                        title: Text(
-                          playlist.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            color: Colors.white.withValues(alpha: 0.8),
-                            fontSize: 13,
-                          ),
-                        ),
-                        onTap: () => Navigator.of(
-                          context,
-                        ).pushNamed('/playlist', arguments: playlist.id),
-                      );
-                    },
                   ),
-          ),
-        ],
-      ),
+                )
+              : ListView.builder(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  itemCount: playlists.length,
+                  itemBuilder: (context, index) {
+                    final playlist = playlists[index];
+                    return ListTile(
+                      dense: true,
+                      visualDensity: VisualDensity.compact,
+                      leading: Icon(
+                        Icons.queue_music_rounded,
+                        size: 18,
+                        color: Colors.white.withValues(alpha: 0.5),
+                      ),
+                      title: Text(
+                        playlist.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: Colors.white.withValues(alpha: 0.8),
+                          fontSize: 13,
+                        ),
+                      ),
+                      onTap: () => onOpenPlaylist(playlist.id),
+                    );
+                  },
+                ),
+        ),
+      ],
     );
   }
 }

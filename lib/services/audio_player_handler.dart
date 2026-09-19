@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:audio_service/audio_service.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:audio_session/audio_session.dart';
 import 'package:saf_util/saf_util.dart';
@@ -51,6 +52,13 @@ bool shouldPersistPlaybackState({
   return next.savedAt.difference(previous.savedAt) >= minInterval;
 }
 
+/// Normaliza un volumen a [0, 1]; un valor no finito (un preference
+/// corrupto, una división rara) vuelve al máximo en vez de dejar la app muda.
+double clampVolume(double value) {
+  if (value.isNaN || value.isInfinite) return 1.0;
+  return value.clamp(0.0, 1.0).toDouble();
+}
+
 class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   final AudioPlayer _player = AudioPlayer();
   final SafUtil _safUtil = SafUtil();
@@ -71,6 +79,38 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   int? _playNextInsertIndex;
 
   AudioPlayer get player => _player;
+
+  // --- VOLUMEN ---
+  // El volumen elegido por el usuario (escritorio: el slider de la barra de
+  // reproducción). Se guarda aparte del volumen real de `_player` porque el
+  // fade-out del temporizador de sueño baja ese último a cero paso a paso y
+  // después tiene que volver exactamente a este valor, no a 1.0.
+  final ValueNotifier<double> volume = ValueNotifier<double>(1.0);
+
+  Future<void> setVolume(double value) async {
+    final v = clampVolume(value);
+    volume.value = v;
+    if (!_sleepFading) {
+      try {
+        await _player.setVolume(v);
+      } catch (e) {
+        print('Error ajustando el volumen: $e');
+      }
+    }
+    PlaybackStateService.saveVolume(v);
+  }
+
+  Future<void> _restoreVolume() async {
+    final raw = await PlaybackStateService.restoreVolume();
+    if (raw == null) return;
+    final saved = clampVolume(raw);
+    volume.value = saved;
+    try {
+      await _player.setVolume(saved);
+    } catch (e) {
+      print('Error restaurando el volumen: $e');
+    }
+  }
 
   // --- SLEEP TIMER ---
   // In-memory only, by design: a sleep timer that survives a full app kill
@@ -146,7 +186,9 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     _sleepFadeTicker = Timer.periodic(stepDuration, (timer) async {
       stepsLeft--;
       try {
-        await _player.setVolume((stepsLeft / steps).clamp(0.0, 1.0));
+        await _player.setVolume(
+          (stepsLeft / steps).clamp(0.0, 1.0) * volume.value,
+        );
       } catch (e) {
         print('Error ajustando volumen durante fade-out: $e');
       }
@@ -158,7 +200,7 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
   }
 
   /// Natural end of the fade-out: pauses playback, then always restores
-  /// volume to 1.0 in a `finally` — if `pause()` throws, the app must not be
+  /// the user's volume in a `finally` — if `pause()` throws, the app must not be
   /// left silently muted.
   Future<void> _finishSleepFade() async {
     _pausingFromSleepFade = true;
@@ -167,7 +209,7 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     } finally {
       _pausingFromSleepFade = false;
       try {
-        await _player.setVolume(1.0);
+        await _player.setVolume(volume.value);
       } catch (e) {
         print('Error restaurando volumen tras el fade-out: $e');
       } finally {
@@ -184,7 +226,7 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     _sleepFadeTicker = null;
     _sleepFading = false;
     try {
-      await _player.setVolume(1.0);
+      await _player.setVolume(volume.value);
     } catch (e) {
       print('Error restaurando volumen al abortar fade-out: $e');
     } finally {
@@ -208,6 +250,7 @@ class AudioPlayerHandler extends BaseAudioHandler with SeekHandler {
     _initAudioSession();
     // Intentar restaurar estado guardado al iniciar
     _restoreSavedState();
+    _restoreVolume();
     
     // Pipe just_audio events to audio_service's playbackState stream
     _player.playbackEventStream.listen((event) {

@@ -7,6 +7,7 @@ import '../models/playlist.dart';
 import '../services/database_helper.dart';
 import '../services/audio_player_handler.dart';
 import '../theme/app_theme.dart';
+import '../widgets/desktop_shell_scope.dart';
 import '../widgets/username_claim_sheet.dart';
 import '../l10n/app_localizations.dart';
 import 'friends_screen.dart';
@@ -292,10 +293,13 @@ class _PlaylistCard extends StatelessWidget {
                           shape: const CircleBorder(),
                           child: InkWell(
                             customBorder: const CircleBorder(),
-                            onTap: () => musicProvider.playPlaylistFromStart(
-                              playlist.id,
-                              audioHandler,
-                            ),
+                            onTap: () {
+                              DesktopShellScope.maybeOf(context)?.openNowPlaying();
+                              musicProvider.playPlaylistFromStart(
+                                playlist.id,
+                                audioHandler,
+                              );
+                            },
                             child: const Padding(
                               padding: EdgeInsets.all(10),
                               child: Icon(

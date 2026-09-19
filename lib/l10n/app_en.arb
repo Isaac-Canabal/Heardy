@@ -107,6 +107,16 @@
   "nowPlayingQueueButton": "Queue",
   "nowPlayingRewind5": "Rewind 5 s",
   "nowPlayingForward5": "Forward 5 s",
+  "desktopVolume": "Volume",
+  "desktopShowNowPlaying": "Show now playing",
+  "desktopHideNowPlaying": "Hide panel",
+  "desktopNowPlayingFrom": "Playing from {playlist}",
+  "@desktopNowPlayingFrom": {
+    "placeholders": {
+      "playlist": {"type": "String"}
+    }
+  },
+  "desktopNowPlaying": "Now playing",
   "nowPlayingShuffleTitle": "Shuffle",
   "nowPlayingRepeatTitle": "Repeat",
   "nowPlayingOnLabel": "On",

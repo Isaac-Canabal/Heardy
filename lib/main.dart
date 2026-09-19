@@ -27,6 +27,7 @@ import 'providers/settings_provider.dart';
 import 'providers/sync_provider.dart';
 import 'screens/main_shell_screen.dart';
 import 'screens/playlist_detail_screen.dart';
+import 'services/desktop_layout.dart';
 import 'services/desktop_shortcuts.dart';
 import 'theme/app_theme.dart';
 
@@ -289,7 +290,8 @@ class RouteGenerator {
 }
 
 /// Atajos de teclado de escritorio (W3 del plan de escritorio): espacio =
-/// pausa/reproduce, flechas = retroceder/adelantar 10s. Sólo si no hay un
+/// pausa/reproduce, flechas izquierda/derecha = retroceder/adelantar 10s,
+/// flechas arriba/abajo = volumen. Sólo si no hay un
 /// campo de texto con foco — si no, escribir un espacio en el buscador o al
 /// renombrar una playlist activaría play/pause en vez de escribir.
 /// `desktopShortcutFor` (services/desktop_shortcuts.dart) es la única parte
@@ -318,6 +320,12 @@ class _DesktopPlaybackShortcuts extends StatelessWidget {
             return KeyEventResult.handled;
           case DesktopPlaybackShortcut.seekForward:
             audioHandler.seekRelative(const Duration(seconds: 10));
+            return KeyEventResult.handled;
+          case DesktopPlaybackShortcut.volumeUp:
+            audioHandler.setVolume(steppedVolume(audioHandler.volume.value, up: true));
+            return KeyEventResult.handled;
+          case DesktopPlaybackShortcut.volumeDown:
+            audioHandler.setVolume(steppedVolume(audioHandler.volume.value, up: false));
             return KeyEventResult.handled;
           case DesktopPlaybackShortcut.none:
             return KeyEventResult.ignored;
