@@ -56,7 +56,7 @@
   "legalPrivacyTab": "Privacy",
   "legalAcceptCheckbox": "I have read and accept the Terms of use and the Privacy policy",
   "legalAcceptButton": "Accept and continue",
-  "legalVersionLine": "Version {version} · Operator: Vainatech · vainastech@gmail.com",
+  "legalVersionLine": "Version {version} · Operator: Vainastech · vainastech@gmail.com",
   "@legalVersionLine": {"placeholders": {"version": {"type": "String"}}},
   "settingsAboutBody": "Your music library player, 100% offline.",
   "settingsAboutExternalServices": "Listening to music is always 100% offline. The app connects to the internet for only three things: looking up a song's lyrics, translating them (if you ask for it), and downloading new music — and it never shares your name or email while doing that. Downloading music does require signing in with an account.",

@@ -72,7 +72,7 @@
   "legalPrivacyTab": "Privacidad",
   "legalAcceptCheckbox": "He leído y acepto los Términos de uso y la Política de privacidad",
   "legalAcceptButton": "Aceptar y continuar",
-  "legalVersionLine": "Versión {version} · Operador: Vainatech · vainastech@gmail.com",
+  "legalVersionLine": "Versión {version} · Operador: Vainastech · vainastech@gmail.com",
   "@legalVersionLine": {"placeholders": {"version": {"type": "String"}}},
   "settingsAboutBody": "Reproductor de tu biblioteca musical, 100% offline.",
   "settingsAboutExternalServices": "Escuchar música es siempre 100% offline. La app se conecta a internet sólo para tres cosas: buscar la letra de una canción, traducirla (si lo pedís) y descargar música nueva — y nunca comparte tu nombre ni tu correo al hacerlo. Descargar música sí requiere iniciar sesión con una cuenta.",

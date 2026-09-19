@@ -6,7 +6,7 @@
 /// pedir la aceptación a quien tenga registrada una versión anterior.
 const String legalVersion = '2026-09-19';
 
-const String legalOperator = 'Vainatech';
+const String legalOperator = 'Vainastech';
 const String legalContactEmail = 'vainastech@gmail.com';
 
 /// La primera versión de la app que pide aceptación registra qué versión se
@@ -97,7 +97,21 @@ const List<LegalSection> termsSections = [
         'los derechos irrenunciables que te reconozca la legislación de protección al consumidor.',
   ),
   LegalSection(
-    '8. Reclamaciones de derechos de autor',
+    '8. Responsabilidad del usuario por el contenido e indemnidad',
+    'Todo el contenido que reproduces, importas, almacenas o sincronizas con Heardy es tuyo o lo '
+        'obtienes tú: el operador no lo elige, no lo revisa y no lo aloja. Eres el único responsable de '
+        'que ese contenido y el uso que hagas de él respeten los derechos de terceros (en particular '
+        'los derechos de autor y conexos), las condiciones de las plataformas de origen y la ley. Si '
+        'importas o conservas contenido sin tener derecho a ello, la responsabilidad es exclusivamente '
+        'tuya.\n\n'
+        'Te comprometes a mantener indemne al operador, a sus colaboradores y proveedores frente a '
+        'cualquier reclamación, sanción, daño o gasto (incluidos honorarios legales razonables) derivado '
+        'del contenido que hayas reproducido, importado, almacenado o compartido a través de Heardy, de '
+        'tu incumplimiento de estos términos o de tu infracción de derechos de terceros o de la ley. El '
+        'operador podrá cooperar con autoridades y titulares de derechos en la medida que la ley exija.',
+  ),
+  LegalSection(
+    '9. Reclamaciones de derechos de autor',
     'Si consideras que un enlace de origen almacenado en el índice de un usuario, un nombre de '
         'usuario u otro dato gestionado por el operador infringe tus derechos, escribe a '
         '$legalContactEmail con tu identificación, la obra afectada, el dato señalado y una declaración '
@@ -106,7 +120,7 @@ const List<LegalSection> termsSections = [
         'Las reclamaciones abusivas podrán desestimarse y las cuentas reincidentes suspenderse.',
   ),
   LegalSection(
-    '9. Suspensión y terminación',
+    '10. Suspensión y terminación',
     'Puedes dejar de usar Heardy en cualquier momento desinstalándolo y, si tienes cuenta, borrando '
         'tus datos desde Ajustes. El operador puede suspender el acceso a los servicios opcionales de '
         'quien incumpla estos términos, o descontinuarlos con un preaviso razonable cuando sea posible. '
@@ -114,12 +128,30 @@ const List<LegalSection> termsSections = [
         'prestarse.',
   ),
   LegalSection(
-    '10. Ley aplicable',
-    'Estos términos se rigen por las leyes de la República de Colombia, sin perjuicio de las normas '
-        'imperativas de protección al consumidor de tu país de residencia.',
+    '11. Ley aplicable y resolución de controversias',
+    'Estos términos se rigen por las leyes de la República de Colombia. Antes de iniciar cualquier '
+        'acción, las partes intentarán resolver la controversia de forma directa, por escrito (tú a '
+        '$legalContactEmail; el operador al correo de tu cuenta), durante treinta (30) días.\n\n'
+        'Si no hay acuerdo, toda controversia derivada de estos términos o del uso de Heardy se '
+        'resolverá mediante arbitraje en derecho conforme a la Ley 1563 de 2012, ante el Centro de '
+        'Arbitraje y Conciliación de la Cámara de Comercio de Bogotá, por un árbitro único, con sede en '
+        'Bogotá y en español. El laudo será definitivo y vinculante; cada parte asume sus costos salvo '
+        'que el laudo disponga otra cosa.\n\n'
+        'Cuando actúes como consumidor y la ley que te proteja te reconozca el derecho a acudir a la '
+        'jurisdicción ordinaria o a la autoridad de protección al consumidor (en Colombia, la '
+        'Superintendencia de Industria y Comercio), este arbitraje es opcional para ti y no limita ese '
+        'derecho. En la medida permitida por la ley, las controversias se resuelven de forma '
+        'individual, no mediante acciones colectivas o de grupo.',
   ),
   LegalSection(
-    '11. Cambios y aceptación',
+    '12. Uso de inteligencia artificial en el desarrollo',
+    'Heardy se desarrolla con asistencia de herramientas de inteligencia artificial para escribir y '
+        'revisar código, textos y documentación, siempre bajo supervisión humana. Ningún dato personal '
+        'de los usuarios ni el contenido de sus bibliotecas se utiliza para entrenar modelos ni se '
+        'comparte con proveedores de inteligencia artificial.',
+  ),
+  LegalSection(
+    '13. Cambios y aceptación',
     'La versión vigente, con su fecha, está siempre publicada en la web del proyecto y en esta '
         'pantalla. Si el cambio es sustancial, la aplicación te pedirá aceptarlo de nuevo. Aceptas '
         'estos términos al pulsar «Aceptar y continuar» la primera vez que abres la app (se registra la '
@@ -152,6 +184,14 @@ const List<LegalSection> privacySections = [
         'canción. Está desactivado por defecto.\n'
         '• Datos técnicos mínimos para operar el servicio (cuotas por cuenta, marcas de sincronización, '
         'registros que nunca combinan tu identidad con el contenido de tus datos).',
+  ),
+  LegalSection(
+    'Resumen de lo que se recoge',
+    'Sin cuenta, nada (salvo título, artista y duración de la canción para pedir letras). Con cuenta: '
+        'tu correo (a través del proveedor de identidad), el índice de tu biblioteca, tu historial de '
+        'reproducción, tu nombre de usuario, tus amistades, «escuchando ahora» si lo activas, y los '
+        'contadores técnicos de uso. Nunca el audio, nunca rutas de archivos, nunca analítica ni '
+        'publicidad.',
   ),
   LegalSection(
     '4. Qué no recogemos',
@@ -198,6 +238,14 @@ const List<LegalSection> privacySections = [
         'derechos del RGPD. La forma más rápida de suprimir tus datos es Ajustes → Cuenta → «Borrar mis '
         'datos de la nube». Para cualquier otra solicitud escribe a $legalContactEmail desde el correo '
         'de tu cuenta; respondemos en los plazos legales.',
+  ),
+  LegalSection(
+    'Inteligencia artificial',
+    'Heardy se desarrolla con asistencia de herramientas de inteligencia artificial, bajo supervisión '
+        'humana. Esas herramientas no tienen acceso a los datos de los usuarios: ningún dato personal ni '
+        'contenido de tu biblioteca se usa para entrenar modelos ni se envía a proveedores de '
+        'inteligencia artificial. La aplicación no toma decisiones automatizadas con efectos jurídicos '
+        'sobre ti.',
   ),
   LegalSection(
     '10. Seguridad y menores',
