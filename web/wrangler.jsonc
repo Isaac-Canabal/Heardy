@@ -1,0 +1,12 @@
+{
+  // Sitio estático de Heardy en Cloudflare Workers: solo assets, sin código de
+  // Worker. `npm run deploy` construye `out/` y lo sube.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "heardy-web",
+  "compatibility_date": "2026-09-01",
+  "assets": {
+    "directory": "./out",
+    "not_found_handling": "404-page",
+    "html_handling": "auto-trailing-slash"
+  }
+}
