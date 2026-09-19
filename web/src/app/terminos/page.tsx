@@ -72,7 +72,7 @@ export default function TermsPage() {
           derecho sobre él. El operador se reserva el derecho a limitar, suspender o retirar esta
           función en cualquier momento, incluida la posibilidad de bloquear enlaces o cuentas ante
           indicios de uso indebido, y atenderá los requerimientos legítimos de autoridades y titulares
-          de derechos conforme a la sección 8.
+          de derechos conforme a la sección 9.
         </p>
       </LegalSection>
 
@@ -149,7 +149,26 @@ export default function TermsPage() {
         </p>
       </LegalSection>
 
-      <LegalSection id="derechos-autor" title="8. Reclamaciones de derechos de autor y retirada de contenido">
+      <LegalSection id="responsabilidad" title="8. Responsabilidad del usuario por el contenido e indemnidad">
+        <p>
+          Todo el contenido que reproduces, importas, almacenas o sincronizas con Heardy es tuyo o lo
+          obtienes tú: el operador no lo elige, no lo revisa y no lo aloja. Por eso, <strong>eres el
+          único responsable</strong> de que ese contenido y el uso que hagas de él respeten los
+          derechos de terceros (en particular los derechos de autor y conexos), las condiciones de las
+          plataformas de origen y la ley aplicable. Si importas o conservas contenido sin tener derecho
+          a ello, la responsabilidad es exclusivamente tuya.
+        </p>
+        <p>
+          Te comprometes a <strong>mantener indemne</strong> al operador, a sus colaboradores y
+          proveedores frente a cualquier reclamación, sanción, daño o gasto (incluidos honorarios
+          legales razonables) que se derive del contenido que hayas reproducido, importado, almacenado
+          o compartido a través de Heardy, de tu incumplimiento de estos términos o de tu infracción de
+          derechos de terceros o de la ley. El operador podrá cooperar con autoridades y titulares de
+          derechos en la medida que la ley exija.
+        </p>
+      </LegalSection>
+
+      <LegalSection id="derechos-autor" title="9. Reclamaciones de derechos de autor y retirada de contenido">
         <p>
           El operador respeta los derechos de propiedad intelectual y espera lo mismo de los usuarios.
           Dado que el operador no aloja audio, las reclamaciones sobre archivos concretos deben
@@ -175,7 +194,7 @@ export default function TermsPage() {
         </p>
       </LegalSection>
 
-      <LegalSection id="terminacion" title="9. Suspensión y terminación">
+      <LegalSection id="terminacion" title="10. Suspensión y terminación">
         <p>
           El usuario puede dejar de usar Heardy en cualquier momento desinstalando la aplicación y, si
           tiene cuenta, borrando sus datos desde Ajustes. El operador puede suspender o cancelar el
@@ -185,15 +204,31 @@ export default function TermsPage() {
         </p>
       </LegalSection>
 
-      <LegalSection id="ley" title="10. Ley aplicable y jurisdicción">
+      <LegalSection id="ley" title="11. Ley aplicable y resolución de controversias">
         <p>
-          Estos términos se rigen por las leyes de la República de Colombia. Cualquier controversia se
-          someterá a los jueces competentes de Colombia, sin perjuicio de las normas imperativas de
-          protección al consumidor que puedan resultar aplicables en el país de residencia del usuario.
+          Estos términos se rigen por las leyes de la República de Colombia. Antes de iniciar cualquier
+          acción, las partes intentarán resolver la controversia de forma directa: la parte afectada
+          la notificará por escrito a la otra (el usuario, a {site.contactEmail}; el operador, al correo
+          de la cuenta) y ambas dispondrán de treinta (30) días para llegar a un acuerdo.
+        </p>
+        <p>
+          Si no hay acuerdo, toda controversia derivada de estos términos o del uso de Heardy se
+          resolverá mediante <strong>arbitraje en derecho</strong> conforme a la Ley 1563 de 2012, ante
+          el Centro de Arbitraje y Conciliación de la Cámara de Comercio de Bogotá, por un árbitro único
+          designado según su reglamento, con sede en Bogotá y en idioma español. El laudo será
+          definitivo y vinculante. Cada parte asumirá sus propios costos, salvo que el laudo disponga
+          otra cosa.
+        </p>
+        <p>
+          Cuando actúes como consumidor y la legislación que te proteja te reconozca el derecho a
+          acudir a la jurisdicción ordinaria o a la autoridad de protección al consumidor (en Colombia,
+          la Superintendencia de Industria y Comercio), este arbitraje es <strong>opcional para ti</strong>{" "}
+          y no limita ese derecho. En la medida permitida por la ley, las controversias se resolverán de
+          forma individual, no mediante acciones colectivas o de grupo.
         </p>
       </LegalSection>
 
-      <LegalSection id="cambios" title="11. Cambios en los términos">
+      <LegalSection id="cambios" title="12. Cambios en los términos">
         <p>
           Podemos modificar estos términos para reflejar cambios en la aplicación, en los servicios o
           en la legislación. La versión vigente estará siempre publicada en esta página con su fecha de
@@ -203,7 +238,7 @@ export default function TermsPage() {
         </p>
       </LegalSection>
 
-      <LegalSection id="aceptacion" title="12. Aceptación">
+      <LegalSection id="aceptacion" title="13. Aceptación">
         <p>
           Aceptas estos términos al marcar la casilla correspondiente antes de descargar la aplicación
           desde este sitio y, de nuevo, al aceptarlos dentro de la aplicación la primera vez que la
@@ -212,7 +247,16 @@ export default function TermsPage() {
         </p>
       </LegalSection>
 
-      <LegalSection id="contacto" title="13. Contacto">
+      <LegalSection id="ia" title="14. Uso de inteligencia artificial en el desarrollo">
+        <p>
+          Heardy se desarrolla con asistencia de herramientas de inteligencia artificial para escribir
+          y revisar código, textos y documentación, siempre bajo supervisión humana. Ningún dato
+          personal de los usuarios ni el contenido de sus bibliotecas se utiliza para entrenar modelos
+          ni se comparte con proveedores de inteligencia artificial.
+        </p>
+      </LegalSection>
+
+      <LegalSection id="contacto" title="15. Contacto">
         <p>
           Consultas, reclamaciones de derechos de autor y asuntos de privacidad:{" "}
           <a href={`mailto:${site.contactEmail}`}>{site.contactEmail}</a>.

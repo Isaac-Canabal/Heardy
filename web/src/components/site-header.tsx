@@ -34,7 +34,7 @@ export function SiteHeader() {
       <div className="mx-auto flex h-16 max-w-6xl items-center justify-between px-4">
         <Link href="/" className="flex items-center gap-2.5 font-semibold">
           <Image src="/icon.png" alt="" width={32} height={32} className="rounded-lg" priority />
-          <span className="text-lg tracking-tight">{site.name}</span>
+          <span className="sr-only">{site.name}</span>
         </Link>
 
         <nav className="hidden items-center gap-1 md:flex" aria-label="Principal">

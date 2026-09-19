@@ -16,7 +16,7 @@ export const site = {
   privacyEmail: "vainastech@gmail.com",
   // Quien responde de la app y del tratamiento de datos. Si más adelante hay
   // una razón social, va aquí.
-  operatorName: "Vainatech",
+  operatorName: "Vainastech",
   operatorLocation: "Colombia",
   // Fecha de la última revisión de los textos legales.
   legalUpdatedAt: "2026-09-19",

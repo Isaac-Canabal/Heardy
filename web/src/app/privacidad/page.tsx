@@ -85,6 +85,16 @@ export default function PrivacyPage() {
         </ul>
       </LegalSection>
 
+      <LegalSection id="resumen-datos" title="Resumen de lo que se recoge">
+        <p>
+          En una línea: <strong>sin cuenta, nada</strong> (salvo el título, artista y duración de la
+          canción para pedir letras). <strong>Con cuenta</strong>: tu correo (a través del proveedor de
+          identidad), el índice de tu biblioteca, tu historial de reproducción, tu nombre de usuario,
+          tus amistades, «escuchando ahora» si lo activas y los contadores técnicos de uso. Nunca el
+          audio, nunca rutas de archivos, nunca datos de analítica ni publicidad.
+        </p>
+      </LegalSection>
+
       <LegalSection id="no-recogemos" title="4. Qué no recogemos">
         <ul>
           <li>Tus archivos de audio: el audio nunca sale de tu dispositivo.</li>
@@ -181,6 +191,16 @@ export default function PrivacyPage() {
           <a href={`mailto:${site.privacyEmail}`}>{site.privacyEmail}</a> desde el correo asociado a tu
           cuenta; responderemos en los plazos que marca la ley (diez días hábiles para consultas y
           quince para reclamos, prorrogables según la norma colombiana; un mes según el RGPD).
+        </p>
+      </LegalSection>
+
+      <LegalSection id="ia" title="Inteligencia artificial">
+        <p>
+          Heardy se desarrolla con asistencia de herramientas de inteligencia artificial, bajo
+          supervisión humana. Esas herramientas no tienen acceso a los datos de los usuarios: ningún
+          dato personal ni contenido de tu biblioteca se utiliza para entrenar modelos ni se envía a
+          proveedores de inteligencia artificial. La aplicación tampoco toma decisiones automatizadas
+          con efectos jurídicos sobre ti.
         </p>
       </LegalSection>
 

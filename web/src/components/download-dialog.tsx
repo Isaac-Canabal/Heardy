@@ -20,10 +20,10 @@ import { hasValidAcceptance, recordAcceptance } from "@/lib/terms-acceptance";
 
 const termsSummary = [
   "Heardy es un reproductor de música local: reproduce archivos que ya están en tu dispositivo y no aloja ni distribuye audio.",
-  "Si usas la importación desde enlaces, eres responsable de tener derecho sobre ese contenido y de respetar la ley de derechos de autor y las condiciones de las plataformas de origen.",
+  "Todo el contenido que reproduces o importas es tu responsabilidad: debes tener derecho sobre él y respetar la ley de derechos de autor. Si lo incumples, respondes tú, no el operador.",
   "La cuenta es opcional. Si la creas, sincroniza un índice de tu biblioteca (títulos, artistas, playlists) y tu historial; nunca el audio.",
   "Uso personal y no comercial. Debes tener al menos 14 años, o la mayoría de edad de tu país si es superior.",
-  "La app se ofrece \"tal cual\", sin garantías, bajo licencia MIT.",
+  "La app se ofrece \"tal cual\", sin garantías, bajo licencia MIT. Las controversias se resuelven por arbitraje en Colombia (opcional si eres consumidor). El producto se desarrolla con ayuda de inteligencia artificial, sin usar datos de usuarios.",
 ];
 
 function startDownload(url: string, fileName: string) {
