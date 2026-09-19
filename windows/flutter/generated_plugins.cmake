@@ -7,8 +7,10 @@ list(APPEND FLUTTER_PLUGIN_LIST
   firebase_core
   media_kit_libs_windows_audio
   permission_handler_windows
+  screen_retriever_windows
   share_plus
   url_launcher_windows
+  window_manager
 )
 
 list(APPEND FLUTTER_FFI_PLUGIN_LIST
