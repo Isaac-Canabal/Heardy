@@ -24,6 +24,35 @@ enum DownloadOutcome {
   alreadyInLibrary,
 }
 
+/// Las URLs de carátula que se van a intentar, en orden, para una pista.
+///
+/// Un `.m4a` sólo admite JPEG/PNG como carátula: `audio_metadata_reader`
+/// descarta un WebP en silencio ("Skipping cover art") y la canción queda sin
+/// carátula en disco. Las miniaturas `vi_webp/…/x.webp` de i.ytimg.com tienen
+/// siempre su gemela `vi/…/x.jpg`, así que se prefiere ésa. Y como yt-dlp
+/// lista `maxresdefault` aunque el vídeo no la tenga, `hqdefault.jpg` (que
+/// existe para todo vídeo) queda de respaldo cuando se conoce el id.
+List<String> coverArtCandidates(String thumbnailUrl, String videoId) {
+  final candidates = <String>[];
+  final url = thumbnailUrl.trim();
+  if (url.isNotEmpty) {
+    final query = url.indexOf('?');
+    final path = query == -1 ? url : url.substring(0, query);
+    if (path.contains('/vi_webp/') && path.endsWith('.webp')) {
+      final withoutExt = path.substring(0, path.length - '.webp'.length);
+      candidates.add('${withoutExt.replaceFirst('/vi_webp/', '/vi/')}.jpg');
+    } else {
+      candidates.add(url);
+    }
+  }
+  final id = videoId.trim();
+  if (id.isNotEmpty) {
+    final fallback = 'https://i.ytimg.com/vi/$id/hqdefault.jpg';
+    if (!candidates.contains(fallback)) candidates.add(fallback);
+  }
+  return candidates;
+}
+
 class DownloadResult {
   final DownloadOutcome outcome;
   final Song song;
@@ -139,7 +168,7 @@ class DownloadService {
       _throwIfCancelled(isCancelled);
 
       // 2. Carátula, antes de escribir tags para poder empotrarla.
-      final coverBytes = await _fetchThumbnail(track.thumbnailUrl);
+      final coverBytes = await _fetchThumbnail(track.thumbnailUrl, track.id);
 
       // 3. Tags dentro del archivo. Esto es lo que hace que el archivo sea
       // autodescriptivo en disco: si el usuario lo copia a otro reproductor,
@@ -273,18 +302,26 @@ class DownloadService {
     }
   }
 
-  Future<Uint8List?> _fetchThumbnail(String url) async {
-    if (url.isEmpty) return null;
+  Future<Uint8List?> _fetchThumbnail(String url, String videoId) async {
+    final candidates = coverArtCandidates(url, videoId);
+    if (candidates.isEmpty) return null;
     final client = _clientFactory();
     try {
-      final response =
-          await client.get(Uri.parse(url)).timeout(const Duration(seconds: 20));
-      if (response.statusCode != 200 || response.bodyBytes.isEmpty) return null;
-      return response.bodyBytes;
-    } catch (e) {
+      for (final candidate in candidates) {
+        try {
+          final response = await client
+              .get(Uri.parse(candidate))
+              .timeout(const Duration(seconds: 20));
+          if (response.statusCode == 200 && response.bodyBytes.isNotEmpty) {
+            return response.bodyBytes;
+          }
+          print('DownloadService: miniatura $candidate -> HTTP ${response.statusCode}');
+        } catch (e) {
+          print('DownloadService: no se pudo bajar la miniatura ($candidate): $e');
+        }
+      }
       // Quedarse sin carátula no arruina una descarga: song_tile y
       // now_playing ya tienen el degradado por título como respaldo.
-      print('DownloadService: no se pudo bajar la miniatura ($url): $e');
       return null;
     } finally {
       client.close();
@@ -348,7 +385,11 @@ class DownloadService {
       if (!await thumbDir.exists()) {
         await thumbDir.create(recursive: true);
       }
-      final ext = _mimeForImage(bytes).endsWith('png') ? 'png' : 'jpg';
+      final ext = switch (_mimeForImage(bytes)) {
+        'image/png' => 'png',
+        'image/webp' => 'webp',
+        _ => 'jpg',
+      };
       final path = '${thumbDir.path}/$songId.$ext';
       await File(path).writeAsBytes(bytes);
       return path;
