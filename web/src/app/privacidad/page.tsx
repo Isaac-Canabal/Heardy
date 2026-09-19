@@ -32,7 +32,6 @@ export default function PrivacyPage() {
     <LegalPage
       title="Política de privacidad"
       intro="Heardy está diseñado para que la mayor parte de tus datos no salga nunca de tu dispositivo. Esta política explica qué información se trata cuando decides usar las funciones opcionales que sí requieren un servidor, y qué derechos tienes sobre ella."
-      draft={false}
     >
       <LegalSection id="responsable" title="1. Responsable del tratamiento">
         <p>

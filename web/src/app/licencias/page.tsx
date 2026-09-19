@@ -101,7 +101,6 @@ export default function LicensesPage() {
     <LegalPage
       title="Licencias y créditos"
       intro="Heardy es software libre. Aquí está su licencia y el reconocimiento a los proyectos y servicios de terceros de los que depende."
-      draft={false}
     >
       <LegalSection id="mit" title="Licencia de Heardy (MIT)">
         <p>

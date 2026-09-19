@@ -14,7 +14,6 @@ export default function TermsPage() {
     <LegalPage
       title="Términos de uso"
       intro="Estas condiciones regulan la descarga y el uso de la aplicación Heardy y de los servicios opcionales asociados a ella. Al instalar o usar Heardy aceptas estos términos."
-      draft={false}
     >
       <LegalSection id="servicio" title="1. Qué es Heardy">
         <p>

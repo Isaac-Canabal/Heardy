@@ -14,7 +14,7 @@ function Placeholder({ media }: { media: ShowcaseMedia }) {
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-[repeating-linear-gradient(135deg,rgba(167,139,250,0.08)_0_10px,transparent_10px_20px)] p-4 text-center">
       <ImageIcon className="size-8 text-brand-light/70" />
-      <p className="text-xs font-medium text-muted-foreground">Captura pendiente</p>
+      <p className="text-xs font-medium text-muted-foreground">Próximamente</p>
       <p className="text-[0.65rem] text-muted-foreground/70">
         {media.device === "phone" ? "9:19.5" : "16:9"} · {media.kind === "video" ? "vídeo" : "imagen"}
       </p>

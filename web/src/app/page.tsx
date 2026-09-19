@@ -89,9 +89,11 @@ export default function HomePage() {
               colección por carpetas y playlists, sigue las letras sincronizadas y descubre qué
               escuchas más. Todo en tu teléfono o en tu PC.
             </p>
-            <DownloadButtons />
             <p className="text-xs text-muted-foreground">
-              Gratis, sin anuncios ni analítica. Licencia MIT.
+              Gratis, sin anuncios ni analítica. Licencia MIT.{" "}
+              <a href="#descargas" className="text-brand-light underline-offset-4 hover:underline">
+                Ir a las descargas
+              </a>
             </p>
           </div>
 

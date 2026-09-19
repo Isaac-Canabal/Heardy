@@ -1,8 +1,7 @@
 // Capturas y vídeos de la sección "Cómo funciona".
 //
-// Coloca los archivos en `web/public/media/` y rellena `src` con la ruta pública
-// (p. ej. "/media/biblioteca-movil.png"). Mientras `src` sea `null` se muestra un
-// marcador de posición con la proporción correcta ("captura pendiente").
+// Los archivos viven en `web/public/media/`; `src` es la ruta pública. Si `src`
+// es `null` se dibuja el marco vacío con la proporción correcta.
 //
 // - `kind: "image"`  → png/jpg/webp.
 // - `kind: "video"`  → mp4 o webm; se reproduce en bucle, silenciado y sin controles.
