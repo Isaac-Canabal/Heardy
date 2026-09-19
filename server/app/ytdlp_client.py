@@ -427,7 +427,7 @@ def _base_opts() -> dict:
         },
         # yt-dlp solo habilita "deno" por defecto para el desafío de firma
         # ("n challenge"). Node ya es un requisito de instalación (el
-        # proveedor de PO Tokens es una app Node, ver server/README.md), así
+        # proveedor de PO Tokens es una app Node, ver server/setup.bat), así
         # que se añade como runtime en vez de pedir instalar Deno aparte.
         # Sin esto (y sin el paquete yt-dlp-ejs en requirements.txt, que trae
         # el script que este runtime ejecuta) yt-dlp no puede resolver la
